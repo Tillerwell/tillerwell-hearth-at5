@@ -26,8 +26,6 @@ static void defaults(at_settings_t *c)
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     snprintf(c->device_name, sizeof(c->device_name), "hearth-%02x%02x%02x", mac[3], mac[4], mac[5]);
-    c->mqtt_port = 1883;
-    strcpy(c->mqtt_discovery_prefix, "homeassistant");
     c->preheat_minutes = 30;
     c->auto_target = 20.0f;
     c->freeze_target = 5.0f;
@@ -62,10 +60,6 @@ esp_err_t at_settings_init(void)
     s_cfg.device_name[sizeof(s_cfg.device_name) - 1] = 0;
     s_cfg.wifi_ssid[sizeof(s_cfg.wifi_ssid) - 1] = 0;
     s_cfg.wifi_pass[sizeof(s_cfg.wifi_pass) - 1] = 0;
-    s_cfg.mqtt_host[sizeof(s_cfg.mqtt_host) - 1] = 0;
-    s_cfg.mqtt_user[sizeof(s_cfg.mqtt_user) - 1] = 0;
-    s_cfg.mqtt_pass[sizeof(s_cfg.mqtt_pass) - 1] = 0;
-    s_cfg.mqtt_discovery_prefix[sizeof(s_cfg.mqtt_discovery_prefix) - 1] = 0;
     s_cfg.web_password[sizeof(s_cfg.web_password) - 1] = 0;
     return ESP_OK;
 }
@@ -89,31 +83,6 @@ esp_err_t at_settings_preheat_temp_save(float celsius)
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
     if (err == ESP_OK) {
         err = nvs_set_blob(h, "preheat_t", &celsius, sizeof(celsius));
-        if (err == ESP_OK) err = nvs_commit(h);
-        nvs_close(h);
-    }
-    return err;
-}
-
-bool at_settings_mqtt_builtin_load(void)
-{
-    nvs_handle_t h;
-    uint8_t v;
-    bool found = false;
-    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
-        found = nvs_get_u8(h, "mq_builtin", &v) == ESP_OK;
-        nvs_close(h);
-    }
-    if (found) return v != 0;
-    return s_cfg.mqtt_host[0] == 0; /* a box already pointed at a broker keeps using it */
-}
-
-esp_err_t at_settings_mqtt_builtin_save(bool builtin)
-{
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
-    if (err == ESP_OK) {
-        err = nvs_set_u8(h, "mq_builtin", builtin ? 1 : 0);
         if (err == ESP_OK) err = nvs_commit(h);
         nvs_close(h);
     }

@@ -44,21 +44,15 @@ The ESP32-C6 has only two general UARTs, so the controller side uses UART0 and t
 2. On a phone, join the Wi-Fi network **Hearth-<id>**. The setup page opens by itself (or go to `http://192.168.4.1`).
 3. Setup tab → *Scan networks*, tap yours, enter the password, *Save and connect*.
 4. Rejoin your normal Wi-Fi and open `http://hearth-<id>.local` (the name is on the Setup tab and in the router's client list).
-5. Optional: turn on MQTT for Home Assistant (below) and set a web password.
+5. Optional: turn on Home Assistant (below) and set a web password.
 
 If the saved network can't be reached for two minutes the setup network comes back, so a changed router password never strands the box. No USB needed; with USB you can also type `wifi <ssid> <password>` in the console.
 
-## Home Assistant over MQTT: no broker to install
+## Home Assistant
 
-The box carries its own MQTT broker (Espressif's Mosquitto port), so Home Assistant needs no Mosquitto add-on or separate server.
+On the box's page, Setup tab → *Home Assistant*, switch on **Make this Hearth available to Home Assistant**. Home Assistant then finds it on its own (Settings → Devices & services); switching it off removes it again.
 
-1. On the box's page, Setup tab → *MQTT / Home Assistant*: tick **Enable MQTT** and leave **Broker built into this box** ticked. Set a user and password if you want clients to need one (optional, but the web API has none by default, so consider it). Save. USB console: `mqtt builtin [port] [user] [password]`.
-2. In Home Assistant: *Settings → Devices & services → Add integration → MQTT*, broker = the box's IP address (shown on the page) or `hearth-<id>.local`, port 1883, and the user and password if you set them.
-3. The Hearth device and its entities appear on their own (MQTT discovery).
-
-Home Assistant supports **one** MQTT broker. If it already uses another (for Zigbee2MQTT and the like), untick *Broker built into this box* and enter that broker's address instead; the box then connects out to it as before. A box that already had an external broker saved keeps using it after the update.
-
-The box's own client connects to its broker over loopback, so state, commands, timers and discovery are identical either way. Messages are kept in memory only (retained messages are re-published by the box when it starts), the broker takes a handful of clients, and it is plain MQTT without TLS, so keep it on your own network. The Tillerwell Home Assistant integration (HACS) does not use MQTT at all and needs neither.
+Messages are kept in memory only (retained messages are re-published by the box when it starts). The Tillerwell Home Assistant integration (HACS) does not use this and needs nothing switched on.
 
 ## Setup, Matter images
 

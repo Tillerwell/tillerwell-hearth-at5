@@ -21,8 +21,11 @@ static TaskHandle_t s_pub_task;
 static char s_base[80];      /* hearth/<device> */
 static char s_node[48];      /* object id prefix / device identifier */
 static char s_uri[96];
-static char s_user[40], s_pass[72];
 static char s_prefix[24];
+static bool s_ha;            /* Home Assistant enabled: publish discovery, otherwise retract it */
+
+#define MQTT_PORT   1883
+#define MQTT_PREFIX "homeassistant"
 
 bool at_mqtt_connected(void) { return s_connected; }
 
@@ -33,18 +36,6 @@ bool at_mqtt_connected(void) { return s_connected; }
  * integration is pointed at this box and discovery works as it does with any broker. */
 static struct mosq_broker_config s_bk_cfg;
 static volatile bool s_bk_alive;     /* the task exists (listening or on its way up or down) */
-static char s_bk_user[40], s_bk_pass[72];
-static int s_bk_port;
-
-bool at_mqtt_broker_running(void) { return s_bk_alive; }
-
-/* Called by the broker for every connection attempt, ours and Home Assistant's. No user set = open broker. */
-static int broker_auth(const char *client_id, const char *username, const char *password, int password_len)
-{
-    if (!s_bk_user[0]) return 0;
-    if (!username || !password) return 1;
-    return strcmp(username, s_bk_user) || strcmp(password, s_bk_pass);
-}
 
 static void broker_task(void *arg)
 {
@@ -62,26 +53,17 @@ static void broker_stop(void)
     if (s_bk_alive) ESP_LOGE(TAG, "broker did not stop");
 }
 
-/* Start the broker, or restart it if its port or login changed. */
-static esp_err_t broker_ensure(const at_settings_t *cfg)
+/* Start the broker if it is not already up. Open: it only listens on the local network, like the web UI. */
+static esp_err_t broker_ensure(void)
 {
-    if (s_bk_alive) {
-        if (s_bk_port == cfg->mqtt_port && !strcmp(s_bk_user, cfg->mqtt_user) && !strcmp(s_bk_pass, cfg->mqtt_pass)) {
-            return ESP_OK;
-        }
-        broker_stop();
-        if (s_bk_alive) return ESP_FAIL;
-    }
-    s_bk_port = cfg->mqtt_port;
-    strlcpy(s_bk_user, cfg->mqtt_user, sizeof(s_bk_user));
-    strlcpy(s_bk_pass, cfg->mqtt_pass, sizeof(s_bk_pass));
-    s_bk_cfg = (struct mosq_broker_config){.host = "0.0.0.0", .port = s_bk_port, .handle_connect_cb = broker_auth};
+    if (s_bk_alive) return ESP_OK;
+    s_bk_cfg = (struct mosq_broker_config){.host = "0.0.0.0", .port = MQTT_PORT};
     s_bk_alive = true;
     if (xTaskCreate(broker_task, "mqtt_broker", 8192, NULL, 4, NULL) != pdPASS) {
         s_bk_alive = false;
         return ESP_ERR_NO_MEM;
     }
-    ESP_LOGI(TAG, "built-in broker on port %d%s", s_bk_port, s_bk_user[0] ? " (login required)" : " (open)");
+    ESP_LOGI(TAG, "built-in broker on port %d", MQTT_PORT);
     vTaskDelay(pdMS_TO_TICKS(300)); /* let it start listening before our own client dials in */
     return ESP_OK;
 }
@@ -186,6 +168,12 @@ static void add_common(cJSON *o, const ent_t *e, const char *availability)
     if (e->cat) cJSON_AddStringToObject(o, "entity_category", e->cat);
 }
 
+/* Home Assistant picks entities up from these retained configs; an empty retained payload removes them. */
+static void pub_config(const char *topic, const char *js)
+{
+    pub(topic, s_ha ? js : "", 0, true);
+}
+
 static void publish_discovery(void)
 {
     char avail[96], state[96], cmdt[128], topic[160], tpl[160];
@@ -238,7 +226,7 @@ static void publish_discovery(void)
         cJSON_Delete(o);
         if (js) {
             snprintf(topic, sizeof(topic), "%s/%s/%s/%s/config", s_prefix, comp, s_node, e->id);
-            pub(topic, js, 0, true);
+            pub_config(topic, js);
             free(js);
         }
     }
@@ -270,7 +258,7 @@ static void publish_discovery(void)
     cJSON_Delete(o);
     if (js) {
         snprintf(topic, sizeof(topic), "%s/climate/%s/thermostat/config", s_prefix, s_node);
-        pub(topic, js, 0, true);
+        pub_config(topic, js);
         free(js);
     }
 }
@@ -449,24 +437,16 @@ esp_err_t at_mqtt_start(void)
     }
     at_settings_t cfg;
     at_settings_get(&cfg);
-    bool builtin = cfg.mqtt_enabled && at_settings_mqtt_builtin_load();
-    if (!builtin) broker_stop();
-    if (!cfg.mqtt_enabled || (!builtin && !cfg.mqtt_host[0])) {
-        return ESP_OK;
-    }
-    if (builtin) {
-        esp_err_t err = broker_ensure(&cfg);
-        if (err != ESP_OK) return err;
-    }
+    esp_err_t err = broker_ensure();
+    if (err != ESP_OK) return err;
     snprintf(s_base, sizeof(s_base), "hearth/%s", cfg.device_name);
     snprintf(s_node, sizeof(s_node), "hearth_%s", cfg.device_name);
     for (char *p = s_node; *p; p++) {
         if (*p == '-') *p = '_';
     }
-    strlcpy(s_prefix, cfg.mqtt_discovery_prefix, sizeof(s_prefix));
-    snprintf(s_uri, sizeof(s_uri), "mqtt://%s:%u", builtin ? "127.0.0.1" : cfg.mqtt_host, cfg.mqtt_port);
-    strlcpy(s_user, cfg.mqtt_user, sizeof(s_user));
-    strlcpy(s_pass, cfg.mqtt_pass, sizeof(s_pass));
+    s_ha = cfg.mqtt_enabled;
+    strlcpy(s_prefix, MQTT_PREFIX, sizeof(s_prefix));
+    snprintf(s_uri, sizeof(s_uri), "mqtt://127.0.0.1:%d", MQTT_PORT);
     static char lwt_topic[96], client_id[48];
     snprintf(lwt_topic, sizeof(lwt_topic), "%s/availability", s_base);
     snprintf(client_id, sizeof(client_id), "%s", s_node);
@@ -474,10 +454,8 @@ esp_err_t at_mqtt_start(void)
     esp_mqtt_client_config_t mc = {
         .broker.address.uri = s_uri,
         .credentials.client_id = client_id,
-        .credentials.username = s_user[0] ? s_user : NULL,
-        .credentials.authentication.password = s_pass[0] ? s_pass : NULL,
         .session.keepalive = 30,
-        .network.reconnect_timeout_ms = builtin ? 2000 : 10000,
+        .network.reconnect_timeout_ms = 2000,
         .session.last_will = {.topic = lwt_topic, .msg = "offline", .msg_len = 7, .qos = 0, .retain = true},
         .buffer.size = 2048,
         .buffer.out_size = 2048,

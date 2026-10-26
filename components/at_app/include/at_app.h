@@ -41,6 +41,7 @@ typedef struct {
     char device_name[32];       /* mDNS / hostname / AP name suffix source */
     char wifi_ssid[33];
     char wifi_pass[65];
+    /* Home Assistant discovery on/off. The rest of the MQTT fields are legacy and unused (the broker is always built in); kept so saved settings keep their layout. */
     bool mqtt_enabled;
     char mqtt_host[64];
     uint16_t mqtt_port;
@@ -68,11 +69,6 @@ typedef struct {
 /* False if nothing was saved yet. */
 bool at_settings_band_load(at_band_t *out);
 esp_err_t at_settings_band_save(const at_band_t *in);
-
-/* Whether MQTT runs its own broker on the box (true) or connects out to mqtt_host (false). Own NVS entry so older
- * saved settings stay valid. Never saved: true unless an external broker host was already configured. */
-bool at_settings_mqtt_builtin_load(void);
-esp_err_t at_settings_mqtt_builtin_save(bool builtin);
 
 /* Coolant temperature (C) at which a timed preheat is stopped early. Own NVS entry; 88 until set. */
 #define AT_PREHEAT_TEMP_DEFAULT 88.0f
