@@ -34,7 +34,7 @@ static bool s_mdns_ready;  /* mDNS is up (own Wi-Fi: after at_net_start; Matter:
 
 #define HA_SERVICE "_hearth-ha" /* only announced while Home Assistant is switched on; Home Assistant's integration browses this */
 
-/* Announce or withdraw the service Home Assistant discovers the box by. The _hearth._tcp service the Tillerwell app
+/* Announce or withdraw the service Home Assistant discovers the box by. The _hearth-app._tcp service the Tillerwell app
  * uses stays up either way. */
 void at_net_ha_advertise(bool on)
 {
@@ -144,7 +144,7 @@ esp_err_t at_net_scan_json(char *out, size_t len)
 
 /* Matter mode: Matter owns mDNS and calls mdns_hostname_set() with its own MAC-derived name every time it
  * publishes, so a plain mdns_hostname_set(hearth-xxxxxx) would be overwritten. Publish our name as a
- * delegated host instead (own A record + our services) so hearth-<id>.local and _hearth._tcp keep working for
+ * delegated host instead (own A record + our services) so hearth-<id>.local and _hearth-app._tcp keep working for
  * the Tillerwell app alongside Matter. Called on every address change. */
 static void matter_mdns_publish(const esp_ip4_addr_t *ip)
 {
@@ -172,7 +172,7 @@ static void matter_mdns_publish(const esp_ip4_addr_t *ip)
     }
     added = true;
     mdns_service_add_for_host("Tillerwell Hearth", "_http", "_tcp", cfg.device_name, 80, NULL, 0);
-    mdns_service_add_for_host("Tillerwell Hearth", "_hearth", "_tcp", cfg.device_name, 80, NULL, 0);
+    mdns_service_add_for_host("Tillerwell Hearth", "_hearth-app", "_tcp", cfg.device_name, 80, NULL, 0);
     s_mdns_ready = true;
     at_net_ha_advertise(cfg.mqtt_enabled);
     ESP_LOGI(TAG, "mDNS: %s.local (Matter mode)", cfg.device_name);
@@ -398,7 +398,7 @@ static esp_err_t start_own_wifi(void)
     mdns_hostname_set(cfg.device_name);
     mdns_instance_name_set("Tillerwell Hearth");
     mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
-    mdns_service_add(NULL, "_hearth", "_tcp", 80, NULL, 0);
+    mdns_service_add(NULL, "_hearth-app", "_tcp", 80, NULL, 0);
     s_mdns_ready = true;
     at_net_ha_advertise(cfg.mqtt_enabled);
 
