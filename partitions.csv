@@ -1,0 +1,9 @@
+# 8 MB flash (ESP32-C6FH8). Two 3.4 MB app slots so a Matter image fits and
+# can be updated over the air from the web UI.
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x10000,
+otadata,  data, ota,     0x19000,  0x2000,
+phy_init, data, phy,     0x1b000,  0x1000,
+fctry,    data, nvs,     0x1c000,  0x6000,
+ota_0,    app,  ota_0,   0x30000,  0x370000,
+ota_1,    app,  ota_1,   0x3a0000, 0x370000,

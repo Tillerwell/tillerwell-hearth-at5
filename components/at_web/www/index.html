@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tillerwell Hearth</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--fg:#1c2128;--mut:#667085;--line:#dfe3e8;--acc:#d9480f;--ok:#2b8a3e;--bad:#c92a2a;--warn:#e67700}
+@media(prefers-color-scheme:dark){:root{--bg:#14171b;--card:#1d2127;--fg:#e6e8eb;--mut:#98a2b3;--line:#2e343c;--acc:#ff8c42;--ok:#51cf66;--bad:#ff6b6b;--warn:#fcc419}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{padding:14px 16px 0;max-width:720px;margin:0 auto}
+h1{font-size:18px;margin:0 0 2px}
+.sub{color:var(--mut);font-size:13px}
+nav{display:flex;gap:4px;max-width:720px;margin:10px auto 0;padding:0 12px;overflow-x:auto}
+nav button{flex:1;padding:10px 8px;border:0;border-bottom:3px solid transparent;background:none;color:var(--mut);font:inherit;cursor:pointer;white-space:nowrap}
+nav button.on{color:var(--fg);border-color:var(--acc);font-weight:600}
+main{max-width:720px;margin:0 auto;padding:12px 16px 40px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.card h2{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut);margin:0 0 10px}
+.big{font-size:30px;font-weight:700}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+.k{color:var(--mut);font-size:12px}
+.v{font-size:20px;font-weight:600}
+.pill{display:inline-block;padding:2px 10px;border-radius:99px;font-size:13px;font-weight:600;background:var(--line)}
+.pill.ok{background:var(--ok);color:#fff}.pill.bad{background:var(--bad);color:#fff}.pill.warn{background:var(--warn);color:#000}
+button.b{padding:12px 16px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--fg);font:inherit;font-weight:600;cursor:pointer}
+button.b.p{background:var(--acc);border-color:var(--acc);color:#fff}
+button.b.d{border-color:var(--bad);color:var(--bad)}
+button.b:disabled{opacity:.5}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}
+.row>*{flex:0 0 auto}.row .grow{flex:1 1 140px}
+input,select{padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);font:inherit;width:100%}
+input[type=checkbox]{width:auto;transform:scale(1.4);margin:0 8px}
+label{display:block;font-size:13px;color:var(--mut);margin:10px 0 4px}
+.sw{display:flex;align-items:center;justify-content:space-between;padding:6px 0}
+pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;overflow:auto;font-size:12px;max-height:340px;margin:0}
+.note{font-size:13px;color:var(--mut);margin-top:6px}
+.net{padding:10px;border:1px solid var(--line);border-radius:8px;margin:6px 0;cursor:pointer;display:flex;justify-content:space-between}
+.hide{display:none}
+#msg{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 16px;border-radius:99px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none}
+#msg.show{opacity:1}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Tillerwell Hearth</h1>
+  <div class="sub" id="sub">connecting…</div>
+</header>
+<nav id="tabs">
+  <button data-t="ctl" class="on">Control</button>
+  <button data-t="setup">Setup</button>
+  <button data-t="diag">Diagnostics</button>
+  <button data-t="fw">Software</button>
+</nav>
+<main>
+
+<section id="t-ctl">
+  <div class="card">
+    <div class="row" style="justify-content:space-between;margin-top:0">
+      <div><div class="k">State</div><div class="big" id="state">–</div></div>
+      <div id="flags" style="text-align:right"></div>
+    </div>
+    <div class="grid" style="margin-top:10px">
+      <div><div class="k">Controller sensor</div><div class="v" id="cabin">–</div></div>
+      <div><div class="k">Coolant</div><div class="v" id="coolant">–</div></div>
+      <div><div class="k">Thermostat uses</div><div class="v" id="eff">–</div></div>
+      <div><div class="k">Run time</div><div class="v" id="elapsed">–</div></div>
+    </div>
+    <div class="note" id="fault"></div>
+  </div>
+
+  <div class="card">
+    <h2>Run</h2>
+    <div class="row">
+      <button class="b p grow" onclick="cmd({cmd:'start_thermostat'},'Start the heater in thermostat mode?')">Start</button>
+      <button class="b d grow" onclick="cmd({cmd:'stop'})">Stop</button>
+    </div>
+    <div class="row">
+      <input type="number" id="pre" min="1" max="600" style="width:90px" aria-label="Preheat minutes">
+      <span class="k">min</span>
+      <button class="b grow" onclick="cmd({cmd:'start_preheat',minutes:+pre.value},'Start a preheat for '+pre.value+' minutes?')">Start preheat</button>
+      <button class="b" onclick="cmd({cmd:'start_pump'},'Run the fuel pump / ventilation only?')">Pump only</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Thermostat</h2>
+    <div class="sw"><span>Auto thermostat</span><input type="checkbox" id="auto" onchange="cmd({cmd:'auto',enabled:this.checked})"></div>
+    <div class="row"><span class="k">Target</span>
+      <button class="b" onclick="step('auto_target',-.5)">−</button>
+      <span class="v" id="at">–</span>
+      <button class="b" onclick="step('auto_target',.5)">+</button></div>
+    <div class="note" id="autonote"></div>
+    <hr style="border:0;border-top:1px solid var(--line);margin:12px 0">
+    <div class="sw"><span>Prevent freezing</span><input type="checkbox" id="frz" onchange="cmd({cmd:'freeze',enabled:this.checked})"></div>
+    <div class="row"><span class="k">Frost floor</span>
+      <button class="b" onclick="step('freeze_target',-.5)">−</button>
+      <span class="v" id="ft">–</span>
+      <button class="b" onclick="step('freeze_target',.5)">+</button></div>
+    <div class="note" id="frznote"></div>
+    <div class="note">Both read the controller's own sensor (whole °C) unless a better temperature is pushed to the device (see Setup → MQTT).</div>
+  </div>
+</section>
+
+<section id="t-setup" class="hide">
+  <div class="card" id="c-wifi">
+    <h2>Wi-Fi</h2>
+    <div class="note" id="wifinow"></div>
+    <div class="row"><button class="b" onclick="scan()">Scan networks</button></div>
+    <div id="nets"></div>
+    <label for="ssid">Network name</label><input id="ssid" autocapitalize="none" autocomplete="off">
+    <label for="wpass">Password</label><input id="wpass" type="password" autocomplete="off">
+    <div class="row"><button class="b p" onclick="saveWifi()">Save and connect</button></div>
+    <div class="note">After saving, the device joins that network. Reconnect your phone to the same network and open <b id="host"></b>.local or the address shown above.</div>
+  </div>
+
+  <div class="card hide" id="c-mode">
+    <h2>Connection mode</h2>
+    <div class="note" id="modenow"></div>
+    <div class="row">
+      <button class="b" id="mb-wifi" onclick="setMode('wifi')">Wi-Fi only (this page, MQTT)</button>
+      <button class="b" id="mb-matter" onclick="setMode('matter')">Matter (Wi-Fi or Thread)</button>
+    </div>
+    <div class="note">Switching restarts the device. Matter mode is paired with your Matter app over Bluetooth and the app chooses Wi-Fi or Thread. If it ends up on Thread this page is no longer reachable; to come back to Wi-Fi mode type <code>mode wifi</code> on the USB console (keeps the pairing), or hold the BOOT button for 10 seconds and let go (factory reset, erases the pairing too). Switching modes keeps the pairing.</div>
+  </div>
+
+  <div class="card hide" id="c-matter">
+    <h2>Matter</h2>
+    <div id="matter"></div>
+  </div>
+
+  <div class="card" id="c-mqtt">
+    <h2>MQTT / Home Assistant</h2>
+    <div class="sw"><span>Enable MQTT</span><input type="checkbox" id="m_en"></div>
+    <label for="m_host">Broker host</label><input id="m_host" placeholder="192.168.1.10" autocapitalize="none">
+    <div class="row"><div class="grow"><label for="m_port">Port</label><input id="m_port" type="number"></div>
+    <div class="grow"><label for="m_pref">Discovery prefix</label><input id="m_pref"></div></div>
+    <label for="m_user">User</label><input id="m_user" autocapitalize="none" autocomplete="off">
+    <label for="m_pass">Password <span id="m_pass_note" class="k"></span></label><input id="m_pass" type="password" autocomplete="off">
+    <div class="row"><button class="b p" onclick="saveMqtt()">Save</button><span id="mstat"></span></div>
+    <div class="note">Entities appear in Home Assistant automatically (MQTT discovery). To use a better room sensor, publish its °C value to <code id="exttopic"></code>.</div>
+  </div>
+
+  <div class="card">
+    <h2>Device</h2>
+    <label for="d_name">Name (hostname)</label><input id="d_name" autocapitalize="none">
+    <label for="d_pw">Web password (leave empty for none)</label><input id="d_pw" type="password" autocomplete="new-password" placeholder="unchanged">
+    <div class="row"><button class="b p" onclick="saveDevice()">Save</button>
+      <button class="b" onclick="post('/api/reboot').then(()=>toast('Restarting…'))">Restart</button>
+      <button class="b d" onclick="factory()">Factory reset</button></div>
+    <div class="note">The heater controller keeps working through a restart, but is cut off from the heater for the few seconds the device is down.</div>
+  </div>
+</section>
+
+<section id="t-diag" class="hide">
+  <div class="card">
+    <h2>Link health</h2>
+    <div class="grid">
+      <div><div class="k">Heater heard</div><div class="v" id="d_h">–</div></div>
+      <div><div class="k">Controller heard</div><div class="v" id="d_c">–</div></div>
+      <div><div class="k">Bad CRC (heater / ctrl)</div><div class="v" id="d_crc">–</div></div>
+      <div><div class="k">Resyncs (heater / ctrl)</div><div class="v" id="d_rs">–</div></div>
+      <div><div class="k">Commands ok / failed</div><div class="v" id="d_inj">–</div></div>
+      <div><div class="k">Last command</div><div class="v" id="d_last" style="font-size:15px">–</div></div>
+    </div>
+    <div class="note">If the heater count stays at 0, check the heater-side wires (yellow = into the device, white = out of it). A failed command with the heater still talking points at the white wire.</div>
+  </div>
+  <div class="card">
+    <h2>Options</h2>
+    <div class="sw"><span>Bypass: never send commands (relay only)</span><input type="checkbox" id="byp" onchange="cmd({cmd:'bypass',enabled:this.checked})"></div>
+    <div class="sw"><span>Extended telemetry probing (experimental)</span><input type="checkbox" id="dbg" onchange="cmd({cmd:'debug',enabled:this.checked})"></div>
+    <div class="note">Extended telemetry sends the vendor tool's handshake every minute to unlock extra readings (voltage, flame temperature…). It can upset the controller on some units; watch for “stale” after switching it on.</div>
+    <div id="ext" class="grid" style="margin-top:10px"></div>
+  </div>
+  <div class="card">
+    <h2>Bus log (newest first)</h2>
+    <div class="note">P controller→heater · H heater→controller · I sent by this device · R reply to it · C cached reply to controller · F not forwarded · S stray bytes · ! bad CRC</div>
+    <div class="row"><button class="b" onclick="loadLog()">Refresh</button></div>
+    <pre id="log">–</pre>
+  </div>
+</section>
+
+<section id="t-fw" class="hide">
+  <div class="card">
+    <h2>Software update</h2>
+    <div class="note" id="fwinfo"></div>
+    <label for="file">Upload a new RoamOS image (.bin)</label>
+    <input type="file" id="file" accept=".bin">
+    <div class="sw"><span>Allow an older version (roll back)</span><input type="checkbox" id="older"></div>
+    <div class="row"><button class="b p" onclick="upload()">Upload and restart</button><span id="up"></span></div>
+    <div class="note">Use the same variant you are running unless you mean to switch (Wi-Fi ↔ Matter). Switching to the Thread image removes the web page, so write down how to flash a new one before you do.</div>
+  </div>
+</section>
+
+</main>
+<div id="msg"></div>
+<script>
+const $=id=>document.getElementById(id);
+let st={},info={},busy=false;
+const toast=t=>{const m=$('msg');m.textContent=t;m.classList.add('show');clearTimeout(m._t);m._t=setTimeout(()=>m.classList.remove('show'),2500)};
+async function api(p,o){const r=await fetch(p,o);if(!r.ok)throw new Error(r.status===401?'password needed':'error '+r.status);return r}
+const post=(p,b)=>api(p,{method:'POST',headers:{'Content-Type':'application/json'},body:b===undefined?'{}':JSON.stringify(b)}).then(r=>r.json().catch(()=>({})));
+async function cmd(c,confirmText){
+  if(confirmText&&!confirm(confirmText))return;
+  try{const r=await post('/api/cmd',c);toast(r.ok?'Done':'Not sent (bypass on or queue full)');}catch(e){toast(e.message)}
+  setTimeout(poll,600);
+}
+function step(k,d){const cur=k==='auto_target'?st.auto_target:st.prevent_freezing_target;cmd({cmd:k,value:cur+d})}
+document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#tabs button').forEach(x=>x.classList.toggle('on',x===b));
+  ['ctl','setup','diag','fw'].forEach(t=>$('t-'+t).classList.toggle('hide',t!==b.dataset.t));
+  if(b.dataset.t==='diag')loadLog();
+});
+const fmt=(v,u='')=>v==null?'–':(Math.round(v*10)/10)+u;
+function render(){
+  const s=st;
+  $('state').textContent=s.state?s.state[0].toUpperCase()+s.state.slice(1):'No data';
+  let f='';
+  if(s.stale)f+='<span class="pill warn">stale</span> ';
+  if(s.burner_active)f+='<span class="pill ok">burning</span> ';
+  if(s.fault_active)f+='<span class="pill bad">fault '+s.fault+'</span>';
+  if(s.bypass_mode)f+=' <span class="pill warn">bypass</span>';
+  $('flags').innerHTML=f;
+  $('cabin').textContent=fmt(s.cabin_temp,' °C');
+  $('coolant').textContent=fmt(s.coolant_temp,' °C');
+  $('eff').textContent=s.effective_temp==null?'–':fmt(s.effective_temp,' °C')+(s.external_temp_active?' (ext)':'');
+  $('elapsed').textContent=s.elapsed_min==null?'–':s.elapsed_min+' min';
+  $('fault').textContent=s.fault_active?('Fault '+s.fault+': '+s.fault_name):(s.last_fault_name?('Last fault: '+s.last_fault_name+' ('+Math.round(s.last_fault_ago_s/60)+' min ago)'):'');
+  if(document.activeElement!==$('pre'))$('pre').value=$('pre').value||s.preheat_minutes;
+  $('auto').checked=s.auto_enabled;$('frz').checked=s.prevent_freezing_enabled;
+  $('at').textContent=fmt(s.auto_target,' °C');$('ft').textContent=fmt(s.prevent_freezing_target,' °C');
+  $('autonote').textContent=s.auto_note||'';$('frznote').textContent=s.prevent_freezing_note||'';
+  $('byp').checked=s.bypass_mode;$('dbg').checked=s.debug_mode;
+  $('d_h').textContent=s.heater_seen?s.frames_heater+' frames':'nothing yet';
+  $('d_c').textContent=s.controller_seen?s.frames_controller+' frames':'nothing yet';
+  $('d_crc').textContent=s.bad_crc_heater+' / '+s.bad_crc_controller;
+  $('d_rs').textContent=s.resyncs_heater+' / '+s.resyncs_controller;
+  $('d_inj').textContent=s.inject_ok+' / '+s.inject_fail;
+  $('d_last').textContent=s.last_command?(s.last_command+(s.last_command_replied?' ✓':' (no reply)')):'–';
+  const ext=$('ext');ext.innerHTML='';
+  if(s.extended_active){[['Mode',s.ext_mode_name],['Flame',s.ext_flame_temp_c+' °C'],['Liquid',s.ext_liquid_temp_c+' °C'],['Board',s.ext_board_temp_c+' °C'],['Supply',s.ext_voltage+' V'],['Fuel pump',s.ext_fuel_pump_hz+' Hz'],['Output',s.ext_output_pct+' %'],['Fan',s.ext_measured_rev+' / '+s.ext_defined_rev],['Glow plug',s.ext_glow_plug?'on':'off']]
+    .forEach(([k,v])=>ext.insertAdjacentHTML('beforeend','<div><div class="k">'+k+'</div><div class="v">'+v+'</div></div>'))}
+  $('sub').textContent=(info.device_name||'')+' · '+(info.ip||info.ap_ssid||'no network')+' · up '+Math.round(s.uptime_s/60)+' min';
+}
+async function poll(){
+  if(busy)return;busy=true;
+  try{st=await (await api('/api/status')).json();render();}catch(e){$('sub').textContent='offline: '+e.message}
+  busy=false;
+}
+async function loadInfo(){
+  try{info=await (await api('/api/info')).json()}catch(e){return}
+  $('title').textContent='Hearth';document.title='Hearth '+info.device_name;
+  $('host').textContent=info.device_name;
+  $('wifinow').textContent=info.wifi_setup?(info.ip?('Connected to '+info.wifi_ssid+' ('+info.rssi+' dBm), '+info.ip):(info.ap_ssid?'Setup network “'+info.ap_ssid+'” is up – not yet on your Wi-Fi':'Not connected')):'';
+  $('c-wifi').classList.toggle('hide',!info.wifi_setup);
+  $('ssid').value=$('ssid').value||info.wifi_ssid||'';
+  if(!document.activeElement||document.activeElement.tagName!=='INPUT'){
+    $('m_en').checked=info.mqtt.enabled;$('m_host').value=info.mqtt.host;$('m_port').value=info.mqtt.port;
+    $('m_pref').value=info.mqtt.discovery_prefix;$('m_user').value=info.mqtt.user;
+    $('d_name').value=info.device_name;
+  }
+  $('m_pass_note').textContent=info.mqtt.password_set?'(saved, leave empty to keep)':'';
+  $('mstat').innerHTML=info.mqtt.enabled?('<span class="pill '+(info.mqtt.connected?'ok':'warn')+'">'+(info.mqtt.connected?'connected':'not connected')+'</span>'):'';
+  $('exttopic').textContent='hearth/'+info.device_name+'/cmd/external_temp/set';
+  $('fwinfo').textContent='Hearth · RoamOS '+info.version+' · variant '+info.variant+' · ESP-IDF '+info.idf;
+  $('c-mode').classList.toggle('hide',!info.can_switch_mode);
+  if(info.can_switch_mode){
+    $('modenow').textContent='Current mode: '+(info.mode==='matter'?'Matter':'Wi-Fi only');
+    $('mb-wifi').classList.toggle('p',info.mode==='wifi');$('mb-matter').classList.toggle('p',info.mode==='matter');
+  }
+  const mt=info.matter;$('c-matter').classList.toggle('hide',!mt);
+  if(mt)$('matter').innerHTML='<div class="note">Transport: '+mt.transport+' · '+(mt.commissioned?'<b>paired</b>':'<b>not paired yet</b>')+'</div>'
+    +(mt.manual?'<label>Manual pairing code</label><div class="v">'+mt.manual+'</div>':'')
+    +(mt.qr?'<label>QR payload</label><div style="word-break:break-all">'+mt.qr+'</div>':'')
+    +'<div class="note">In your Matter app choose “Add device”, then scan or type the code. Pairing runs over Bluetooth, so stay close.</div>';
+}
+async function scan(){
+  $('nets').innerHTML='<div class="note">Scanning…</div>';
+  try{const l=await (await api('/api/wifi/scan')).json();
+    $('nets').innerHTML='';
+    l.sort((a,b)=>b.rssi-a.rssi).forEach(n=>{const d=document.createElement('div');d.className='net';d.innerHTML='<span></span><span class="k">'+n.rssi+' dBm · '+n.auth+'</span>';d.firstChild.textContent=n.ssid;d.onclick=()=>{$('ssid').value=n.ssid;$('wpass').focus()};$('nets').appendChild(d)});
+    if(!l.length)$('nets').innerHTML='<div class="note">No networks found.</div>';
+  }catch(e){$('nets').innerHTML='<div class="note">'+e.message+'</div>'}
+}
+async function setMode(m){
+  if(m===info.mode)return;
+  if(!confirm(m==='matter'?'Restart in Matter mode? This page will stop working once the device is on Thread, and Wi-Fi is then set up from your Matter app.':'Restart in Wi-Fi only mode?'))return;
+  try{await post('/api/mode',{mode:m});toast('Restarting…');setTimeout(()=>location.reload(),15000)}catch(e){toast(e.message)}
+}
+async function saveWifi(){
+  if(!$('ssid').value)return toast('Pick a network');
+  try{await post('/api/wifi',{ssid:$('ssid').value,pass:$('wpass').value});toast('Saved. Joining…');setTimeout(loadInfo,8000)}catch(e){toast(e.message)}
+}
+async function saveMqtt(){
+  const b={mqtt_enabled:$('m_en').checked,mqtt_host:$('m_host').value,mqtt_port:+$('m_port').value,mqtt_user:$('m_user').value,mqtt_discovery_prefix:$('m_pref').value};
+  if($('m_pass').value)b.mqtt_pass=$('m_pass').value;
+  try{await post('/api/settings',b);$('m_pass').value='';toast('Saved');setTimeout(loadInfo,3000)}catch(e){toast(e.message)}
+}
+async function saveDevice(){
+  const b={device_name:$('d_name').value};
+  if($('d_pw').value!=='')b.web_password=$('d_pw').value;
+  try{await post('/api/settings',b);toast('Saved. Restart to apply the name.')}catch(e){toast(e.message)}
+}
+async function factory(){
+  if(!confirm('Erase Wi-Fi, MQTT, password and all settings?'))return;
+  try{await post('/api/factory_reset');toast('Erased. Restarting…')}catch(e){toast(e.message)}
+}
+async function loadLog(){try{$('log').textContent=await (await api('/api/log')).text()}catch(e){$('log').textContent=e.message}}
+function upload(){
+  const f=$('file').files[0];if(!f)return toast('Choose a .bin file');
+  const older=$('older').checked;
+  if(!confirm('Write '+f.name+' ('+Math.round(f.size/1024)+' kB) and restart?'+(older?' Older versions are allowed.':'')))return;
+  const x=new XMLHttpRequest();x.open('POST','/api/ota'+(older?'?allow_older=1':''));
+  x.upload.onprogress=e=>$('up').textContent=Math.round(e.loaded/e.total*100)+'%';
+  x.onload=()=>{let why=x.responseText;try{why=JSON.parse(why).error||why}catch(e){}
+    $('up').textContent=x.status===200?'Done, restarting…':'Rejected: '+why;if(x.status===200)setTimeout(()=>location.reload(),12000)};
+  x.onerror=()=>$('up').textContent='Failed';
+  x.send(f);
+}
+loadInfo().then(poll);setInterval(poll,2000);setInterval(loadInfo,15000);
+</script>
+</body>
+</html>

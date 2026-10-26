@@ -1,0 +1,306 @@
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "at_app.h"
+#include "esp_app_desc.h"
+#include "sdkconfig.h"
+#include "cJSON.h"
+#include "esp_timer.h"
+
+static void add_num_or_null(cJSON *o, const char *k, bool have, double v)
+{
+    if (have) {
+        cJSON_AddNumberToObject(o, k, v);
+    } else {
+        cJSON_AddNullToObject(o, k);
+    }
+}
+
+static void add_str_or_null(cJSON *o, const char *k, const char *s)
+{
+    if (s) {
+        cJSON_AddStringToObject(o, k, s);
+    } else {
+        cJSON_AddNullToObject(o, k);
+    }
+}
+
+/* ---- timers ------------------------------------------------------------------------------------------ */
+
+static cJSON *timer_to_json(const at_timer_t *t)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "id", t->id);
+    cJSON_AddBoolToObject(o, "enabled", t->enabled);
+    cJSON_AddStringToObject(o, "mode", t->mode == AT_TMODE_THERMOSTAT ? "thermostat" : "preheat");
+    cJSON_AddNumberToObject(o, "start_minute", t->start_minute);
+    cJSON_AddNumberToObject(o, "duration_min", t->duration_min);
+    cJSON *days = cJSON_AddArrayToObject(o, "days");
+    if (!t->one_off) {
+        for (int wd = 1; wd <= 7; wd++) {
+            if (t->days & (1u << (wd - 1))) cJSON_AddItemToArray(days, cJSON_CreateNumber(wd));
+        }
+    }
+    if (t->one_off) {
+        char d[11];
+        at_format_date(t->date_day, d);
+        cJSON_AddStringToObject(o, "date", d);
+    } else {
+        cJSON_AddNullToObject(o, "date");
+    }
+    cJSON_AddNumberToObject(o, "low_c", t->low_c);
+    cJSON_AddNumberToObject(o, "high_c", t->high_c);
+    return o;
+}
+
+char *at_app_timers_json(void)
+{
+    at_timer_t list[AT_TIMERS_MAX];
+    int n = at_app_timers_get(list, AT_TIMERS_MAX);
+    cJSON *arr = cJSON_CreateArray();
+    for (int i = 0; i < n; i++) cJSON_AddItemToArray(arr, timer_to_json(&list[i]));
+    char *s = cJSON_PrintUnformatted(arr);
+    cJSON_Delete(arr);
+    return s;
+}
+
+static bool jint(const cJSON *item, int *out)
+{
+    if (!cJSON_IsNumber(item) || item->valuedouble != floor(item->valuedouble) || fabs(item->valuedouble) > 1e6) return false;
+    *out = (int)item->valuedouble;
+    return true;
+}
+
+/* One timer object into t; false with err filled (without the "timer N: " prefix). */
+static bool timer_from_json(const cJSON *o, at_timer_t *t, char *err, size_t errn)
+{
+#define FAIL(msg) do { snprintf(err, errn, "%s", msg); return false; } while (0)
+    memset(t, 0, sizeof(*t));
+    t->enabled = true;
+    t->low_c = 19;
+    t->high_c = 22;
+    if (!cJSON_IsObject(o)) FAIL("not an object");
+
+    const cJSON *i = cJSON_GetObjectItemCaseSensitive(o, "id");
+    if (!cJSON_IsString(i) || !i->valuestring[0] || strlen(i->valuestring) >= AT_TIMER_ID_LEN) FAIL("id must be a string of at most 36 characters");
+    strcpy(t->id, i->valuestring);
+
+    i = cJSON_GetObjectItemCaseSensitive(o, "enabled");
+    if (i) {
+        if (!cJSON_IsBool(i)) FAIL("enabled must be true or false");
+        t->enabled = cJSON_IsTrue(i);
+    }
+    i = cJSON_GetObjectItemCaseSensitive(o, "mode");
+    if (cJSON_IsString(i) && !strcmp(i->valuestring, "preheat")) t->mode = AT_TMODE_PREHEAT;
+    else if (cJSON_IsString(i) && !strcmp(i->valuestring, "thermostat")) t->mode = AT_TMODE_THERMOSTAT;
+    else FAIL("mode must be \"preheat\" or \"thermostat\"");
+
+    int v;
+    if (!jint(cJSON_GetObjectItemCaseSensitive(o, "start_minute"), &v) || v < 0 || v > 1439) FAIL("start_minute must be a whole number 0 to 1439");
+    t->start_minute = (uint16_t)v;
+    if (!jint(cJSON_GetObjectItemCaseSensitive(o, "duration_min"), &v) || v < 0 || v > 65535) FAIL("duration_min must be a whole number");
+    t->duration_min = (uint16_t)v;
+
+    i = cJSON_GetObjectItemCaseSensitive(o, "date");
+    if (i && !cJSON_IsNull(i)) {
+        if (!cJSON_IsString(i) || !at_parse_date(i->valuestring, &t->date_day)) FAIL("date must be a real yyyy-MM-dd or null");
+        t->one_off = true;   /* days is ignored */
+    } else {
+        i = cJSON_GetObjectItemCaseSensitive(o, "days");
+        if (!cJSON_IsArray(i)) FAIL("days must be an array of 1 (Monday) to 7 (Sunday)");
+        const cJSON *d;
+        cJSON_ArrayForEach(d, i) {
+            if (!jint(d, &v) || v < 1 || v > 7) FAIL("days must be an array of 1 (Monday) to 7 (Sunday)");
+            t->days |= (uint8_t)(1u << (v - 1));
+        }
+    }
+    i = cJSON_GetObjectItemCaseSensitive(o, "low_c");
+    if (i && (!jint(i, &v) || v < -128 || v > 127)) FAIL("low_c must be a whole number");
+    if (i) t->low_c = (int8_t)v;
+    i = cJSON_GetObjectItemCaseSensitive(o, "high_c");
+    if (i && (!jint(i, &v) || v < -128 || v > 127)) FAIL("high_c must be a whole number");
+    if (i) t->high_c = (int8_t)v;
+    return true;
+#undef FAIL
+}
+
+int at_app_timers_put_json(const char *json, char *err, size_t err_len)
+{
+    cJSON *arr = cJSON_Parse(json);
+    if (!cJSON_IsArray(arr)) {
+        cJSON_Delete(arr);
+        snprintf(err, err_len, "body must be a JSON array of timers");
+        return 400;
+    }
+    int n = cJSON_GetArraySize(arr);
+    if (n > AT_TIMERS_MAX) {
+        cJSON_Delete(arr);
+        snprintf(err, err_len, "%s", at_timer_err_text(AT_TERR_TOO_MANY));
+        return 400;
+    }
+    at_timer_t *list = malloc(sizeof(at_timer_t) * AT_TIMERS_MAX);   /* off the (possibly small) task stack */
+    if (!list) {
+        cJSON_Delete(arr);
+        snprintf(err, err_len, "out of memory");
+        return 500;
+    }
+    char why[96];
+    for (int k = 0; k < n; k++) {
+        if (!timer_from_json(cJSON_GetArrayItem(arr, k), &list[k], why, sizeof(why))) {
+            snprintf(err, err_len, "timer %d: %s", k + 1, why);
+            cJSON_Delete(arr);
+            free(list);
+            return 400;
+        }
+    }
+    cJSON_Delete(arr);
+    at_timer_problem_t p;
+    esp_err_t e = at_app_timers_set(list, n, &p);
+    free(list);
+    if (e == ESP_ERR_INVALID_ARG) {
+        if (p.index >= 0 && p.other >= 0) {
+            snprintf(err, err_len, "timer %d: %s (timer %d)", p.index + 1, at_timer_err_text(p.err), p.other + 1);
+        } else if (p.index >= 0) {
+            snprintf(err, err_len, "timer %d: %s", p.index + 1, at_timer_err_text(p.err));
+        } else {
+            snprintf(err, err_len, "%s", at_timer_err_text(p.err));
+        }
+        return 400;
+    }
+    if (e != ESP_OK) {
+        snprintf(err, err_len, "could not save the timers");
+        return 500;
+    }
+    return 200;
+}
+
+char *at_app_state_json(void)
+{
+    at_view_t v;
+    at_app_view(&v);
+    const at_snapshot_t *s = &v.snap;
+    cJSON *o = cJSON_CreateObject();
+
+    add_str_or_null(o, "state", s->have_status ? (s->state_name ? s->state_name : "unknown") : NULL);
+    add_num_or_null(o, "state_raw", s->have_status, s->status.state_raw);
+    add_num_or_null(o, "substate", s->have_status, s->status.substate);
+    add_num_or_null(o, "fault", s->have_status, s->status.fault);
+    add_str_or_null(o, "fault_name", s->have_status && s->status.fault ? (s->fault_name ? s->fault_name : "unknown") : NULL);
+    cJSON_AddBoolToObject(o, "fault_active", s->have_status && s->status.fault);
+    add_num_or_null(o, "coolant_temp", s->have_status, s->status.coolant_temp);
+    add_num_or_null(o, "elapsed_min", s->have_status, s->status.elapsed_min);
+    cJSON_AddBoolToObject(o, "burner_active", s->have_status && s->status.burner_active);
+    add_num_or_null(o, "cabin_temp", s->have_cabin, s->cabin_temp);
+    cJSON_AddBoolToObject(o, "stale", s->stale);
+    add_num_or_null(o, "status_age_s", s->have_status, s->status_age_ms / 1000.0);
+
+    add_num_or_null(o, "last_fault_code", s->have_last_fault, s->last_fault_code);
+    add_str_or_null(o, "last_fault_name", s->have_last_fault ? (s->last_fault_name ? s->last_fault_name : "unknown") : NULL);
+    add_num_or_null(o, "last_fault_ago_s", s->have_last_fault, s->last_fault_ago_ms / 1000.0);
+
+    add_num_or_null(o, "effective_temp", v.have_effective_temp, v.effective_temp);
+    cJSON_AddBoolToObject(o, "external_temp_active", v.have_effective_temp && v.effective_is_external);
+    add_num_or_null(o, "external_temp", v.have_external, v.external_temp);
+    cJSON_AddBoolToObject(o, "use_external_temp", v.use_external_temp);
+
+    cJSON_AddBoolToObject(o, "auto_enabled", v.auto_enabled);
+    cJSON_AddNumberToObject(o, "auto_target", v.auto_target);
+    cJSON_AddNumberToObject(o, "auto_low", v.auto_low);
+    cJSON_AddNumberToObject(o, "auto_high", v.auto_high);
+    cJSON_AddNumberToObject(o, "hyst_min", v.hyst_min);
+    cJSON_AddNumberToObject(o, "hyst_max", v.hyst_max);
+    cJSON_AddNumberToObject(o, "preheat_temp", v.preheat_temp);
+    cJSON_AddStringToObject(o, "model", CONFIG_AUTOTERM_MODEL);
+    cJSON_AddStringToObject(o, "hw_rev", CONFIG_AUTOTERM_HW_REV);
+    cJSON_AddStringToObject(o, "os_name", "RoamOS");
+    cJSON_AddStringToObject(o, "os_version", esp_app_get_description()->version);
+    cJSON_AddStringToObject(o, "auto_note", v.auto_note);
+    cJSON_AddBoolToObject(o, "prevent_freezing_enabled", v.freeze_enabled);
+    cJSON_AddNumberToObject(o, "prevent_freezing_target", v.freeze_target);
+    cJSON_AddStringToObject(o, "prevent_freezing_note", v.freeze_note);
+    cJSON_AddNumberToObject(o, "preheat_minutes", v.preheat_minutes);
+
+    cJSON_AddBoolToObject(o, "bypass_mode", s->bypass);
+    cJSON_AddBoolToObject(o, "debug_mode", v.debug_mode);
+    cJSON_AddNumberToObject(o, "debug_interval", v.debug_interval_s);
+    cJSON_AddBoolToObject(o, "extended_active", s->have_ext && s->ext_active);
+
+    add_str_or_null(o, "last_command", s->have_last_cmd ? s->last_cmd : NULL);
+    cJSON_AddBoolToObject(o, "last_command_replied", s->have_last_cmd && s->last_cmd_replied);
+    cJSON_AddNumberToObject(o, "queue", s->queue_len);
+
+    cJSON_AddBoolToObject(o, "controller_seen", s->seen_panel);
+    cJSON_AddBoolToObject(o, "heater_seen", s->seen_heater);
+    cJSON_AddBoolToObject(o, "standalone", s->standalone);
+    cJSON_AddNumberToObject(o, "own_polls", s->own_polls);
+    cJSON_AddNumberToObject(o, "frames_controller", s->frames_panel);
+    cJSON_AddNumberToObject(o, "frames_heater", s->frames_heater);
+    cJSON_AddNumberToObject(o, "bad_crc_controller", s->bad_crc_panel);
+    cJSON_AddNumberToObject(o, "bad_crc_heater", s->bad_crc_heater);
+    cJSON_AddNumberToObject(o, "resyncs_controller", s->resyncs_panel);
+    cJSON_AddNumberToObject(o, "resyncs_heater", s->resyncs_heater);
+    cJSON_AddNumberToObject(o, "inject_ok", s->inject_ok);
+    cJSON_AddNumberToObject(o, "inject_fail", s->inject_fail);
+    int rx_high[2], rx_edges[2];
+    at_app_rx_probe(rx_high, rx_edges);
+    cJSON_AddNumberToObject(o, "rx_heater_high_pct", rx_high[0]);
+    cJSON_AddNumberToObject(o, "rx_heater_edges", rx_edges[0]);
+    cJSON_AddNumberToObject(o, "rx_controller_high_pct", rx_high[1]);
+    cJSON_AddNumberToObject(o, "rx_controller_edges", rx_edges[1]);
+    cJSON_AddNumberToObject(o, "uptime_s", (double)(esp_timer_get_time() / 1000000));
+
+    at_timer_status_t ts;
+    at_app_timer_status(&ts);
+    cJSON_AddBoolToObject(o, "clock_ok", ts.clock_ok);
+    cJSON_AddStringToObject(o, "timezone", ts.timezone);
+    if (ts.have_next) {
+        cJSON *nx = cJSON_AddObjectToObject(o, "next_timer");
+        cJSON_AddStringToObject(nx, "id", ts.next_id);
+        cJSON_AddNumberToObject(nx, "start_epoch", (double)ts.next_start_epoch);
+    } else {
+        cJSON_AddNullToObject(o, "next_timer");
+    }
+    add_str_or_null(o, "active_timer_id", ts.active ? ts.active_id : NULL);
+    cJSON_AddStringToObject(o, "timer_note", ts.note);
+
+    if (s->have_ext && s->ext_active) {
+        const at_ext_t *e = &s->ext;
+        cJSON_AddStringToObject(o, "ext_mode_name", e->mode_name);
+        cJSON_AddNumberToObject(o, "ext_mode_code", e->mode_code);
+        cJSON_AddNumberToObject(o, "ext_flame_temp_c", e->flame_temp_c);
+        cJSON_AddNumberToObject(o, "ext_liquid_temp_c", e->liquid_temp_c);
+        cJSON_AddNumberToObject(o, "ext_overheat_temp_c", e->overheat_temp_c);
+        cJSON_AddNumberToObject(o, "ext_board_temp_c", e->board_temp_c);
+        cJSON_AddNumberToObject(o, "ext_running_time_s", e->running_time_s);
+        cJSON_AddNumberToObject(o, "ext_defined_rev", e->defined_rev);
+        cJSON_AddNumberToObject(o, "ext_measured_rev", e->measured_rev);
+        cJSON_AddBoolToObject(o, "ext_glow_plug", e->glow_plug);
+        cJSON_AddNumberToObject(o, "ext_fuel_pump_hz", e->fuel_pump_hz);
+        cJSON_AddNumberToObject(o, "ext_voltage", e->voltage);
+        cJSON_AddNumberToObject(o, "ext_fault_code", e->fault_code);
+        const char *fn = at_fault_name(e->fault_code);
+        cJSON_AddStringToObject(o, "ext_fault_name", fn ? fn : "unknown");
+        cJSON_AddNumberToObject(o, "ext_output_pct", e->output_pct);
+        cJSON_AddNumberToObject(o, "ext_engine_state", e->engine_state);
+        cJSON_AddNumberToObject(o, "ext_relay_state", e->relay_state);
+        cJSON_AddNumberToObject(o, "ext_fan_current_ma", e->fan_current_ma);
+    }
+
+    if (!(s->have_ext && s->ext_active)) {
+        /* keep the keys present (null) so Home Assistant templates never see an undefined field */
+        static const char *const ext_keys[] = {
+            "ext_mode_name", "ext_mode_code", "ext_flame_temp_c", "ext_liquid_temp_c", "ext_overheat_temp_c",
+            "ext_board_temp_c", "ext_running_time_s", "ext_defined_rev", "ext_measured_rev", "ext_glow_plug",
+            "ext_fuel_pump_hz", "ext_voltage", "ext_fault_code", "ext_fault_name", "ext_output_pct",
+            "ext_engine_state", "ext_relay_state", "ext_fan_current_ma"};
+        for (size_t i = 0; i < sizeof(ext_keys) / sizeof(ext_keys[0]); i++) {
+            cJSON_AddNullToObject(o, ext_keys[i]);
+        }
+    }
+
+    char *str = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    return str;
+}

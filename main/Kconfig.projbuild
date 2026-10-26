@@ -1,0 +1,102 @@
+menu "Tillerwell Hearth"
+
+    choice AUTOTERM_VARIANT
+        prompt "Firmware variant"
+        default AUTOTERM_VARIANT_WIFI
+        help
+            Selected by build.sh through an sdkconfig overlay.
+
+        config AUTOTERM_VARIANT_WIFI
+            bool "Wi-Fi + MQTT + web UI (no Matter)"
+        config AUTOTERM_VARIANT_MATTER_WIFI
+            bool "Matter over Wi-Fi (+ web UI and MQTT)"
+        config AUTOTERM_VARIANT_MATTER_THREAD
+            bool "Matter over Thread (no Wi-Fi, no web UI)"
+        config AUTOTERM_VARIANT_ALL
+            bool "All in one: Wi-Fi only, Matter over Wi-Fi or Matter over Thread, chosen at run time"
+    endchoice
+
+    # derived, no prompt
+    config AUTOTERM_HAS_OWN_WIFI
+        bool
+        default y if AUTOTERM_VARIANT_WIFI || AUTOTERM_VARIANT_ALL
+    config AUTOTERM_HAS_MATTER
+        bool
+        default y if AUTOTERM_VARIANT_MATTER_WIFI || AUTOTERM_VARIANT_MATTER_THREAD || AUTOTERM_VARIANT_ALL
+    config AUTOTERM_HAS_BLE_SETUP
+        bool
+        default y if AUTOTERM_VARIANT_WIFI || AUTOTERM_VARIANT_ALL
+    config AUTOTERM_HAS_NET_SERVICES
+        bool
+        default y if !AUTOTERM_VARIANT_MATTER_THREAD
+
+    config AUTOTERM_MODEL
+        string "Control unit model name (shown in the app)"
+        default "Hearth AT5"
+    config AUTOTERM_HW_REV
+        string "Control unit hardware revision (shown in the app)"
+        default "1.1"
+
+    config AUTOTERM_HEATER_RX_GPIO
+        int "Heater side: RX GPIO (heater yellow wire)"
+        default 0
+    config AUTOTERM_HEATER_TX_GPIO
+        int "Heater side: TX GPIO (heater white wire)"
+        default 1
+    config AUTOTERM_PANEL_RX_GPIO
+        int "Controller side: RX GPIO (controller white wire)"
+        default 18
+    config AUTOTERM_PANEL_TX_GPIO
+        int "Controller side: TX GPIO (controller yellow wire)"
+        default 19
+
+    config AUTOTERM_BAUD
+        int "Baud rate"
+        default 2400
+
+    config AUTOTERM_SETUP_AP_PASSWORD
+        string "Setup access point password (8+ characters, empty = open network)"
+        default ""
+        depends on AUTOTERM_HAS_OWN_WIFI
+        help
+            The setup network only exists while no Wi-Fi is configured (or the
+            saved one cannot be reached). An open network is easiest but the
+            Wi-Fi password is sent over the air in clear while you type it.
+
+    config AUTOTERM_FACTORY_RESET_GPIO
+        int "Button GPIO: factory reset (-1 = none)"
+        default 9
+        help
+            GPIO9 is the BOOT button on the ESP32-C6-Zero. Active low.
+            Release before 10 s: nothing (slow yellow flash from 5 s is a warning). Release between 10 s and 15 s:
+            factory reset (fast red flash). After 15 s: nothing (cancels the reset).
+
+    config AUTOTERM_LED_GPIO
+        int "Status LED GPIO (WS2812 RGB; -1 = none)"
+        default 8
+        help
+            GPIO8 is the on-board RGB LED on the ESP32-C6-Zero.
+            Wi-Fi mode: slow flashing blue = not set up (fast while a phone is connected over Bluetooth), solid green = on the network, fast flashing yellow
+            (full brightness) = Wi-Fi dropped. Matter mode (web page / console only): yellow, pulsing = waiting to pair,
+            solid = paired, slow blink = paired but offline. Yellow (5 s) then red (10 s) while the button is held = factory reset coming.
+
+    config AUTOTERM_LED_BRIGHTNESS
+        int "Status LED brightness (percent)"
+        range 1 100
+        default 15
+        depends on AUTOTERM_LED_GPIO >= 0
+
+    config AUTOTERM_LED_SETUP_BRIGHTNESS
+        int "Status LED brightness while waiting to be set up or the button is held (percent)"
+        range 1 100
+        default 100
+        depends on AUTOTERM_LED_GPIO >= 0
+        help
+            Used for the first 15 minutes after power-up while the box waits to be set up (slow flashing blue,
+            pulsing yellow), and for the button's yellow and red. Everything else uses the normal brightness.
+
+    config AUTOTERM_CONSOLE
+        bool "USB serial console (status, commands, setup)"
+        default y
+
+endmenu

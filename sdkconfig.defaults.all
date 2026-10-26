@@ -1,0 +1,26 @@
+# Everything in one image: Wi-Fi only, Matter over Wi-Fi, Matter over Thread (picked at run time). Applied after esp-matter's examples/light
+# sdkconfig.defaults and sdkconfig.defaults.c6_wifi_thread. The controller picks
+# the network while commissioning (secondary network interface endpoint). In Matter mode the box also keeps
+# its own saved Wi-Fi up (see at_matter.cpp), so the Tillerwell app can use the HTTP API whichever was picked.
+CONFIG_AUTOTERM_VARIANT_ALL=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
+
+# esp-matter's light example switches off every cluster a light doesn't use
+CONFIG_SUPPORT_THERMOSTAT_CLUSTER=y
+CONFIG_SUPPORT_TEMPERATURE_MEASUREMENT_CLUSTER=y
+CONFIG_SUPPORT_BOOLEAN_STATE_CLUSTER=y
+CONFIG_SUPPORT_ON_OFF_CLUSTER=y
+
+# our own USB console replaces the CHIP shell (two REPLs cannot share the port)
+CONFIG_ENABLE_CHIP_SHELL=n
+
+# thermostat + temperature sensor + plug + contact sensor + root node + secondary netif + spares
+CONFIG_ESP_MATTER_MAX_DYNAMIC_ENDPOINT_COUNT=8
+
+# the light example turns the Wi-Fi soft-AP off; our Wi-Fi-only mode needs it for the setup network
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
+
+# esp-matter's Thread network driver defaults to endpoint 2 (the light example's layout). Ours: thermostat 1,
+# coolant sensor 2, plug 3, fault sensor 4, secondary network interface 5; the driver must sit on 5 or Home
+# finds no network cluster there and abandons pairing.
+CONFIG_THREAD_NETWORK_ENDPOINT_ID=5
