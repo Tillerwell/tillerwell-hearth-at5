@@ -2,6 +2,9 @@
 
 #include "at_app.h"
 #include "driver/gpio.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
+#include "esp_adc/adc_oneshot.h"
 #include "driver/uart.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -70,10 +73,48 @@ static esp_err_t uart_setup(uart_port_t u, int tx, int rx)
 /* ---- line probe: how each RX pin idles, for wiring checks ------------------------ */
 
 static volatile int s_rx_high_pct[2], s_rx_edges[2]; /* [0] heater RX, [1] controller RX; last 1 s window */
+static volatile int s_heater_rx_mv = -1; /* idle voltage at the heater RX pin, -1 = not read (pin has no ADC) */
+
+static adc_oneshot_unit_handle_t s_adc;
+static adc_cali_handle_t s_adc_cali;
+static adc_channel_t s_adc_chan;
+
+static void adc_probe_init(void)
+{
+    adc_unit_t unit;
+    if (adc_oneshot_io_to_channel(CONFIG_AUTOTERM_HEATER_RX_GPIO, &unit, &s_adc_chan) != ESP_OK) return;
+    adc_oneshot_unit_init_cfg_t ucfg = {.unit_id = unit};
+    if (adc_oneshot_new_unit(&ucfg, &s_adc) != ESP_OK) return;
+    adc_cali_curve_fitting_config_t ccfg = {.unit_id = unit, .chan = s_adc_chan, .atten = ADC_ATTEN_DB_12,
+                                            .bitwidth = ADC_BITWIDTH_DEFAULT};
+    if (adc_cali_create_scheme_curve_fitting(&ccfg, &s_adc_cali) != ESP_OK) s_adc_cali = NULL;
+}
+
+/* Borrow the heater RX pin from the UART for well under a millisecond while the line is idle, read its
+ * voltage, then hand it back. The pull-up is off while it is analog, so this is the divider's own output. */
+static void adc_probe_read(void)
+{
+    if (!s_adc || !s_adc_cali) return;
+    adc_oneshot_chan_cfg_t cc = {.atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_DEFAULT};
+    if (adc_oneshot_config_channel(s_adc, s_adc_chan, &cc) != ESP_OK) return;
+    int sum = 0, n = 0;
+    for (int i = 0; i < 8; i++) {
+        int raw, mv;
+        if (adc_oneshot_read(s_adc, s_adc_chan, &raw) == ESP_OK && adc_cali_raw_to_voltage(s_adc_cali, raw, &mv) == ESP_OK) {
+            sum += mv;
+            n++;
+        }
+    }
+    /* RX only: re-routing TX could glitch the heater's input */
+    uart_set_pin(HEATER_UART, UART_PIN_NO_CHANGE, CONFIG_AUTOTERM_HEATER_RX_GPIO, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    gpio_pullup_en(CONFIG_AUTOTERM_HEATER_RX_GPIO);
+    if (n) s_heater_rx_mv = sum / n;
+}
 
 static void probe_task(void *arg)
 {
     const int pins[2] = {CONFIG_AUTOTERM_HEATER_RX_GPIO, CONFIG_AUTOTERM_PANEL_RX_GPIO};
+    adc_probe_init();
     for (;;) {
         int high[2] = {0, 0}, edges[2] = {0, 0}, last[2] = {gpio_get_level(pins[0]), gpio_get_level(pins[1])};
         for (int t = 0; t < 1000; t++) {
@@ -89,8 +130,17 @@ static void probe_task(void *arg)
             s_rx_high_pct[i] = high[i] / 10;
             s_rx_edges[i] = edges[i];
         }
+        /* only between frames: the line must have stayed high for the last 60 ms */
+        int quiet = 0;
+        while (quiet < 60) {
+            quiet = gpio_get_level(pins[0]) ? quiet + 1 : 0;
+            vTaskDelay(1);
+        }
+        adc_probe_read();
     }
 }
+
+int at_app_heater_rx_mv(void) { return s_heater_rx_mv; }
 
 void at_app_rx_probe(int high_pct[2], int edges[2])
 {
@@ -203,7 +253,7 @@ esp_err_t at_app_start(void)
 
     xTaskCreate(bridge_task, "bridge", 6144, NULL, configMAX_PRIORITIES - 4, NULL);
     xTaskCreate(ctl_task, "thermostat", 4096, NULL, 5, NULL);
-    xTaskCreate(probe_task, "probe", 2048, NULL, 2, NULL);
+    xTaskCreate(probe_task, "probe", 3072, NULL, 2, NULL);
     s_started = true;
     at_timers_start();
     ESP_LOGI(TAG, "bridge running: heater UART%d (RX %d TX %d), controller UART%d (RX %d TX %d), %d baud",

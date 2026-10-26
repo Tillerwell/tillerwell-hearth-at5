@@ -80,7 +80,7 @@ the 2-byte CRC).
 | `[1]` | Sub-stage within `[0]` | Resets on every state change |
 | `[2]` | **Fault code** | Plain decimal-as-integer (e.g. `0x4e` = 78 = "check fuel system"). `0` = no fault. Confirmed exact match against a real panel-displayed fault code. **Latches** until the next successful ignition -- the panel's own "clear fault" button does *not* reset this over the wire, confirmed by watching it stay non-zero for 5+ minutes after clearing on the display. |
 | `[3]`, `[4]` | Coolant/water temperature | Jitter ±1 of each other; tracked the panel's own displayed water-temp readout (42→52°C during a preheat cycle) closely. Averaging the two is a reasonable smoothing. |
-| `[6]` | Noisy, voltage-like | No clean state correlation found; likely raw ADC/supply voltage telemetry. |
+| `[6]` | Supply voltage, `[6] / 10` V (**unconfirmed**) | Noisy, voltage-like, no state correlation: matches a supply reading in 0.1 V steps (125 = 12.5 V). The box reports it as `supply_voltage` (6 to 36 V only), or the extended frame's exact value when that is on. Confirm by comparing the two with probing on. |
 | `[7]` | Slowly rising sensor | Climbs steadily during a burn; candidate exhaust/heat-exchanger temp. Not the setpoint (a hypothesis that was tested and falsified). |
 | `[9]` | Elapsed minutes since ignition | Increments roughly once/minute, latches (does not reset) at stop. |
 | `[11]` | Elapsed seconds since ignition | Increments ~1/sec, wraps at 256, freezes when combustion stops. |

@@ -158,6 +158,7 @@ bool at_decode_status(const uint8_t *p, size_t len, at_status_t *out)
     out->substate = p[1];
     out->fault = p[2];
     out->coolant_temp = ((float)p[3] + (float)p[4]) / 2.0f;
+    out->supply_v = (float)p[6] / 10.0f;
     out->elapsed_min = p[9];
     out->elapsed_sec = p[11];
     out->burner_active = p[12] == 0xFF;

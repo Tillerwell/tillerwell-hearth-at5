@@ -79,6 +79,7 @@ typedef struct {
     uint8_t substate;
     uint8_t fault;
     float coolant_temp;
+    float supply_v; /* byte [6] / 10: supply voltage, to be confirmed against the extended frame (docs/PROTOCOL.md) */
     uint8_t elapsed_min;
     uint8_t elapsed_sec;
     bool burner_active;

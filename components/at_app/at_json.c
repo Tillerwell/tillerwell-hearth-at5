@@ -249,6 +249,7 @@ char *at_app_state_json(void)
     cJSON_AddNumberToObject(o, "rx_heater_edges", rx_edges[0]);
     cJSON_AddNumberToObject(o, "rx_controller_high_pct", rx_high[1]);
     cJSON_AddNumberToObject(o, "rx_controller_edges", rx_edges[1]);
+    cJSON_AddNumberToObject(o, "rx_heater_idle_mv", at_app_heater_rx_mv());
     cJSON_AddNumberToObject(o, "uptime_s", (double)(esp_timer_get_time() / 1000000));
 
     at_timer_status_t ts;
@@ -286,6 +287,14 @@ char *at_app_state_json(void)
         cJSON_AddNumberToObject(o, "ext_engine_state", e->engine_state);
         cJSON_AddNumberToObject(o, "ext_relay_state", e->relay_state);
         cJSON_AddNumberToObject(o, "ext_fan_current_ma", e->fan_current_ma);
+    }
+
+    /* Battery voltage, always: the extended frame's reading when it is on, else the status frame's byte [6] */
+    if (s->have_ext && s->ext_active) {
+        add_num_or_null(o, "supply_voltage", true, s->ext.voltage);
+    } else {
+        const bool ok = s->have_status && !s->stale && s->status.supply_v >= 6.0f && s->status.supply_v <= 36.0f;
+        add_num_or_null(o, "supply_voltage", ok, s->status.supply_v);
     }
 
     if (!(s->have_ext && s->ext_active)) {
