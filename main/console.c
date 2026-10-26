@@ -102,15 +102,18 @@ static int cmd_mqtt(int argc, char **argv)
     at_settings_t c;
     at_settings_get(&c);
     if (argc < 2) {
-        printf("mqtt %s %s:%u user '%s'\nusage: mqtt <host> [port] [user] [password] | mqtt off\n",
-               c.mqtt_enabled ? "on" : "off", c.mqtt_host, c.mqtt_port, c.mqtt_user);
+        printf("mqtt %s, %s %s:%u user '%s'\nusage: mqtt builtin [port] [user] [password] | mqtt <host> [port] [user] [password] | mqtt off\n",
+               c.mqtt_enabled ? "on" : "off", at_settings_mqtt_builtin_load() ? "built-in broker" : "external broker",
+               c.mqtt_host, c.mqtt_port, c.mqtt_user);
         return 0;
     }
     if (!strcmp(argv[1], "off")) {
         c.mqtt_enabled = false;
     } else {
         c.mqtt_enabled = true;
-        strlcpy(c.mqtt_host, argv[1], sizeof(c.mqtt_host));
+        bool builtin = !strcmp(argv[1], "builtin");
+        at_settings_mqtt_builtin_save(builtin);
+        if (!builtin) strlcpy(c.mqtt_host, argv[1], sizeof(c.mqtt_host));
         if (argc > 2) c.mqtt_port = (uint16_t)atoi(argv[2]);
         if (argc > 3) strlcpy(c.mqtt_user, argv[3], sizeof(c.mqtt_user));
         if (argc > 4) strlcpy(c.mqtt_pass, argv[4], sizeof(c.mqtt_pass));
@@ -230,7 +233,7 @@ void at_console_start(void)
         {.command = "wifi", .help = "wifi <ssid> [password]", .func = cmd_wifi},
 #endif
 #if CONFIG_AUTOTERM_HAS_NET_SERVICES
-        {.command = "mqtt", .help = "mqtt <host> [port] [user] [password] | off", .func = cmd_mqtt},
+        {.command = "mqtt", .help = "mqtt builtin|<host> [port] [user] [password] | off", .func = cmd_mqtt},
 #endif
 #if CONFIG_AUTOTERM_VARIANT_ALL
         {.command = "mode", .help = "mode wifi|matter (restarts)", .func = cmd_mode},

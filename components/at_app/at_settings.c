@@ -95,6 +95,31 @@ esp_err_t at_settings_preheat_temp_save(float celsius)
     return err;
 }
 
+bool at_settings_mqtt_builtin_load(void)
+{
+    nvs_handle_t h;
+    uint8_t v;
+    bool found = false;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+        found = nvs_get_u8(h, "mq_builtin", &v) == ESP_OK;
+        nvs_close(h);
+    }
+    if (found) return v != 0;
+    return s_cfg.mqtt_host[0] == 0; /* a box already pointed at a broker keeps using it */
+}
+
+esp_err_t at_settings_mqtt_builtin_save(bool builtin)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err == ESP_OK) {
+        err = nvs_set_u8(h, "mq_builtin", builtin ? 1 : 0);
+        if (err == ESP_OK) err = nvs_commit(h);
+        nvs_close(h);
+    }
+    return err;
+}
+
 bool at_settings_band_load(at_band_t *out)
 {
     nvs_handle_t h;

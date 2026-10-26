@@ -207,6 +207,8 @@ static esp_err_t h_info(httpd_req_t *req)
     cJSON_AddBoolToObject(o, "web_password_set", cfg.web_password[0] != 0);
     cJSON *m = cJSON_AddObjectToObject(o, "mqtt");
     cJSON_AddBoolToObject(m, "enabled", cfg.mqtt_enabled);
+    cJSON_AddBoolToObject(m, "builtin", at_settings_mqtt_builtin_load());
+    cJSON_AddBoolToObject(m, "broker_running", at_mqtt_broker_running());
     cJSON_AddStringToObject(m, "host", cfg.mqtt_host);
     cJSON_AddNumberToObject(m, "port", cfg.mqtt_port);
     cJSON_AddStringToObject(m, "user", cfg.mqtt_user);
@@ -341,6 +343,7 @@ static esp_err_t h_settings(httpd_req_t *req)
         if (okname) copy_str(cfg.device_name, sizeof(cfg.device_name), s);
     }
     if ((i = cJSON_GetObjectItemCaseSensitive(j, "mqtt_enabled")) && cJSON_IsBool(i)) cfg.mqtt_enabled = cJSON_IsTrue(i);
+    if ((i = cJSON_GetObjectItemCaseSensitive(j, "mqtt_builtin")) && cJSON_IsBool(i)) at_settings_mqtt_builtin_save(cJSON_IsTrue(i));
     if ((s = jstr(j, "mqtt_host")) && strlen(s) < sizeof(cfg.mqtt_host)) copy_str(cfg.mqtt_host, sizeof(cfg.mqtt_host), s);
     double port = jnum(j, "mqtt_port", 0);
     if (port >= 1 && port <= 65535) cfg.mqtt_port = (uint16_t)port;

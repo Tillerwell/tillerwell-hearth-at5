@@ -69,6 +69,11 @@ typedef struct {
 bool at_settings_band_load(at_band_t *out);
 esp_err_t at_settings_band_save(const at_band_t *in);
 
+/* Whether MQTT runs its own broker on the box (true) or connects out to mqtt_host (false). Own NVS entry so older
+ * saved settings stay valid. Never saved: true unless an external broker host was already configured. */
+bool at_settings_mqtt_builtin_load(void);
+esp_err_t at_settings_mqtt_builtin_save(bool builtin);
+
 /* Coolant temperature (C) at which a timed preheat is stopped early. Own NVS entry; 88 until set. */
 #define AT_PREHEAT_TEMP_DEFAULT 88.0f
 float at_settings_preheat_temp_load(void);
@@ -143,6 +148,7 @@ void at_app_set_debug(bool on, int interval_s);
 void at_app_set_use_external_temp(bool on);
 void at_app_set_external_temp(float celsius);
 
+int at_app_heater_rx_mv(void); /* idle voltage at the heater RX pin in mV, -1 if not read */
 void at_app_rx_probe(int high_pct[2], int edges[2]); /* RX pins: % of time high, edges seen, last second */
 int at_app_log_copy(at_log_entry_t *out, int max);
 

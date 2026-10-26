@@ -133,12 +133,14 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:
   <div class="card" id="c-mqtt">
     <h2>MQTT / Home Assistant</h2>
     <div class="sw"><span>Enable MQTT</span><input type="checkbox" id="m_en"></div>
-    <label for="m_host">Broker host</label><input id="m_host" placeholder="192.168.1.10" autocapitalize="none">
+    <div class="sw"><span>Broker built into this box (nothing else to install)</span><input type="checkbox" id="m_bi" onchange="mqttUi()"></div>
+    <div id="m_ext"><label for="m_host">Broker host</label><input id="m_host" placeholder="192.168.1.10" autocapitalize="none"></div>
     <div class="row"><div class="grow"><label for="m_port">Port</label><input id="m_port" type="number"></div>
     <div class="grow"><label for="m_pref">Discovery prefix</label><input id="m_pref"></div></div>
-    <label for="m_user">User</label><input id="m_user" autocapitalize="none" autocomplete="off">
+    <label for="m_user">User <span id="m_user_note" class="k"></span></label><input id="m_user" autocapitalize="none" autocomplete="off">
     <label for="m_pass">Password <span id="m_pass_note" class="k"></span></label><input id="m_pass" type="password" autocomplete="off">
     <div class="row"><button class="b p" onclick="saveMqtt()">Save</button><span id="mstat"></span></div>
+    <div class="note" id="m_bi_note"></div>
     <div class="note">Entities appear in Home Assistant automatically (MQTT discovery). To use a better room sensor, publish its °C value to <code id="exttopic"></code>.</div>
   </div>
 
@@ -256,10 +258,11 @@ async function loadInfo(){
   $('c-wifi').classList.toggle('hide',!info.wifi_setup);
   $('ssid').value=$('ssid').value||info.wifi_ssid||'';
   if(!document.activeElement||document.activeElement.tagName!=='INPUT'){
-    $('m_en').checked=info.mqtt.enabled;$('m_host').value=info.mqtt.host;$('m_port').value=info.mqtt.port;
+    $('m_en').checked=info.mqtt.enabled;$('m_bi').checked=info.mqtt.builtin;$('m_host').value=info.mqtt.host;$('m_port').value=info.mqtt.port;
     $('m_pref').value=info.mqtt.discovery_prefix;$('m_user').value=info.mqtt.user;
     $('d_name').value=info.device_name;
   }
+  mqttUi();
   $('m_pass_note').textContent=info.mqtt.password_set?'(saved, leave empty to keep)':'';
   $('mstat').innerHTML=info.mqtt.enabled?('<span class="pill '+(info.mqtt.connected?'ok':'warn')+'">'+(info.mqtt.connected?'connected':'not connected')+'</span>'):'';
   $('exttopic').textContent='hearth/'+info.device_name+'/cmd/external_temp/set';
@@ -292,8 +295,13 @@ async function saveWifi(){
   if(!$('ssid').value)return toast('Pick a network');
   try{await post('/api/wifi',{ssid:$('ssid').value,pass:$('wpass').value});toast('Saved. Joining…');setTimeout(loadInfo,8000)}catch(e){toast(e.message)}
 }
+function mqttUi(){
+  $('m_ext').classList.toggle('hide',$('m_bi').checked);
+  $('m_user_note').textContent=$('m_bi').checked?'(optional: clients must use it)':'';
+  $('m_bi_note').innerHTML=$('m_bi').checked?('In Home Assistant: Settings → Devices &amp; services → Add integration → <b>MQTT</b>, broker <code>'+(info.ip||'this box\'s address')+'</code>, port <code>'+($('m_port').value||info.mqtt.port)+'</code>'+(info.mqtt.user?', and the user and password above':'')+'. Home Assistant only supports one broker: if it already uses another, untick this box and enter that broker instead.'+(info.mqtt.enabled&&!info.mqtt.broker_running?' <b>The broker is not running.</b>':'')):'';
+}
 async function saveMqtt(){
-  const b={mqtt_enabled:$('m_en').checked,mqtt_host:$('m_host').value,mqtt_port:+$('m_port').value,mqtt_user:$('m_user').value,mqtt_discovery_prefix:$('m_pref').value};
+  const b={mqtt_enabled:$('m_en').checked,mqtt_builtin:$('m_bi').checked,mqtt_host:$('m_host').value,mqtt_port:+$('m_port').value,mqtt_user:$('m_user').value,mqtt_discovery_prefix:$('m_pref').value};
   if($('m_pass').value)b.mqtt_pass=$('m_pass').value;
   try{await post('/api/settings',b);$('m_pass').value='';toast('Saved');setTimeout(loadInfo,3000)}catch(e){toast(e.message)}
 }
