@@ -29,6 +29,29 @@ static volatile bool s_ap_active;
 static char s_ip[16];
 static char s_ap_ssid[33];
 static bool s_own; /* this boot manages Wi-Fi itself (not Matter) */
+static bool s_ha_adv;      /* the Home Assistant service is currently announced */
+static bool s_mdns_ready;  /* mDNS is up (own Wi-Fi: after at_net_start; Matter: once the delegated host exists) */
+
+#define HA_SERVICE "_hearth-ha" /* only announced while Home Assistant is switched on; Home Assistant's integration browses this */
+
+/* Announce or withdraw the service Home Assistant discovers the box by. The _hearth._tcp service the Tillerwell app
+ * uses stays up either way. */
+void at_net_ha_advertise(bool on)
+{
+    if (!s_mdns_ready || on == s_ha_adv) return;
+    at_settings_t cfg;
+    at_settings_get(&cfg);
+    esp_err_t err;
+    if (on) {
+        err = s_own ? mdns_service_add(NULL, HA_SERVICE, "_tcp", 80, NULL, 0)
+                    : mdns_service_add_for_host("Tillerwell Hearth", HA_SERVICE, "_tcp", cfg.device_name, 80, NULL, 0);
+    } else {
+        err = s_own ? mdns_service_remove(HA_SERVICE, "_tcp")
+                    : mdns_service_remove_for_host("Tillerwell Hearth", HA_SERVICE, "_tcp", cfg.device_name);
+    }
+    if (err == ESP_OK) s_ha_adv = on;
+    else ESP_LOGW(TAG, "mDNS Home Assistant service %s: %s", on ? "add" : "remove", esp_err_to_name(err));
+}
 static volatile uint32_t s_disc_count;
 static volatile uint8_t s_disc_reason;
 
@@ -150,6 +173,8 @@ static void matter_mdns_publish(const esp_ip4_addr_t *ip)
     added = true;
     mdns_service_add_for_host("Tillerwell Hearth", "_http", "_tcp", cfg.device_name, 80, NULL, 0);
     mdns_service_add_for_host("Tillerwell Hearth", "_hearth", "_tcp", cfg.device_name, 80, NULL, 0);
+    s_mdns_ready = true;
+    at_net_ha_advertise(cfg.mqtt_enabled);
     ESP_LOGI(TAG, "mDNS: %s.local (Matter mode)", cfg.device_name);
 }
 
@@ -374,6 +399,8 @@ static esp_err_t start_own_wifi(void)
     mdns_instance_name_set("Tillerwell Hearth");
     mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
     mdns_service_add(NULL, "_hearth", "_tcp", 80, NULL, 0);
+    s_mdns_ready = true;
+    at_net_ha_advertise(cfg.mqtt_enabled);
 
     xTaskCreate(dns_task, "captive_dns", 3072, NULL, 3, NULL);
     return ESP_OK;

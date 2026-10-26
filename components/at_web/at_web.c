@@ -337,7 +337,10 @@ static esp_err_t h_settings(httpd_req_t *req)
     if ((s = jstr(j, "web_password")) && strlen(s) < sizeof(cfg.web_password)) copy_str(cfg.web_password, sizeof(cfg.web_password), s);
     cJSON_Delete(j);
     esp_err_t err = at_settings_set(&cfg);
-    if (err == ESP_OK) at_mqtt_reload();
+    if (err == ESP_OK) {
+        at_net_ha_advertise(cfg.mqtt_enabled);
+        at_mqtt_reload();
+    }
         return send_ok(req, err == ESP_OK);
 }
 

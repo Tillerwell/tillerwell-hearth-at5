@@ -46,6 +46,10 @@ int at_net_rssi(void);
 uint32_t at_net_disconnect_count(void);
 uint8_t at_net_last_disconnect_reason(void);
 
+/* Announce (true) or withdraw (false) the mDNS service Home Assistant finds the box by. Safe to call before the network
+ * is up: the saved setting is applied as soon as mDNS starts. */
+void at_net_ha_advertise(bool on);
+
 /* Blocking scan; fills a JSON array string [{"ssid":..,"rssi":..,"auth":..},..]. */
 esp_err_t at_net_scan_json(char *out, size_t len);
 
