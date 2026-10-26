@@ -99,7 +99,7 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:
       <span class="v" id="ft">–</span>
       <button class="b" onclick="step('freeze_target',.5)">+</button></div>
     <div class="note" id="frznote"></div>
-    <div class="note">Both read the controller's own sensor (whole °C) unless a better temperature is pushed to the device (see Setup → MQTT).</div>
+    <div class="note">Both read the controller's own sensor (whole °C) unless a better temperature is pushed to the device.</div>
   </div>
 </section>
 
@@ -119,7 +119,7 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:
     <h2>Connection mode</h2>
     <div class="note" id="modenow"></div>
     <div class="row">
-      <button class="b" id="mb-wifi" onclick="setMode('wifi')">Wi-Fi only (this page, MQTT)</button>
+      <button class="b" id="mb-wifi" onclick="setMode('wifi')">Wi-Fi only (this page)</button>
       <button class="b" id="mb-matter" onclick="setMode('matter')">Matter (Wi-Fi or Thread)</button>
     </div>
     <div class="note">Switching restarts the device. Matter mode is paired with your Matter app over Bluetooth and the app chooses Wi-Fi or Thread. If it ends up on Thread this page is no longer reachable; to come back to Wi-Fi mode type <code>mode wifi</code> on the USB console (keeps the pairing), or hold the BOOT button for 10 seconds and let go (factory reset, erases the pairing too). Switching modes keeps the pairing.</div>
@@ -128,12 +128,6 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:
   <div class="card hide" id="c-matter">
     <h2>Matter</h2>
     <div id="matter"></div>
-  </div>
-
-  <div class="card" id="c-mqtt">
-    <h2>Home Assistant</h2>
-    <div class="sw"><span>Make this Hearth available to Home Assistant</span><input type="checkbox" id="ha_en" onchange="saveHa()"></div>
-    <div class="note">When on, Home Assistant finds this Hearth automatically (Settings → Devices &amp; services). When off, it is removed from Home Assistant. To use a better room sensor, send its °C value to <code id="exttopic"></code>.</div>
   </div>
 
   <div class="card">
@@ -252,8 +246,6 @@ async function loadInfo(){
   if(!document.activeElement||document.activeElement.tagName!=='INPUT'){
     $('d_name').value=info.device_name;
   }
-  if(document.activeElement!==$('ha_en'))$('ha_en').checked=info.homeassistant;
-  $('exttopic').textContent='hearth/'+info.device_name+'/cmd/external_temp/set';
   $('fwinfo').textContent='Hearth · RoamOS '+info.version+' · variant '+info.variant+' · ESP-IDF '+info.idf;
   $('c-mode').classList.toggle('hide',!info.can_switch_mode);
   if(info.can_switch_mode){
@@ -282,9 +274,6 @@ async function setMode(m){
 async function saveWifi(){
   if(!$('ssid').value)return toast('Pick a network');
   try{await post('/api/wifi',{ssid:$('ssid').value,pass:$('wpass').value});toast('Saved. Joining…');setTimeout(loadInfo,8000)}catch(e){toast(e.message)}
-}
-async function saveHa(){
-  try{await post('/api/settings',{homeassistant:$('ha_en').checked});toast('Saved')}catch(e){toast(e.message);loadInfo()}
 }
 async function saveDevice(){
   const b={device_name:$('d_name').value};

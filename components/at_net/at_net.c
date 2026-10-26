@@ -32,9 +32,9 @@ static bool s_own; /* this boot manages Wi-Fi itself (not Matter) */
 static bool s_ha_adv;      /* the Home Assistant service is currently announced */
 static bool s_mdns_ready;  /* mDNS is up (own Wi-Fi: after at_net_start; Matter: once the delegated host exists) */
 
-#define HA_SERVICE "_hearth-ha" /* only announced while Home Assistant is switched on; Home Assistant's integration browses this */
+#define HA_SERVICE "_hearth-ha" /* Home Assistant's integration browses this */
 
-/* Announce or withdraw the service Home Assistant discovers the box by. The _hearth-app._tcp service the Tillerwell app
+/* Announce the service Home Assistant discovers the box by (always on). The _hearth-app._tcp service the Tillerwell app
  * uses stays up either way. */
 void at_net_ha_advertise(bool on)
 {
@@ -174,7 +174,7 @@ static void matter_mdns_publish(const esp_ip4_addr_t *ip)
     mdns_service_add_for_host("Tillerwell Hearth", "_http", "_tcp", cfg.device_name, 80, NULL, 0);
     mdns_service_add_for_host("Tillerwell Hearth", "_hearth-app", "_tcp", cfg.device_name, 80, NULL, 0);
     s_mdns_ready = true;
-    at_net_ha_advertise(cfg.mqtt_enabled);
+    at_net_ha_advertise(true);
     ESP_LOGI(TAG, "mDNS: %s.local (Matter mode)", cfg.device_name);
 }
 
@@ -400,7 +400,7 @@ static esp_err_t start_own_wifi(void)
     mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
     mdns_service_add(NULL, "_hearth-app", "_tcp", 80, NULL, 0);
     s_mdns_ready = true;
-    at_net_ha_advertise(cfg.mqtt_enabled);
+    at_net_ha_advertise(true);
 
     xTaskCreate(dns_task, "captive_dns", 3072, NULL, 3, NULL);
     return ESP_OK;

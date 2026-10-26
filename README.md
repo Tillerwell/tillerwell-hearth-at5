@@ -44,15 +44,13 @@ The ESP32-C6 has only two general UARTs, so the controller side uses UART0 and t
 2. On a phone, join the Wi-Fi network **Hearth-<id>**. The setup page opens by itself (or go to `http://192.168.4.1`).
 3. Setup tab → *Scan networks*, tap yours, enter the password, *Save and connect*.
 4. Rejoin your normal Wi-Fi and open `http://hearth-<id>.local` (the name is on the Setup tab and in the router's client list).
-5. Optional: turn on Home Assistant (below) and set a web password.
+5. Optional: add it to Home Assistant (below) and set a web password.
 
 If the saved network can't be reached for two minutes the setup network comes back, so a changed router password never strands the box. No USB needed; with USB you can also type `wifi <ssid> <password>` in the console.
 
 ## Home Assistant
 
-On the box's page, Setup tab → *Home Assistant*, switch on **Make this Hearth available to Home Assistant**. Home Assistant then finds it on its own (Settings → Devices & services); switching it off removes it again.
-
-Messages are kept in memory only (retained messages are re-published by the box when it starts). The Tillerwell Home Assistant integration (HACS) does not use this and needs nothing switched on.
+Install the Tillerwell integration in Home Assistant (HACS). The box announces itself on the network as `_hearth-ha._tcp` all the time, so Home Assistant finds it on its own (Settings → Devices & services), or you can add it by address. There is nothing to switch on in the box's page. The integration talks to the box over HTTP and does not use MQTT.
 
 ## Setup, Matter images
 

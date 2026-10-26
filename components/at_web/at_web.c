@@ -205,7 +205,6 @@ static esp_err_t h_info(httpd_req_t *req)
 #endif
     cJSON_AddBoolToObject(o, "wifi_setup", own_wifi);
     cJSON_AddBoolToObject(o, "web_password_set", cfg.web_password[0] != 0);
-    cJSON_AddBoolToObject(o, "homeassistant", cfg.mqtt_enabled);
     at_matter_info_t mi;
     at_matter_get_info(&mi);
     if (mi.transport && mi.transport[0]) {
@@ -324,7 +323,6 @@ static esp_err_t h_settings(httpd_req_t *req)
     at_settings_t cfg;
     at_settings_get(&cfg);
     const char *s;
-    const cJSON *i;
     if ((s = jstr(j, "device_name")) && s[0] && strlen(s) < sizeof(cfg.device_name)) {
         /* hostname characters only */
         bool okname = true;
@@ -333,14 +331,10 @@ static esp_err_t h_settings(httpd_req_t *req)
         }
         if (okname) copy_str(cfg.device_name, sizeof(cfg.device_name), s);
     }
-    if ((i = cJSON_GetObjectItemCaseSensitive(j, "homeassistant")) && cJSON_IsBool(i)) cfg.mqtt_enabled = cJSON_IsTrue(i);
     if ((s = jstr(j, "web_password")) && strlen(s) < sizeof(cfg.web_password)) copy_str(cfg.web_password, sizeof(cfg.web_password), s);
     cJSON_Delete(j);
     esp_err_t err = at_settings_set(&cfg);
-    if (err == ESP_OK) {
-        at_net_ha_advertise(cfg.mqtt_enabled);
-        at_mqtt_reload();
-    }
+    if (err == ESP_OK) at_mqtt_reload();
         return send_ok(req, err == ESP_OK);
 }
 

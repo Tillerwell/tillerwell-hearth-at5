@@ -22,7 +22,6 @@ static char s_base[80];      /* hearth/<device> */
 static char s_node[48];      /* object id prefix / device identifier */
 static char s_uri[96];
 static char s_prefix[24];
-static bool s_ha;            /* Home Assistant enabled: publish discovery, otherwise retract it */
 
 #define MQTT_PORT   1883
 #define MQTT_PREFIX "homeassistant"
@@ -168,10 +167,12 @@ static void add_common(cJSON *o, const ent_t *e, const char *availability)
     if (e->cat) cJSON_AddStringToObject(o, "entity_category", e->cat);
 }
 
-/* Home Assistant picks entities up from these retained configs; an empty retained payload removes them. */
+/* Home Assistant uses the Tillerwell integration (HTTP), not MQTT entities. Publishing ~45 full configs overloaded the
+ * box, so only an empty retained payload goes out, which removes any left over from older firmware. */
 static void pub_config(const char *topic, const char *js)
 {
-    pub(topic, s_ha ? js : "", 0, true);
+    (void)js;
+    pub(topic, "", 0, true);
 }
 
 static void publish_discovery(void)
@@ -444,7 +445,6 @@ esp_err_t at_mqtt_start(void)
     for (char *p = s_node; *p; p++) {
         if (*p == '-') *p = '_';
     }
-    s_ha = cfg.mqtt_enabled;
     strlcpy(s_prefix, MQTT_PREFIX, sizeof(s_prefix));
     snprintf(s_uri, sizeof(s_uri), "mqtt://127.0.0.1:%d", MQTT_PORT);
     static char lwt_topic[96], client_id[48];
