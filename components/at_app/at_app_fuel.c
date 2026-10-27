@@ -1,8 +1,10 @@
 /* Fuel estimate on the box: at_fuel.c's sums, fed from the status snapshot, kept in flash. */
 #include <string.h>
+#include <time.h>
 
 #include "at_app.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
@@ -11,7 +13,8 @@ static const char *TAG = "fuel";
 #define KEY_CFG  "fuel_cfg"
 #define KEY_TOT  "fuel_tot"
 #define KEY_LOG  "fuel_log"
-#define SAVE_EVERY_MS (15u * 60u * 1000u) /* while burning; also at the end of every burn */
+#define KEY_TANK "fuel_tank"
+#define SAVE_EVERY_MS (5u * 60u * 1000u) /* while burning; also at the end of every burn and before any restart */
 #define MAX_TICK_S    10.0                /* a longer gap (no status, a stall) is not counted */
 
 static SemaphoreHandle_t s_lock;
@@ -19,9 +22,12 @@ static at_fuel_cfg_t s_cfg;
 static at_fuel_totals_t s_tot;
 static at_fuel_log_t s_log;
 static at_fuel_run_t s_run;
+static at_fuel_tank_t s_tank;
 static at_fuel_level_t s_level;
 static bool s_have_tick, s_dirty;
 static uint32_t s_last_tick_ms, s_last_save_ms;
+
+static void save_on_restart(void);
 
 void at_app_fuel_init(void)
 {
@@ -35,6 +41,10 @@ void at_app_fuel_init(void)
     if (!at_settings_blob_load(KEY_LOG, &s_log, sizeof(s_log)) || s_log.count > AT_FUEL_DAYS || s_log.head >= AT_FUEL_DAYS) {
         at_fuel_log_init(&s_log);
     }
+    if (!at_settings_blob_load(KEY_TANK, &s_tank, sizeof(s_tank)) || s_tank.version != AT_FUEL_TANK_VERSION) {
+        at_fuel_tank_init(&s_tank);
+    }
+    esp_register_shutdown_handler(save_on_restart);
     ESP_LOGI(TAG, "%.2f l estimated so far, %u days logged", s_tot.litres, s_log.count);
 }
 
@@ -43,6 +53,15 @@ static void save_locked(void)
     at_settings_blob_save(KEY_TOT, &s_tot, sizeof(s_tot));
     at_settings_blob_save(KEY_LOG, &s_log, sizeof(s_log));
     s_dirty = false;
+}
+
+/* Runs inside esp_restart() (updates, Reboot, factory reset): keep what was counted since the last save. */
+static void save_on_restart(void)
+{
+    if (s_lock && xSemaphoreTake(s_lock, pdMS_TO_TICKS(500)) == pdTRUE) {
+        if (s_dirty) save_locked();
+        xSemaphoreGive(s_lock);
+    }
 }
 
 void at_app_fuel_tick(const at_snapshot_t *snap, uint32_t now_ms)
@@ -84,6 +103,8 @@ void at_app_fuel_view(at_fuel_view_t *out)
     out->totals = s_tot;
     out->level = s_level;
     out->rate_lph = at_fuel_rate_now(&s_cfg, s_level);
+    out->tank = s_tank;
+    out->have_tank_left = at_fuel_tank_remaining(&s_tank, s_tot.litres, &out->tank_left_l);
     const at_fuel_day_t *t = clock ? at_fuel_log_find(&s_log, day) : NULL;
     if (t) {
         out->have_today = true;
@@ -146,4 +167,39 @@ bool at_app_fuel_set_rates(float starting, float low, float middle, float high)
     c.rate_lph[AT_FUEL_MIDDLE] = middle;
     c.rate_lph[AT_FUEL_HIGH] = high;
     return set_cfg(&c);
+}
+
+static bool save_tank_locked(bool ok)
+{
+    if (ok) at_settings_blob_save(KEY_TANK, &s_tank, sizeof(s_tank));
+    return ok;
+}
+
+bool at_app_fuel_set_tank_capacity(float litres)
+{
+    if (!s_lock) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool ok = save_tank_locked(at_fuel_tank_set_capacity(&s_tank, litres));
+    xSemaphoreGive(s_lock);
+    return ok;
+}
+
+bool at_app_fuel_set_tank_level(float litres)
+{
+    if (!s_lock) return false;
+    int32_t day;
+    int64_t epoch = at_app_local_day(&day) ? (int64_t)time(NULL) : 0;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool ok = save_tank_locked(at_fuel_tank_set_level(&s_tank, litres, s_tot.litres, epoch));
+    xSemaphoreGive(s_lock);
+    return ok;
+}
+
+bool at_app_fuel_tank_filled(void)
+{
+    if (!s_lock) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    float cap = s_tank.capacity_l;
+    xSemaphoreGive(s_lock);
+    return cap > 0 && at_app_fuel_set_tank_level(cap);
 }

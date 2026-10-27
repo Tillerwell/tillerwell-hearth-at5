@@ -355,6 +355,11 @@ char *at_app_state_json(void)
     cJSON_AddNumberToObject(o, "hours_middle", fv.totals.level_s[AT_FUEL_MIDDLE] / 3600.0);
     cJSON_AddNumberToObject(o, "hours_high", fv.totals.level_s[AT_FUEL_HIGH] / 3600.0);
     cJSON_AddNumberToObject(o, "starts_total", fv.totals.starts);
+    add_num_or_null(o, "tank_capacity", fv.tank.capacity_l > 0, round3(fv.tank.capacity_l));
+    add_num_or_null(o, "tank_litres", fv.have_tank_left, round3(fv.tank_left_l));
+    add_num_or_null(o, "tank_pct", fv.have_tank_left && fv.tank.capacity_l > 0,
+                    round(fv.tank_left_l / (fv.tank.capacity_l > 0 ? fv.tank.capacity_l : 1) * 1000.0) / 10.0);
+    add_num_or_null(o, "tank_set_epoch", fv.tank.have_level && fv.tank.set_epoch > 0, (double)fv.tank.set_epoch);
 
     if (!(s->have_ext && s->ext_active)) {
         /* keep the keys present (null) so Home Assistant templates never see an undefined field */

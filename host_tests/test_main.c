@@ -1325,6 +1325,21 @@ static void test_fuel(void)
     CHECK(at_fuel_log_at(&log, AT_FUEL_DAYS - 1)->day == day + 10);
     CHECK(at_fuel_log_at(&log, AT_FUEL_DAYS) == NULL);
 
+    /* the tank: level set by the owner, less the estimate since */
+    at_fuel_tank_t tank;
+    at_fuel_tank_init(&tank);
+    float left;
+    CHECK(!at_fuel_tank_remaining(&tank, 10.0, &left));          /* never set */
+    CHECK(!at_fuel_tank_set_capacity(&tank, 0) && !at_fuel_tank_set_capacity(&tank, 5000));
+    CHECK(at_fuel_tank_set_level(&tank, 150, 10.0, 1800000000));  /* no capacity yet: up to the maximum */
+    CHECK(at_fuel_tank_set_capacity(&tank, 80));                  /* level brought down to the new size */
+    CHECK(at_fuel_tank_remaining(&tank, 10.0, &left) && fabsf(left - 80) < 1e-4f);
+    CHECK(!at_fuel_tank_set_level(&tank, 81, 10.0, 0) && !at_fuel_tank_set_level(&tank, -1, 10.0, 0));
+    CHECK(at_fuel_tank_set_level(&tank, 60, 10.0, 1800000000));
+    CHECK(at_fuel_tank_remaining(&tank, 12.5, &left) && fabsf(left - 57.5f) < 1e-4f);
+    CHECK(at_fuel_tank_remaining(&tank, 100.0, &left) && left == 0); /* never below empty */
+    CHECK(tank.set_epoch == 1800000000);
+
     /* settings limits */
     at_fuel_cfg_defaults(&cfg);
     cfg.factor = 0.1f;

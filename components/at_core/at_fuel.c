@@ -147,3 +147,38 @@ const at_fuel_day_t *at_fuel_log_find(const at_fuel_log_t *log, int32_t day)
     }
     return NULL;
 }
+
+void at_fuel_tank_init(at_fuel_tank_t *t)
+{
+    memset(t, 0, sizeof(*t));
+    t->version = AT_FUEL_TANK_VERSION;
+}
+
+bool at_fuel_tank_set_capacity(at_fuel_tank_t *t, float litres)
+{
+    if (!(litres >= 1.0f && litres <= AT_FUEL_TANK_MAX_L)) return false;
+    t->capacity_l = litres;
+    if (t->have_level && t->level_l > litres) t->level_l = litres;
+    return true;
+}
+
+bool at_fuel_tank_set_level(at_fuel_tank_t *t, float litres, double used_total, int64_t epoch)
+{
+    float max = t->capacity_l > 0 ? t->capacity_l : AT_FUEL_TANK_MAX_L;
+    if (!(litres >= 0.0f && litres <= max)) return false;
+    t->have_level = true;
+    t->level_l = litres;
+    t->used_at_set = used_total;
+    t->set_epoch = epoch;
+    return true;
+}
+
+bool at_fuel_tank_remaining(const at_fuel_tank_t *t, double used_total, float *litres)
+{
+    if (!t->have_level) return false;
+    double left = t->level_l - (used_total - t->used_at_set);
+    if (left < 0) left = 0;
+    if (t->capacity_l > 0 && left > t->capacity_l) left = t->capacity_l;
+    *litres = (float)left;
+    return true;
+}

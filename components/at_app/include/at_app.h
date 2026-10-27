@@ -143,6 +143,9 @@ typedef struct {
     float rate_lph;           /* now, calibration applied */
     bool have_today;
     at_fuel_day_t today;
+    at_fuel_tank_t tank;
+    bool have_tank_left;      /* a level was set */
+    float tank_left_l;
 } at_fuel_view_t;
 
 void at_app_fuel_init(void);
@@ -155,6 +158,10 @@ int at_app_fuel_log_copy(at_fuel_day_t *out, int max);
 bool at_app_fuel_set_price(float per_litre);
 bool at_app_fuel_set_factor(float factor);
 bool at_app_fuel_set_rates(float starting, float low, float middle, float high);
+/* The tank's size, what is in it now, or "filled to the top" (needs the size). */
+bool at_app_fuel_set_tank_capacity(float litres);
+bool at_app_fuel_set_tank_level(float litres);
+bool at_app_fuel_tank_filled(void);
 /* Today's local date in days since 1970-01-01; false without a clock and time zone. */
 bool at_app_local_day(int32_t *day);
 

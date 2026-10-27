@@ -261,6 +261,12 @@ static esp_err_t h_cmd(httpd_req_t *req)
     } else if (!strcmp(c, "fuel_rates")) {
         ok = at_app_fuel_set_rates((float)jnum(j, "starting", -1), (float)jnum(j, "low", -1),
                                    (float)jnum(j, "middle", -1), (float)jnum(j, "high", -1));
+    } else if (!strcmp(c, "tank_capacity")) {
+        ok = at_app_fuel_set_tank_capacity((float)jnum(j, "value", -1));
+    } else if (!strcmp(c, "tank_level")) {
+        ok = at_app_fuel_set_tank_level((float)jnum(j, "value", -1));
+    } else if (!strcmp(c, "tank_filled")) {
+        ok = at_app_fuel_tank_filled();
     } else if (!strcmp(c, "preheat_minutes")) {
         at_app_set_preheat_minutes((int)jnum(j, "value", 30));
     } else if (!strcmp(c, "bypass")) {

@@ -56,6 +56,27 @@ typedef struct {
     double day_ml_frac, day_cost_frac;
 } at_fuel_run_t;
 
+/* The tank: its size, and what the owner said was in it at some point. What is left now is that, less the
+ * estimate's litres since. Saved as one blob: bump AT_FUEL_TANK_VERSION if the layout changes. */
+#define AT_FUEL_TANK_VERSION 1
+#define AT_FUEL_TANK_MAX_L 2000.0f
+typedef struct {
+    uint32_t version;
+    float capacity_l;    /* 0 = not set */
+    bool have_level;
+    float level_l;       /* litres in the tank... */
+    double used_at_set;  /* ...when the estimate's running total stood at this */
+    int64_t set_epoch;   /* when that was (unix seconds), 0 without a clock */
+} at_fuel_tank_t;
+
+void at_fuel_tank_init(at_fuel_tank_t *t);
+/* 1 to AT_FUEL_TANK_MAX_L. A level above the new size is brought down to it. False if out of range. */
+bool at_fuel_tank_set_capacity(at_fuel_tank_t *t, float litres);
+/* What is in the tank now: 0 to the capacity (or AT_FUEL_TANK_MAX_L before one is set). */
+bool at_fuel_tank_set_level(at_fuel_tank_t *t, float litres, double used_total, int64_t epoch);
+/* Litres left by the estimate, 0 to the capacity. False if no level was ever set. */
+bool at_fuel_tank_remaining(const at_fuel_tank_t *t, double used_total, float *litres);
+
 void at_fuel_cfg_defaults(at_fuel_cfg_t *cfg);
 bool at_fuel_cfg_valid(const at_fuel_cfg_t *cfg);
 void at_fuel_totals_init(at_fuel_totals_t *t);
