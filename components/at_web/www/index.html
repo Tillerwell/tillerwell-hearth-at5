@@ -248,7 +248,7 @@ async function loadInfo(){
   if(!document.activeElement||document.activeElement.tagName!=='INPUT'){
     $('d_name').value=info.device_name;
   }
-  $('fwinfo').textContent='Hearth · RoamOS '+info.version+'' · ESP-IDF '+info.idf;
+  $('fwinfo').textContent='Hearth · RoamOS '+info.version+' · ESP-IDF '+info.idf;
   $('c-mode').classList.toggle('hide',!info.can_switch_mode);
   if(info.can_switch_mode){
     $('modenow').textContent='Current mode: '+(info.mode==='matter'?'Matter':'Wi-Fi only');
