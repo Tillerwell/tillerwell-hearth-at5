@@ -266,6 +266,9 @@ char *at_app_state_json(void)
     cJSON_AddBoolToObject(o, "last_command_replied", s->have_last_cmd && s->last_cmd_replied);
     cJSON_AddNumberToObject(o, "queue", s->queue_len);
     cJSON_AddBoolToObject(o, "panel_stop_hold", s->panel_stop_hold);
+    add_str_or_null(o, "run_mode", s->run_mode == AT_RUN_THERMOSTAT ? "thermostat"
+                                   : s->run_mode == AT_RUN_PREHEAT  ? "preheat"
+                                                                    : NULL);
 
     cJSON_AddBoolToObject(o, "controller_seen", s->seen_panel);
     cJSON_AddBoolToObject(o, "heater_seen", s->seen_heater);

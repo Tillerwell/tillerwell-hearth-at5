@@ -38,6 +38,10 @@
 extern "C" {
 #endif
 
+/* What the last start seen on the bus asked for, from the controller or
+ * from us: the controller's label lives only in the controller. */
+typedef enum { AT_RUN_NONE = 0, AT_RUN_PREHEAT, AT_RUN_THERMOSTAT } at_run_mode_t;
+
 typedef struct {
     /* Non-blocking: return the number of bytes copied (0 if none waiting). */
     size_t (*read)(void *ctx, uint8_t *buf, size_t max);
@@ -132,6 +136,7 @@ typedef struct {
     bool panel_stop_hold;
     uint32_t panel_control_seq;
     uint8_t panel_last_control_type;
+    at_run_mode_t run_mode;
 
     /* relay scratch */
     uint8_t out_h[AT_MAX_FRAME * 2];
@@ -221,6 +226,7 @@ typedef struct {
     bool panel_stop_hold;
     uint32_t panel_control_seq;
     uint8_t panel_last_control_type;
+    at_run_mode_t run_mode;
     int queue_len;
     uint32_t frames_panel, frames_heater;
     uint32_t bad_crc_heater, bad_crc_panel, resyncs_heater, resyncs_panel;

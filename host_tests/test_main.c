@@ -511,6 +511,51 @@ static void test_manual_stop_panel_handoff(void)
     CHECK(!sn.panel_stop_hold && sn.panel_last_control_type == AT_TYPE_START && sn.panel_control_seq == 3);
 }
 
+static void test_run_mode(void)
+{
+    printf("run mode follows the last start, controller's or ours\n");
+    static sim_t s;
+    static at_core_t c;
+    bus_setup(&s, &c);
+    sim_run(&s, &c, 3000);
+    at_snapshot_t sn;
+    at_core_snapshot(&c, s.now, &sn);
+    CHECK(sn.run_mode == AT_RUN_NONE);
+
+    static const uint8_t thermostat[] = {0x00, 0x22}, preheat[] = {0x00, 0x1e}, restart[] = {0xff, 0xfd};
+    panel_control(&s, AT_TYPE_START, thermostat, 2);
+    sim_run(&s, &c, 1000);
+    at_core_snapshot(&c, s.now, &sn);
+    CHECK(sn.run_mode == AT_RUN_THERMOSTAT);
+
+    /* its stop is part of its thermostat cycle: the mode stays */
+    panel_control(&s, AT_TYPE_STOP, NULL, 0);
+    sim_run(&s, &c, 1000);
+    at_core_snapshot(&c, s.now, &sn);
+    CHECK(sn.run_mode == AT_RUN_THERMOSTAT);
+
+    panel_control(&s, AT_TYPE_START, preheat, 2);
+    sim_run(&s, &c, 1000);
+    at_core_snapshot(&c, s.now, &sn);
+    CHECK(sn.run_mode == AT_RUN_PREHEAT);
+
+    /* only its armed thermostat restarts the heater */
+    panel_control(&s, AT_TYPE_START, restart, 2);
+    sim_run(&s, &c, 1000);
+    at_core_snapshot(&c, s.now, &sn);
+    CHECK(sn.run_mode == AT_RUN_THERMOSTAT);
+
+    CHECK(at_cmd_start_preheat(&c, 30, s.now));
+    sim_run(&s, &c, 3000);
+    at_core_snapshot(&c, s.now, &sn);
+    CHECK(sn.run_mode == AT_RUN_PREHEAT);
+
+    CHECK(at_cmd_start_thermostat(&c, s.now));
+    sim_run(&s, &c, 3000);
+    at_core_snapshot(&c, s.now, &sn);
+    CHECK(sn.run_mode == AT_RUN_THERMOSTAT);
+}
+
 static void test_bypass(void)
 {
     printf("bypass\n");
@@ -1528,6 +1573,7 @@ int main(void)
     test_injection();
     test_injection_no_reply();
     test_manual_stop_panel_handoff();
+    test_run_mode();
     test_bypass();
     test_standalone();
     test_ext_filter_and_pubr0();

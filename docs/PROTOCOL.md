@@ -284,8 +284,22 @@ was followed by two quick status polls and, 1.3 s later, the controller's
 own stop: it stops a start it did not send rather than adopting it.
 Without the echo the heater runs but the controller shows preheat. So the
 controller only shows thermostat for its own start, and nothing relayed to
-it changes that. RoamOS 1.0022 passes on stop echoes only. The remaining
-lead is the settings it reads at power-up (type `0x20`).
+it changes that. RoamOS 1.0022 passes on stop echoes only.
+
+**The mode is not stored in the heater (2026-10-27):** the controller's
+power-up `type 0x20` query was answered `58 00 55 01 28 00 00 00 00`
+after a preheat run (`00 1e`) and after a thermostat run (`00 22`) alike,
+each followed by a controller power cycle, and in two earlier power-ups.
+The controller keeps its mode to itself, so nothing the Hearth sends can
+make it show thermostat for a start it did not make: it shows preheat.
+The Hearth's own thermostat still runs the heater correctly.
+
+The reverse works: from RoamOS 1.0023 `/api/status` has `run_mode`
+(`thermostat`, `preheat` or null), the mode of the last start seen on the
+bus, the controller's or the Hearth's. A controller start of `00 22`, or
+one of its restarts (`ff xx`, `00 01`-`00 03`), counts as thermostat; any
+other start is a preheat time. A controller stop leaves it unchanged,
+since its thermostat stops and restarts the heater by itself.
 
 ## Extended diagnostic-mode telemetry (dev `0x02`, type `0x01`, 58-byte payload)
 

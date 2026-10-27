@@ -158,6 +158,11 @@ static void relay_cb(at_ev_kind_t kind, const uint8_t *data, size_t len, bool cr
          * ~50 s quiet, start again with ff ff), so the hold stays. */
         if (data[4] == AT_TYPE_START) {
             c->panel_stop_hold = false;
+            /* 00 22 is its thermostat; its restarts only come from its armed
+             * thermostat; anything else is a preheat time */
+            bool thermo = plen == 2 && ((data[AT_HEADER_LEN] == 0 && data[AT_HEADER_LEN + 1] == 0x22) ||
+                                        is_panel_restart(data[AT_HEADER_LEN], data[AT_HEADER_LEN + 1]));
+            c->run_mode = thermo ? AT_RUN_THERMOSTAT : AT_RUN_PREHEAT;
         }
         c->panel_last_control_type = data[4];
         c->panel_control_seq++;
@@ -542,6 +547,7 @@ bool at_cmd_start_preheat(at_core_t *c, int minutes, uint32_t now)
     if (!send_panel_frame(c, AT_TYPE_START, marker, 2, 0, "preheat", false, now)) {
         return false;
     }
+    c->run_mode = AT_RUN_PREHEAT;
     uint8_t dur[2] = {(uint8_t)(minutes >> 8), (uint8_t)(minutes & 0xFF)};
     send_panel_frame(c, AT_TYPE_PREHEAT_DUR, dur, 2, 1500, "preheat-time", false, now);
     return true;
@@ -563,7 +569,11 @@ bool at_cmd_start_thermostat(at_core_t *c, uint32_t now)
 {
     static const uint8_t m[2] = {0x00, 0x22};
     c->panel_stop_hold = false;
-    return send_panel_frame(c, AT_TYPE_START, m, 2, 0, "thermostat", false, now);
+    if (!send_panel_frame(c, AT_TYPE_START, m, 2, 0, "thermostat", false, now)) {
+        return false;
+    }
+    c->run_mode = AT_RUN_THERMOSTAT;
+    return true;
 }
 
 bool at_cmd_stop(at_core_t *c, uint32_t now)
@@ -610,6 +620,7 @@ void at_core_snapshot(const at_core_t *c, uint32_t now, at_snapshot_t *s)
     s->panel_stop_hold = c->panel_stop_hold;
     s->panel_control_seq = c->panel_control_seq;
     s->panel_last_control_type = c->panel_last_control_type;
+    s->run_mode = c->run_mode;
     s->own_polls = c->own_polls;
     /* With no controller there is no cabin reading to go stale; the heater's status is what counts. */
     s->stale = !c->have_status || s->status_age_ms > AT_STALE_AFTER_MS ||
