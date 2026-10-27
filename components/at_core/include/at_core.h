@@ -53,7 +53,8 @@ typedef struct {
     char dir;           /* P panel->heater, H heater->panel, I injected, R injection reply,
                            C cached replay to panel, F filtered (not forwarded), S stray
                            (forwarded to the heater only),
-                           O own poll sent while the controller is silent */
+                           O own poll sent while the controller is silent,
+                           E heater's echo of our start, passed on to the controller */
     bool crc_ok;
     uint8_t len;        /* bytes stored in data (truncated to AT_LOG_BYTES) */
     uint16_t full_len;

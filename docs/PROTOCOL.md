@@ -240,6 +240,19 @@ bytes toward the controller (panel->heater strays still pass through).
 The same capture confirmed the controller's own thermostat start as
 `type01, 00 22`, echoed back by the heater.
 
+**Why the controller shows preheat for a Hearth start (2026-10-27):** a
+clean 1.0018 capture of a thermostat start from the controller (after a
+power cycle) is a single `aa 03 02 00 01 00 22 20 b9`, answered by the
+heater's echo `aa 04 02 00 01 00 22 97 b8`, then the heater's unprompted
+`aa 02 00 00 04 63 3c`. Byte for byte the same start the Hearth injects.
+The difference is only who sees it: an injected start and its echo stay
+on the Hearth-heater leg, so the controller only sees the heater running
+and shows its own idea of the mode. RoamOS 1.0019 passes the heater's echo
+of an injected start on to the controller (`E` in the bus log) as an
+experiment. On power-up the controller also queried types `0x06`, `0x04`
+and `0x20` (reply `58 00 55 01 28 00 00 00 00`, likely stored settings),
+which is the next lead if the echo is not enough.
+
 ## Extended diagnostic-mode telemetry (dev `0x02`, type `0x01`, 58-byte payload)
 
 The vendor's own Windows diagnostic tool ("Autoterm Test") talks to the

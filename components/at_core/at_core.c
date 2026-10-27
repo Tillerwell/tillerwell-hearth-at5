@@ -301,6 +301,13 @@ static void heater_reply_cb(at_ev_kind_t kind, const uint8_t *data, size_t len, 
     log_add(c, x->now, 'R', data, len, crc_ok);
     if (crc_ok && !x->got_reply) {
         x->got_reply = true;
+        /* Experimental: the Comfort Controller only shows thermostat for a
+         * start it sent itself, so let it see the heater's echo of ours
+         * (00 22 is byte for byte its own thermostat start). */
+        if (len > 4 && data[4] == AT_TYPE_START && c->q_count && c->q[c->q_head].frame[4] == AT_TYPE_START) {
+            c->panel.write(c->panel.ctx, data, len);
+            log_add(c, x->now, 'E', data, len, true);
+        }
     }
 }
 

@@ -220,6 +220,9 @@ typedef struct {
     int panel_polls;
     bool panel_polling;
     int panel_ext_seen;
+    int panel_start_echoes;
+    uint8_t panel_last_echo[AT_MAX_FRAME];
+    size_t panel_last_echo_len;
     uint8_t panel_last_status[AT_MAX_FRAME];
     size_t panel_last_status_len;
     uint32_t now;
@@ -252,7 +255,7 @@ static void heater_cb(at_ev_kind_t k, const uint8_t *d, size_t n, bool ok, void 
     case 0x11: on = at_build_frame(0, 0x11, NULL, 0, out); break;
     case 0x01:
         s->heater_state = 2; /* any run time starts it */
-        on = at_build_frame(2, 0x04, NULL, 0, out);
+        on = at_build_frame(4, 0x01, d + 5, n - 7, out); /* echoes the payload, as the real heater does */
         break;
     case 0x02: on = at_build_frame(2, 0x04, NULL, 0, out); break;
     case 0x03:
@@ -280,6 +283,11 @@ static void panel_cb(at_ev_kind_t k, const uint8_t *d, size_t n, bool ok, void *
         s->panel_last_status_len = n;
     }
     if (d[1] == 0x00 && d[4] == 0x11) s->panel_acks++;
+    if (d[1] == 0x04 && d[4] == 0x01) {
+        s->panel_start_echoes++;
+        memcpy(s->panel_last_echo, d, n);
+        s->panel_last_echo_len = n;
+    }
 }
 
 static void sim_init(sim_t *s)
@@ -411,11 +419,15 @@ static void test_injection(void)
     CHECK(sn.inject_ok == 1 && sn.inject_fail == 0 && sn.queue_len == 0);
     CHECK(s.panel_status_replies > base_status_replies); /* panel kept being served */
     (void)before;
+    /* the controller sees the heater's echo, exactly as after its own start */
+    static const uint8_t heater_echo[] = {0xaa, 0x04, 0x02, 0x00, 0x01, 0x00, 0x22, 0x97, 0xb8};
+    CHECK(s.panel_start_echoes == 1 && EQV(s.panel_last_echo, s.panel_last_echo_len, heater_echo));
 
     /* stop */
     CHECK(at_cmd_stop(&c, s.now));
     sim_run(&s, &c, 3000);
     CHECK(count_type(&s, 0x03) == 1 && s.heater_state == 0);
+    CHECK(s.panel_start_echoes == 1); /* only starts are echoed */
 
     /* preheat sends marker then duration, 1.5 s apart */
     CHECK(at_cmd_start_preheat(&c, 90, s.now));
