@@ -207,6 +207,8 @@ typedef struct {
     size_t pending_len;
     int got_frames;
     uint8_t got_types[32];
+    uint8_t last_start[AT_MAX_FRAME]; /* the last start (type 0x01) frame, byte for byte */
+    size_t last_start_len;
     int heater_state;
     int ack_delay_ms;
     bool heater_silent;
@@ -233,6 +235,7 @@ static void heater_cb(at_ev_kind_t k, const uint8_t *d, size_t n, bool ok, void 
     if (k != AT_EV_FRAME || !ok) return;
     if (s->got_frames < 32) s->got_types[s->got_frames] = d[4];
     s->got_frames++;
+    if (d[4] == 0x01 && n <= sizeof(s->last_start)) { memcpy(s->last_start, d, n); s->last_start_len = n; }
     if (s->heater_silent) return;
     uint8_t out[AT_MAX_FRAME];
     size_t on = 0;
@@ -247,7 +250,7 @@ static void heater_cb(at_ev_kind_t k, const uint8_t *d, size_t n, bool ok, void 
     }
     case 0x11: on = at_build_frame(0, 0x11, NULL, 0, out); break;
     case 0x01:
-        if (d[6] == 0x22 || d[6] == 0x1E) s->heater_state = 2;
+        s->heater_state = 2; /* any run time starts it */
         on = at_build_frame(2, 0x04, NULL, 0, out);
         break;
     case 0x02: on = at_build_frame(2, 0x04, NULL, 0, out); break;
@@ -369,6 +372,9 @@ static void test_injection(void)
     CHECK(at_cmd_start_thermostat(&c, s.now));
     sim_run(&s, &c, 3000);
     CHECK(count_type(&s, 0x01) == 1);
+    /* the panel's own "thermostat, indefinitely" start, captured off the bus: the payload is a run time, ff fb = no limit */
+    static const uint8_t panel_thermostat[] = {0xaa, 0x03, 0x02, 0x00, 0x01, 0xff, 0xfb, 0x4a, 0x39};
+    CHECK(EQV(s.last_start, s.last_start_len, panel_thermostat));
     CHECK(s.heater_state == 2);
     at_snapshot_t sn;
     at_core_snapshot(&c, s.now, &sn);

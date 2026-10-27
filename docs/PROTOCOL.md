@@ -114,12 +114,27 @@ isn't fully nailed down; test and watch the bus rather than assuming.
 
 **Start, thermostat mode:**
 ```
-type01, payload = 00 22      (fixed marker, in every case observed)
+type01, payload = ff fb      (thermostat, run indefinitely)
 ```
-No `type02` ever follows in thermostat mode -- consistent with the panel
-managing its own stop timing rather than giving the heater a duration.
+The `type01` payload is a run time in minutes, not a mode marker. Captured
+off the bus on 2026-10-27 (Autoterm Flow with its own panel):
 
-**Resolved:** the heater has been observed self-stopping (going idle,
+| Panel start | `type01` payload | What the heater did |
+|---|---|---|
+| Thermostat, run indefinitely | `ff fb` | kept running, panel shows thermostat, indefinitely |
+| (box firmware up to RoamOS 1.0007) | `00 22` | ran 34 min + ignition (37 min), then stopped; panel showed preheating |
+| (a panel start right after the box's run) | `00 03` | ran 3 min, then cooled down with no stop and no fault |
+| Preheat, default | `00 1e` | 30 min preheat |
+
+The panel also sent `type21, payload 05 a0` three times around the
+thermostat selection (heater replied `01 5b 00`); its meaning is unknown and
+the box does not send it. The box sends `ff fb` for its thermostat starts.
+
+**Superseded (2026-10-27):** the 30-40 minute self-stops below were the
+`00 22` payload being a 34-minute run, not a heater safety trip. Kept for
+the record.
+
+**Resolved (at the time):** the heater has been observed self-stopping (going idle,
 then restarting itself within seconds) roughly every 30-40 minutes under
 this app's own Auto thermostat/Prevent freezing, which never send a
 duration and never send a `stop` in that window either (confirmed from a

@@ -501,9 +501,11 @@ bool at_cmd_set_preheat_duration(at_core_t *c, int minutes, uint32_t now)
     return send_panel_frame(c, AT_TYPE_PREHEAT_DUR, dur, 2, 0, "preheat-time", now);
 }
 
+/* The start payload is a run time in minutes: 00 22 is a 34-minute run that the panel shows as preheating.
+ * ff fb is what the panel itself sends for thermostat mode, run indefinitely. */
 bool at_cmd_start_thermostat(at_core_t *c, uint32_t now)
 {
-    static const uint8_t m[2] = {0x00, 0x22};
+    static const uint8_t m[2] = {0xFF, 0xFB};
     return send_panel_frame(c, AT_TYPE_START, m, 2, 0, "thermostat", now);
 }
 
