@@ -188,6 +188,7 @@ static uint32_t s_last_preheat_stop_ms;
 
 static void ctl_task(void *arg)
 {
+    uint32_t panel_control_seq = 0;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(3000));
         at_settings_t cfg;
@@ -197,6 +198,16 @@ static void ctl_task(void *arg)
         uint32_t now = at_now_ms();
 
         xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+        if (snap.panel_control_seq != panel_control_seq) {
+            panel_control_seq = snap.panel_control_seq;
+            at_ctl_disarm_auto(&s_ctl, "physical controller took control -> Auto disabled");
+            at_settings_t panel_cfg;
+            at_settings_get(&panel_cfg);
+            if (panel_cfg.auto_enabled) {
+                panel_cfg.auto_enabled = false;
+                at_settings_set(&panel_cfg);
+            }
+        }
         at_ctl_tick(&s_ctl, &snap, now, &s_ops);
         bool thermostat = s_ctl.autot.enabled;
         xSemaphoreGive(s_ctl_lock);
@@ -328,7 +339,19 @@ bool at_app_set_preheat_duration(int minutes)
 }
 
 bool at_app_start_thermostat(void) { return core_cmd(at_cmd_start_thermostat); }
-bool at_app_stop(void) { return core_cmd(at_cmd_stop); }
+bool at_app_stop(void)
+{
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    at_ctl_disarm_auto(&s_ctl, "manual Hearth stop");
+    xSemaphoreGive(s_ctl_lock);
+    at_settings_t cfg;
+    at_settings_get(&cfg);
+    if (cfg.auto_enabled) {
+        cfg.auto_enabled = false;
+        at_settings_set(&cfg);
+    }
+    return core_cmd(at_cmd_stop_manual);
+}
 bool at_app_start_pump(void) { return core_cmd(at_cmd_start_pump); }
 bool at_app_send_pubr0(void) { return core_cmd(at_cmd_send_pubr0); }
 

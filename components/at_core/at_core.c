@@ -131,6 +131,21 @@ static void relay_cb(at_ev_kind_t kind, const uint8_t *data, size_t len, bool cr
         log_add(c, r->now, 'S', data, len, false);
         return;
     }
+    if (!r->from_heater && crc_ok && len > 4 && data[1] == AT_DEV_PANEL &&
+        (data[4] == AT_TYPE_START || data[4] == AT_TYPE_STOP)) {
+        size_t plen = len - AT_HEADER_LEN - AT_CRC_LEN;
+        if (data[4] == AT_TYPE_START && c->panel_stop_hold && plen == 2 &&
+            data[AT_HEADER_LEN] == 0 && data[AT_HEADER_LEN + 1] == 1) {
+            /* An already-armed Comfort Controller thermostat retries with
+             * 00 01 after an external stop.  Do not let that undo a manual
+             * Hearth stop; a newly selected controller mode clears the hold. */
+            log_add(c, r->now, 'B', data, len, true);
+            return;
+        }
+        c->panel_stop_hold = false;
+        c->panel_last_control_type = data[4];
+        c->panel_control_seq++;
+    }
     if (r->from_heater && crc_ok && at_is_extended_frame(data, len)) {
         log_add(c, r->now, 'F', data, len, true); /* never forwarded: confuses the panel */
     } else {
@@ -480,11 +495,17 @@ void at_core_step(at_core_t *c, uint32_t now)
 /* ---- commands ------------------------------------------------------------- */
 
 static bool send_panel_frame(at_core_t *c, uint8_t type, const uint8_t *payload, size_t plen,
-                             uint32_t delay_ms, const char *note, uint32_t now)
+                             uint32_t delay_ms, const char *note, bool hold_panel_restart, uint32_t now)
 {
     uint8_t f[AT_MAX_FRAME];
     size_t n = at_build_frame(AT_DEV_PANEL, type, payload, plen, f);
-    return n && at_core_enqueue(c, f, n, delay_ms, false, note, now);
+    if (!n || !at_core_enqueue(c, f, n, delay_ms, false, note, now)) {
+        return false;
+    }
+    if (hold_panel_restart) {
+        c->panel_stop_hold = true;
+    }
+    return true;
 }
 
 bool at_cmd_start_preheat(at_core_t *c, int minutes, uint32_t now)
@@ -492,11 +513,12 @@ bool at_cmd_start_preheat(at_core_t *c, int minutes, uint32_t now)
     if (minutes < 0) minutes = 0;
     if (minutes > 600) minutes = 600;
     static const uint8_t marker[2] = {0x00, 0x1E};
-    if (!send_panel_frame(c, AT_TYPE_START, marker, 2, 0, "preheat", now)) {
+    c->panel_stop_hold = false;
+    if (!send_panel_frame(c, AT_TYPE_START, marker, 2, 0, "preheat", false, now)) {
         return false;
     }
     uint8_t dur[2] = {(uint8_t)(minutes >> 8), (uint8_t)(minutes & 0xFF)};
-    send_panel_frame(c, AT_TYPE_PREHEAT_DUR, dur, 2, 1500, "preheat-time", now);
+    send_panel_frame(c, AT_TYPE_PREHEAT_DUR, dur, 2, 1500, "preheat-time", false, now);
     return true;
 }
 
@@ -505,26 +527,34 @@ bool at_cmd_set_preheat_duration(at_core_t *c, int minutes, uint32_t now)
     if (minutes < 1) minutes = 1;
     if (minutes > 600) minutes = 600;
     uint8_t dur[2] = {(uint8_t)(minutes >> 8), (uint8_t)(minutes & 0xFF)};
-    return send_panel_frame(c, AT_TYPE_PREHEAT_DUR, dur, 2, 0, "preheat-time", now);
+    return send_panel_frame(c, AT_TYPE_PREHEAT_DUR, dur, 2, 0, "preheat-time", false, now);
 }
 
-/* The start payload is a run time in minutes: 00 22 is a 34-minute run that the panel shows as preheating.
- * ff fb is what the panel itself sends for thermostat mode, run indefinitely. */
+/* The Comfort Controller selects thermostat mode with its default 34-minute
+ * start value (00 22).  It retains the selected mode locally, so injecting
+ * a different "unlimited" value makes the controller show preheat even
+ * though the heater accepts the start.  Mirror the controller's own frame. */
 bool at_cmd_start_thermostat(at_core_t *c, uint32_t now)
 {
-    static const uint8_t m[2] = {0xFF, 0xFB};
-    return send_panel_frame(c, AT_TYPE_START, m, 2, 0, "thermostat", now);
+    static const uint8_t m[2] = {0x00, 0x22};
+    c->panel_stop_hold = false;
+    return send_panel_frame(c, AT_TYPE_START, m, 2, 0, "thermostat", false, now);
 }
 
 bool at_cmd_stop(at_core_t *c, uint32_t now)
 {
-    return send_panel_frame(c, AT_TYPE_STOP, NULL, 0, 0, "stop", now);
+    return send_panel_frame(c, AT_TYPE_STOP, NULL, 0, 0, "stop", false, now);
+}
+
+bool at_cmd_stop_manual(at_core_t *c, uint32_t now)
+{
+    return send_panel_frame(c, AT_TYPE_STOP, NULL, 0, 0, "stop", true, now);
 }
 
 bool at_cmd_start_pump(at_core_t *c, uint32_t now)
 {
     static const uint8_t m[2] = {0x00, 0x28};
-    return send_panel_frame(c, AT_TYPE_PUMP, m, 2, 0, "pump", now);
+    return send_panel_frame(c, AT_TYPE_PUMP, m, 2, 0, "pump", false, now);
 }
 
 bool at_cmd_send_pubr0(at_core_t *c, uint32_t now)
@@ -552,6 +582,9 @@ void at_core_snapshot(const at_core_t *c, uint32_t now, at_snapshot_t *s)
         s->cabin_age_ms = now - c->cabin_ms;
     }
     s->standalone = panel_silent(c, now);
+    s->panel_stop_hold = c->panel_stop_hold;
+    s->panel_control_seq = c->panel_control_seq;
+    s->panel_last_control_type = c->panel_last_control_type;
     s->own_polls = c->own_polls;
     /* With no controller there is no cabin reading to go stale; the heater's status is what counts. */
     s->stale = !c->have_status || s->status_age_ms > AT_STALE_AFTER_MS ||

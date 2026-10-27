@@ -70,6 +70,7 @@ bool at_ctl_effective_temp(const at_ctl_t *t, const at_snapshot_t *s, uint32_t n
 /* Turn Auto on/off. Acts immediately like the base project: on starts the
  * heater unless the cabin is already at/above target; off sends stop. */
 void at_ctl_set_auto(at_ctl_t *t, bool enabled, const at_snapshot_t *s, uint32_t now_ms, const at_ctl_ops_t *ops);
+void at_ctl_disarm_auto(at_ctl_t *t, const char *note);
 void at_ctl_set_auto_target(at_ctl_t *t, float target);
 void at_ctl_set_auto_range(at_ctl_t *t, float low, float high);
 void at_ctl_set_hysteresis(at_ctl_t *t, float hyst_min, float hyst_max);

@@ -210,6 +210,7 @@ function render(){
   if(s.burner_active)f+='<span class="pill ok">burning</span> ';
   if(s.fault_active)f+='<span class="pill bad">fault '+s.fault+'</span>';
   if(s.bypass_mode)f+=' <span class="pill warn">bypass</span>';
+  if(s.panel_stop_hold)f+=' <span class="pill">stopped by Hearth</span>';
   $('flags').innerHTML=f;
   $('cabin').textContent=fmt(s.cabin_temp,' °C');
   $('coolant').textContent=fmt(s.coolant_temp,' °C');

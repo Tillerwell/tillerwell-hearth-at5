@@ -116,6 +116,15 @@ void at_ctl_set_auto(at_ctl_t *t, bool enabled, const at_snapshot_t *s, uint32_t
     l->last_action_ms = now;
 }
 
+void at_ctl_disarm_auto(at_ctl_t *t, const char *note)
+{
+    t->autot.enabled = false;
+    t->autot.stop_pending = false;
+    t->autot.has_acted = false;
+    reset_retry(&t->autot);
+    set_note(&t->autot, "%s", note ? note : "physical controller took control");
+}
+
 void at_ctl_set_auto_target(at_ctl_t *t, float target)
 {
     t->autot.target = target;

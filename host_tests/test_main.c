@@ -333,6 +333,13 @@ static void bus_setup(sim_t *s, at_core_t *c)
     at_core_init(c, h, p);
 }
 
+static void panel_control(sim_t *s, uint8_t type, const uint8_t *payload, size_t plen)
+{
+    uint8_t f[AT_MAX_FRAME];
+    size_t n = at_build_frame(AT_DEV_PANEL, type, payload, plen, f);
+    fifo_put(&s->from_panel, f, n);
+}
+
 static void test_passthrough(void)
 {
     printf("relay passthrough\n");
@@ -373,8 +380,10 @@ static void test_injection(void)
     CHECK(at_cmd_start_thermostat(&c, s.now));
     sim_run(&s, &c, 3000);
     CHECK(count_type(&s, 0x01) == 1);
-    /* the panel's own "thermostat, indefinitely" start, captured off the bus: the payload is a run time, ff fb = no limit */
-    static const uint8_t panel_thermostat[] = {0xaa, 0x03, 0x02, 0x00, 0x01, 0xff, 0xfb, 0x4a, 0x39};
+    /* The Comfort Controller's thermostat start, captured from the production
+     * Flow 5.  The controller keeps this mode locally, so the injected frame
+     * must exactly match it. */
+    static const uint8_t panel_thermostat[] = {0xaa, 0x03, 0x02, 0x00, 0x01, 0x00, 0x22, 0x20, 0xb9};
     CHECK(EQV(s.last_start, s.last_start_len, panel_thermostat));
     CHECK(s.heater_state == 2);
     at_snapshot_t sn;
@@ -421,6 +430,43 @@ static void test_injection_no_reply(void)
     at_snapshot_t sn;
     at_core_snapshot(&c, s.now, &sn);
     CHECK(sn.inject_fail >= 1 && !sn.last_cmd_replied && sn.queue_len == 0);
+}
+
+static void test_manual_stop_panel_handoff(void)
+{
+    printf("manual stop and controller handoff\n");
+    static sim_t s;
+    static at_core_t c;
+    bus_setup(&s, &c);
+    sim_run(&s, &c, 3000);
+
+    static const uint8_t thermostat[] = {0x00, 0x22};
+    panel_control(&s, AT_TYPE_START, thermostat, sizeof(thermostat));
+    sim_run(&s, &c, 1000);
+    CHECK(s.heater_state == 2 && count_type(&s, AT_TYPE_START) == 1);
+
+    CHECK(at_cmd_stop_manual(&c, s.now));
+    sim_run(&s, &c, 1000);
+    at_snapshot_t sn;
+    at_core_snapshot(&c, s.now, &sn);
+    CHECK(s.heater_state == 0 && sn.panel_stop_hold);
+
+    /* The controller's armed thermostat retries with 00 01 after an external
+     * stop.  The manual stop remains authoritative. */
+    int starts = count_type(&s, AT_TYPE_START);
+    static const uint8_t retry[] = {0x00, 0x01};
+    panel_control(&s, AT_TYPE_START, retry, sizeof(retry));
+    sim_run(&s, &c, 200);
+    at_core_snapshot(&c, s.now, &sn);
+    CHECK(s.heater_state == 0 && count_type(&s, AT_TYPE_START) == starts && sn.panel_stop_hold);
+
+    /* Selecting thermostat again on the physical controller takes ownership
+     * back and starts the heater normally. */
+    panel_control(&s, AT_TYPE_START, thermostat, sizeof(thermostat));
+    sim_run(&s, &c, 1000);
+    at_core_snapshot(&c, s.now, &sn);
+    CHECK(s.heater_state == 2 && count_type(&s, AT_TYPE_START) == starts + 1);
+    CHECK(!sn.panel_stop_hold && sn.panel_last_control_type == AT_TYPE_START && sn.panel_control_seq == 2);
 }
 
 static void test_bypass(void)
@@ -1417,6 +1463,7 @@ int main(void)
     test_passthrough();
     test_injection();
     test_injection_no_reply();
+    test_manual_stop_panel_handoff();
     test_bypass();
     test_standalone();
     test_ext_filter_and_pubr0();

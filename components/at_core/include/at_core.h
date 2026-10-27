@@ -124,6 +124,12 @@ typedef struct {
     bool last_cmd_replied;
     uint32_t inject_fail_count, inject_ok_count;
 
+    /* A manual Hearth stop owns the heater until the physical controller is
+     * deliberately started again. */
+    bool panel_stop_hold;
+    uint32_t panel_control_seq;
+    uint8_t panel_last_control_type;
+
     /* relay scratch */
     uint8_t out_h[AT_MAX_FRAME * 2];
     size_t out_h_len;
@@ -171,6 +177,7 @@ bool at_cmd_start_preheat(at_core_t *c, int minutes, uint32_t now_ms);
 bool at_cmd_set_preheat_duration(at_core_t *c, int minutes, uint32_t now_ms);
 bool at_cmd_start_thermostat(at_core_t *c, uint32_t now_ms);
 bool at_cmd_stop(at_core_t *c, uint32_t now_ms);
+bool at_cmd_stop_manual(at_core_t *c, uint32_t now_ms);
 bool at_cmd_start_pump(at_core_t *c, uint32_t now_ms);
 bool at_cmd_send_pubr0(at_core_t *c, uint32_t now_ms);
 /* Experiments for a heater that does not start streaming after the plain handshake. Each only varies the PUBR0
@@ -208,6 +215,9 @@ typedef struct {
     bool last_cmd_replied;
 
     bool bypass;
+    bool panel_stop_hold;
+    uint32_t panel_control_seq;
+    uint8_t panel_last_control_type;
     int queue_len;
     uint32_t frames_panel, frames_heater;
     uint32_t bad_crc_heater, bad_crc_panel, resyncs_heater, resyncs_panel;

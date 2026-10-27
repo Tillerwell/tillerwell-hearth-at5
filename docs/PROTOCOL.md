@@ -114,25 +114,28 @@ isn't fully nailed down; test and watch the bus rather than assuming.
 
 **Start, thermostat mode:**
 ```
-type01, payload = ff fb      (thermostat, run indefinitely)
+type01, payload = 00 22      (Comfort Controller's thermostat selection)
 ```
-The `type01` payload is a run time in minutes, not a mode marker. Captured
-off the bus on 2026-10-27 (Autoterm Flow with its own panel):
+The start payload is controller-specific: the Comfort Controller retains its
+selected mode locally, so Hearth must send the same frame it observes from
+that controller. Captured off the bus on 2026-10-27 (Autoterm Flow with its
+own Comfort Controller):
 
 | Panel start | `type01` payload | What the heater did |
 |---|---|---|
-| Thermostat, run indefinitely | `ff fb` | kept running, panel shows thermostat, indefinitely |
-| (box firmware up to RoamOS 1.0007) | `00 22` | ran 34 min + ignition (37 min), then stopped; panel showed preheating |
+| Thermostat | `00 22` | panel shows thermostat |
+| (experimental box payload) | `ff fb` | heater accepts it, but the panel shows preheating |
 | (a panel start right after the box's run) | `00 03` | ran 3 min, then cooled down with no stop and no fault |
 | Preheat, default | `00 1e` | 30 min preheat |
 
-The panel also sent `type21, payload 05 a0` three times around the
-thermostat selection (heater replied `01 5b 00`); its meaning is unknown and
-the box does not send it. The box sends `ff fb` for its thermostat starts.
+The panel may send additional frames around a thermostat selection; their
+meaning is not yet known. Hearth mirrors the observed `00 22` start frame.
 
-**Superseded (2026-10-27):** the 30-40 minute self-stops below were the
-`00 22` payload being a 34-minute run, not a heater safety trip. Kept for
-the record.
+**Correction (2026-10-27):** an earlier interpretation treated `00 22` as a
+34-minute preheat duration. A direct Comfort Controller capture shows that it
+is also that controller's thermostat start frame; the controller keeps the
+mode selection locally. Do not substitute another start payload merely because
+it appears to encode a duration.
 
 **Resolved (at the time):** the heater has been observed self-stopping (going idle,
 then restarting itself within seconds) roughly every 30-40 minutes under
@@ -156,8 +159,8 @@ entire cooldown-to-idle span of one of these self-stops, clearing back to
 `0` the moment the next `start thermostat` brought it running again. `25`
 is `"Temperature growing too fast"` in the vendor string table (see the
 fault-name tables below) -- unconfirmed against a real fault before this,
-but it fits: thermostat mode here never sends a power-level/duration, so
-if the heater has no external cabin-temp feedback to modulate against, it
+but it fits: thermostat mode here does not send a separate power-level
+command, so if the heater has no external cabin-temp feedback to modulate against, it
 may just run at a fixed output until its own rate-of-rise safety trips,
 which would produce exactly this ~30-40 minute stop/restart cadence.
 Auto thermostat/Prevent freezing don't look at the fault byte before
