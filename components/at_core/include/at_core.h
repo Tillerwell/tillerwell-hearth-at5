@@ -51,7 +51,8 @@ typedef struct {
 typedef struct {
     uint32_t ms;
     char dir;           /* P panel->heater, H heater->panel, I injected, R injection reply,
-                           C cached replay to panel, F filtered (not forwarded), S stray,
+                           C cached replay to panel, F filtered (not forwarded), S stray
+                           (forwarded to the heater only),
                            O own poll sent while the controller is silent */
     bool crc_ok;
     uint8_t len;        /* bytes stored in data (truncated to AT_LOG_BYTES) */

@@ -115,6 +115,7 @@ static void probe_task(void *arg)
 {
     const int pins[2] = {CONFIG_AUTOTERM_HEATER_RX_GPIO, CONFIG_AUTOTERM_PANEL_RX_GPIO};
     adc_probe_init();
+    bool probed = false;
     for (;;) {
         int high[2] = {0, 0}, edges[2] = {0, 0}, last[2] = {gpio_get_level(pins[0]), gpio_get_level(pins[1])};
         for (int t = 0; t < 1000; t++) {
@@ -130,6 +131,13 @@ static void probe_task(void *arg)
             s_rx_high_pct[i] = high[i] / 10;
             s_rx_edges[i] = edges[i];
         }
+        /* Once only: borrowing the pin glitches the UART into reading a junk
+         * byte, and every second of that upset the Comfort Controller. The
+         * idle voltage does not change while running anyway. */
+        if (probed) {
+            continue;
+        }
+        probed = true;
         /* only between frames: the line must have stayed high for the last 60 ms */
         int quiet = 0;
         while (quiet < 60) {

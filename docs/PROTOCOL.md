@@ -227,6 +227,19 @@ further as of this writing -- if picking this up again, the next useful
 step is probably swapping the heater-leg adapter/cable and re-capturing,
 or instrumenting at a lower level than this project's own framer.
 
+**Hearth (ESP32), 2026-10-27:** the Comfort Controller was laggy through
+the box, still laggy with Bypass on, and fine wired straight to the
+heater. Every capture showed a stray `ff` (sometimes `fe`) on the heater
+leg about every 1.1 s: the once-a-second ADC read of the heater RX pin's
+idle voltage, which briefly takes the pin off the UART and makes it read
+a junk byte. The relay forwarded each one to the controller. Around each
+button press the controller resent its command (a stop twice ~1.7 s
+apart, `type 0x21` five times) and then sent nothing for ~50 s. RoamOS
+1.0018 reads the idle voltage once at boot only and never forwards stray
+bytes toward the controller (panel->heater strays still pass through).
+The same capture confirmed the controller's own thermostat start as
+`type01, 00 22`, echoed back by the heater.
+
 ## Extended diagnostic-mode telemetry (dev `0x02`, type `0x01`, 58-byte payload)
 
 The vendor's own Windows diagnostic tool ("Autoterm Test") talks to the

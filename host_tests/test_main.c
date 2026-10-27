@@ -593,6 +593,27 @@ static void test_ext_filter_and_pubr0(void)
     CHECK(sn.have_ext && sn.ext_active && sn.ext.flame_temp_c == V_EXT_FLAME);
 }
 
+static void test_strays_not_to_panel(void)
+{
+    printf("stray bytes never reach the controller\n");
+    static sim_t s;
+    static at_core_t c;
+    bus_setup(&s, &c);
+    sim_run(&s, &c, 2500);
+    int replies = s.panel_status_replies;
+    /* a line glitch on the heater RX reads as a lone 0xff between frames */
+    for (int i = 0; i < 5; i++) {
+        fifo_put(&s.from_heater, (const uint8_t[]){0xFF}, 1);
+        sim_run(&s, &c, 1000);
+    }
+    CHECK(s.pf.dropped == 0);
+    CHECK(s.panel_status_replies > replies);
+    /* the other way stays byte-for-byte */
+    fifo_put(&s.from_panel, (const uint8_t[]){0xFE}, 1);
+    sim_run(&s, &c, 300);
+    CHECK(s.hf.dropped == 1);
+}
+
 static void test_fault_tracking(void)
 {
     printf("fault tracking\n");
@@ -1487,6 +1508,7 @@ int main(void)
     test_bypass();
     test_standalone();
     test_ext_filter_and_pubr0();
+    test_strays_not_to_panel();
     test_fault_tracking();
     test_ctl();
     test_timer_rules();

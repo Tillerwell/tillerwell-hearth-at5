@@ -124,7 +124,10 @@ static void relay_cb(at_ev_kind_t kind, const uint8_t *data, size_t len, bool cr
     size_t *outlen = r->from_heater ? &c->out_h_len : &c->out_p_len;
 
     if (kind == AT_EV_STRAY) {
-        if (*outlen + len <= sizeof(c->out_h)) {
+        /* Never toward the controller: a lone junk byte every second (line
+         * glitches on the heater RX) left the Comfort Controller retrying
+         * its commands and going silent for ~50 s at a time. */
+        if (!r->from_heater && *outlen + len <= sizeof(c->out_h)) {
             memcpy(out + *outlen, data, len);
             *outlen += len;
         }

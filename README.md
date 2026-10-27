@@ -72,7 +72,8 @@ Factory reset (settings and Matter pairing): hold BOOT 10 s and let go, or `fact
 - **Bypass switch**: relay only, never sends anything.
 - **Extended telemetry** (experimental, off): the vendor tool's handshake once a minute for supply voltage, flame temperature and so on. Flow 5 / BINAR-5S layout only. Can upset the controller on some units.
 - **Bus log** on the Diagnostics tab and counters for CRC errors, so a wrong wire colour shows up immediately.
-- **Line probe** for wiring checks: `/api/status` reports, for each RX pin over the last second, the share of time it was high (`rx_heater_high_pct`, `rx_controller_high_pct`) and how often it changed (`rx_heater_edges`, `rx_controller_edges`). An idle line reads about 100 % high; 0 % with no edges means the line is held low (a divider, or a wire that is not the data line); 100 % with no edges for long means nothing is sending on it.
+- **Line probe** for wiring checks: `/api/status` reports, for each RX pin over the last second, the share of time it was high (`rx_heater_high_pct`, `rx_controller_high_pct`) and how often it changed (`rx_heater_edges`, `rx_controller_edges`). An idle line reads about 100 % high; 0 % with no edges means the line is held low (a divider, or a wire that is not the data line); 100 % with no edges for long means nothing is sending on it. `rx_heater_idle_mv` (the heater RX pin's idle voltage) is read once at boot only: borrowing the pin for the ADC makes the UART read a junk byte.
+- **Stray bytes** (anything outside a frame) are passed on to the heater but never to the controller. A junk byte every second left the Comfort Controller retrying commands and unresponsive for about 50 s at a time.
 
 ## Before you trust it
 
