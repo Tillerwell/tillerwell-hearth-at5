@@ -67,200 +67,41 @@ static esp_err_t broker_ensure(void)
     return ESP_OK;
 }
 
-/* ---- discovery table --------------------------------------------------------- */
+/* ---- discovery cleanup ------------------------------------------------------- */
 
-typedef enum { E_SENSOR, E_BINARY, E_SWITCH, E_NUMBER, E_BUTTON } ekind_t;
-
-typedef struct {
-    ekind_t kind;
-    const char *id;        /* object id, also the state field for sensors/binaries/switches/numbers */
-    const char *name;
-    const char *field;     /* JSON field in the state document (NULL for buttons) */
-    const char *cmd;       /* command suffix for switch / number / button */
-    const char *dc;        /* device_class */
-    const char *unit;
-    const char *sc;        /* state_class */
-    const char *cat;       /* entity_category */
-    const char *icon;
-    float min, max, step;  /* number */
-} ent_t;
-
-static const ent_t ENTS[] = {
-    {E_SENSOR, "state", "State", "state", NULL, "enum", NULL, NULL, NULL, "mdi:radiator", 0, 0, 0},
-    {E_SENSOR, "state_code", "State code", "state_raw", NULL, NULL, NULL, NULL, "diagnostic", "mdi:radiator", 0, 0, 0},
-    {E_SENSOR, "fault_code", "Fault code", "fault", NULL, NULL, NULL, NULL, "diagnostic", "mdi:alert-circle-outline", 0, 0, 0},
-    {E_SENSOR, "fault_name", "Fault", "fault_name", NULL, NULL, NULL, NULL, NULL, "mdi:alert-circle-outline", 0, 0, 0},
-    {E_BINARY, "fault_active", "Fault active", "fault_active", NULL, "problem", NULL, NULL, NULL, NULL, 0, 0, 0},
-    {E_SENSOR, "last_fault_name", "Last fault", "last_fault_name", NULL, NULL, NULL, NULL, "diagnostic", "mdi:alert-circle-outline", 0, 0, 0},
-    {E_SENSOR, "cabin_temp", "Temperature at controller", "cabin_temp", NULL, "temperature", "°C", "measurement", NULL, NULL, 0, 0, 0},
-    {E_SENSOR, "coolant_temp", "Coolant temperature", "coolant_temp", NULL, "temperature", "°C", "measurement", NULL, NULL, 0, 0, 0},
-    {E_SENSOR, "effective_temp", "Thermostat temperature", "effective_temp", NULL, "temperature", "°C", "measurement", NULL, NULL, 0, 0, 0},
-    {E_SENSOR, "elapsed_min", "Elapsed run time", "elapsed_min", NULL, NULL, "min", NULL, "diagnostic", "mdi:timer-outline", 0, 0, 0},
-    {E_BINARY, "burner_active", "Burner active", "burner_active", NULL, "heat", NULL, NULL, NULL, NULL, 0, 0, 0},
-    {E_BINARY, "stale", "Telemetry stale", "stale", NULL, "problem", NULL, NULL, "diagnostic", NULL, 0, 0, 0},
-    {E_BINARY, "external_temp_active", "Using external temperature", "external_temp_active", NULL, NULL, NULL, NULL, "diagnostic", NULL, 0, 0, 0},
-    {E_SWITCH, "use_external_temp", "Use external temperature", "use_external_temp", "use_external_temp/set", NULL, NULL, NULL, "config", "mdi:thermometer-lines", 0, 0, 0},
-    {E_SENSOR, "auto_note", "Auto thermostat note", "auto_note", NULL, NULL, NULL, NULL, "diagnostic", "mdi:message-text-outline", 0, 0, 0},
-    {E_SWITCH, "prevent_freezing", "Prevent freezing", "prevent_freezing_enabled", "prevent_freezing/set", NULL, NULL, NULL, NULL, "mdi:snowflake-alert", 0, 0, 0},
-    {E_NUMBER, "prevent_freezing_target", "Prevent freezing target", "prevent_freezing_target", "prevent_freezing_target/set", NULL, "°C", NULL, NULL, "mdi:thermometer-low", 0, 10, 0.5f},
-    {E_SENSOR, "prevent_freezing_note", "Prevent freezing note", "prevent_freezing_note", NULL, NULL, NULL, NULL, "diagnostic", "mdi:message-text-outline", 0, 0, 0},
-    {E_NUMBER, "preheat_minutes", "Preheat duration", "preheat_minutes", "preheat_minutes/set", NULL, "min", NULL, NULL, "mdi:timer-cog-outline", 1, 600, 1},
-    {E_BINARY, "clock_ok", "Clock set (timers can run)", "clock_ok", NULL, NULL, NULL, NULL, "diagnostic", "mdi:clock-check-outline", 0, 0, 0},
-    {E_SENSOR, "timer_note", "Last timer event", "timer_note", NULL, NULL, NULL, NULL, "diagnostic", "mdi:timer-cog-outline", 0, 0, 0},
-    {E_BUTTON, "start_preheat", "Start preheat", NULL, "start_preheat", NULL, NULL, NULL, NULL, "mdi:fire", 0, 0, 0},
-    {E_BUTTON, "start_thermostat", "Start thermostat (manual)", NULL, "start_thermostat", NULL, NULL, NULL, NULL, "mdi:thermostat", 0, 0, 0},
-    {E_BUTTON, "stop", "Stop", NULL, "stop", NULL, NULL, NULL, NULL, "mdi:stop-circle-outline", 0, 0, 0},
-    {E_BUTTON, "start_pump", "Start pump (ventilation only)", NULL, "start_pump", NULL, NULL, NULL, NULL, "mdi:fan", 0, 0, 0},
-    {E_SWITCH, "bypass_mode", "Bypass (never send commands)", "bypass_mode", "bypass_mode/set", NULL, NULL, NULL, "config", "mdi:transit-connection-variant", 0, 0, 0},
-    {E_SWITCH, "debug_mode", "Extended telemetry probing", "debug_mode", "debug_mode/set", NULL, NULL, NULL, "config", "mdi:bug-outline", 0, 0, 0},
-    {E_BUTTON, "send_debug_handshake", "Send debug handshake now", NULL, "send_debug_handshake", NULL, NULL, NULL, "config", "mdi:handshake-outline", 0, 0, 0},
-    {E_BINARY, "extended_active", "Extended telemetry active", "extended_active", NULL, NULL, NULL, NULL, "diagnostic", "mdi:radar", 0, 0, 0},
-    {E_SENSOR, "supply_voltage", "Battery voltage", "supply_voltage", NULL, "voltage", "V", "measurement", NULL, NULL, 0, 0, 0},
-    {E_SENSOR, "ext_mode_name", "Mode of operation", "ext_mode_name", NULL, NULL, NULL, NULL, NULL, "mdi:state-machine", 0, 0, 0},
-    {E_SENSOR, "ext_flame_temp", "Flame temperature", "ext_flame_temp_c", NULL, "temperature", "°C", "measurement", NULL, NULL, 0, 0, 0},
-    {E_SENSOR, "ext_liquid_temp", "Liquid temperature (extended)", "ext_liquid_temp_c", NULL, "temperature", "°C", "measurement", NULL, NULL, 0, 0, 0},
-    {E_SENSOR, "ext_overheat_temp", "Overheat sensor temperature", "ext_overheat_temp_c", NULL, "temperature", "°C", "measurement", NULL, NULL, 0, 0, 0},
-    {E_SENSOR, "ext_board_temp", "Board temperature", "ext_board_temp_c", NULL, "temperature", "°C", "measurement", NULL, NULL, 0, 0, 0},
-    {E_SENSOR, "ext_fuel_pump_hz", "Fuel pump frequency", "ext_fuel_pump_hz", NULL, NULL, "Hz", "measurement", NULL, "mdi:gas-station-outline", 0, 0, 0},
-    {E_SENSOR, "ext_output_pct", "Heater output", "ext_output_pct", NULL, NULL, "%", "measurement", NULL, "mdi:gauge", 0, 0, 0},
-    {E_BINARY, "ext_glow_plug", "Glow plug", "ext_glow_plug", NULL, "heat", NULL, NULL, NULL, NULL, 0, 0, 0},
-    {E_SENSOR, "ext_fault_name", "Fault (extended)", "ext_fault_name", NULL, NULL, NULL, NULL, "diagnostic", "mdi:alert-circle-outline", 0, 0, 0},
+/* Home Assistant uses the Tillerwell integration (HTTP), not MQTT entities. Older firmware published ~45 retained
+ * discovery configs; an empty retained payload on each of their topics removes any that are left over. Only the
+ * topics are needed, so nothing else of the old entity table is kept. */
+static const struct {
+    const char *comp;
+    const char *id;
+} OLD_ENTS[] = {
+    {"sensor", "state"}, {"sensor", "state_code"}, {"sensor", "fault_code"}, {"sensor", "fault_name"},
+    {"binary_sensor", "fault_active"}, {"sensor", "last_fault_name"}, {"sensor", "cabin_temp"},
+    {"sensor", "coolant_temp"}, {"sensor", "effective_temp"}, {"sensor", "elapsed_min"},
+    {"binary_sensor", "burner_active"}, {"binary_sensor", "stale"}, {"binary_sensor", "external_temp_active"},
+    {"switch", "use_external_temp"}, {"sensor", "auto_note"}, {"switch", "prevent_freezing"},
+    {"number", "prevent_freezing_target"}, {"sensor", "prevent_freezing_note"}, {"number", "preheat_minutes"},
+    {"binary_sensor", "clock_ok"}, {"sensor", "timer_note"}, {"button", "start_preheat"},
+    {"button", "start_thermostat"}, {"button", "stop"}, {"button", "start_pump"}, {"switch", "bypass_mode"},
+    {"switch", "debug_mode"}, {"button", "send_debug_handshake"}, {"binary_sensor", "extended_active"},
+    {"sensor", "supply_voltage"}, {"sensor", "ext_mode_name"}, {"sensor", "ext_flame_temp"},
+    {"sensor", "ext_liquid_temp"}, {"sensor", "ext_overheat_temp"}, {"sensor", "ext_board_temp"},
+    {"sensor", "ext_fuel_pump_hz"}, {"sensor", "ext_output_pct"}, {"binary_sensor", "ext_glow_plug"},
+    {"sensor", "ext_fault_name"}, {"climate", "thermostat"},
 };
-
-static void tpl_value(char *out, size_t n, const char *f)
-{
-    snprintf(out, n, "{{ value_json.%s if value_json.%s is not none else '' }}", f, f);
-}
-
-static void tpl_onoff(char *out, size_t n, const char *f)
-{
-    snprintf(out, n, "{{ 'ON' if value_json.%s else 'OFF' }}", f);
-}
 
 static void pub(const char *topic, const char *payload, int qos, bool retain)
 {
     esp_mqtt_client_enqueue(s_client, topic, payload, 0, qos, retain, true);
 }
 
-static cJSON *device_obj(void)
-{
-    cJSON *d = cJSON_CreateObject();
-    cJSON *ids = cJSON_AddArrayToObject(d, "identifiers");
-    cJSON_AddItemToArray(ids, cJSON_CreateString(s_node));
-    char nm[64];
-    snprintf(nm, sizeof(nm), "Tillerwell Hearth (%s)", s_node + strlen("hearth_"));
-    cJSON_AddStringToObject(d, "name", nm);
-    cJSON_AddStringToObject(d, "manufacturer", "Tillerwell");
-    cJSON_AddStringToObject(d, "model", "Hearth (bridge for Autoterm diesel heaters)");
-    return d;
-}
-
-static void add_common(cJSON *o, const ent_t *e, const char *availability)
-{
-    char uid[96];
-    snprintf(uid, sizeof(uid), "%s_%s", s_node, e->id);
-    cJSON_AddStringToObject(o, "name", e->name);
-    cJSON_AddStringToObject(o, "unique_id", uid);
-    cJSON_AddStringToObject(o, "availability_topic", availability);
-    cJSON_AddItemToObject(o, "device", device_obj());
-    if (e->icon) cJSON_AddStringToObject(o, "icon", e->icon);
-    if (e->cat) cJSON_AddStringToObject(o, "entity_category", e->cat);
-}
-
-/* Home Assistant uses the Tillerwell integration (HTTP), not MQTT entities. Publishing ~45 full configs overloaded the
- * box, so only an empty retained payload goes out, which removes any left over from older firmware. */
-static void pub_config(const char *topic, const char *js)
-{
-    (void)js;
-    pub(topic, "", 0, true);
-}
-
 static void publish_discovery(void)
 {
-    char avail[96], state[96], cmdt[128], topic[160], tpl[160];
-    snprintf(avail, sizeof(avail), "%s/availability", s_base);
-    snprintf(state, sizeof(state), "%s/state", s_base);
-
-    for (size_t i = 0; i < sizeof(ENTS) / sizeof(ENTS[0]); i++) {
-        const ent_t *e = &ENTS[i];
-        const char *comp = e->kind == E_SENSOR ? "sensor" : e->kind == E_BINARY ? "binary_sensor" :
-                           e->kind == E_SWITCH ? "switch" : e->kind == E_NUMBER ? "number" : "button";
-        cJSON *o = cJSON_CreateObject();
-        add_common(o, e, avail);
-        if (e->kind != E_BUTTON) cJSON_AddStringToObject(o, "state_topic", state);
-        if (e->cmd) {
-            snprintf(cmdt, sizeof(cmdt), "%s/cmd/%s", s_base, e->cmd);
-            cJSON_AddStringToObject(o, "command_topic", cmdt);
-        }
-        switch (e->kind) {
-        case E_SENSOR:
-            tpl_value(tpl, sizeof(tpl), e->field);
-            cJSON_AddStringToObject(o, "value_template", tpl);
-            if (e->dc) cJSON_AddStringToObject(o, "device_class", e->dc);
-            if (e->unit) cJSON_AddStringToObject(o, "unit_of_measurement", e->unit);
-            if (e->sc) cJSON_AddStringToObject(o, "state_class", e->sc);
-            if (e->dc && !strcmp(e->dc, "enum")) {
-                cJSON *opt = cJSON_AddArrayToObject(o, "options");
-                static const char *const names[] = {"idle", "running", "late-run", "cooldown", "final-shutdown"};
-                for (size_t k = 0; k < 5; k++) cJSON_AddItemToArray(opt, cJSON_CreateString(names[k]));
-            }
-            break;
-        case E_BINARY:
-        case E_SWITCH:
-            tpl_onoff(tpl, sizeof(tpl), e->field);
-            cJSON_AddStringToObject(o, "value_template", tpl);
-            if (e->dc) cJSON_AddStringToObject(o, "device_class", e->dc);
-            break;
-        case E_NUMBER:
-            tpl_value(tpl, sizeof(tpl), e->field);
-            cJSON_AddStringToObject(o, "value_template", tpl);
-            cJSON_AddNumberToObject(o, "min", e->min);
-            cJSON_AddNumberToObject(o, "max", e->max);
-            cJSON_AddNumberToObject(o, "step", e->step);
-            cJSON_AddStringToObject(o, "mode", "box");
-            if (e->unit) cJSON_AddStringToObject(o, "unit_of_measurement", e->unit);
-            break;
-        case E_BUTTON:
-            break;
-        }
-        char *js = cJSON_PrintUnformatted(o);
-        cJSON_Delete(o);
-        if (js) {
-            snprintf(topic, sizeof(topic), "%s/%s/%s/%s/config", s_prefix, comp, s_node, e->id);
-            pub_config(topic, js);
-            free(js);
-        }
-    }
-
-    /* climate entity: the Auto thermostat */
-    cJSON *o = cJSON_CreateObject();
-    ent_t cl = {.id = "thermostat", .name = "Hearth thermostat"};
-    add_common(o, &cl, avail);
-    cJSON_AddItemToObject(o, "modes", cJSON_CreateStringArray((const char *[]){"off", "heat"}, 2));
-    cJSON_AddStringToObject(o, "mode_state_topic", state);
-    cJSON_AddStringToObject(o, "mode_state_template", "{{ 'heat' if value_json.auto_enabled else 'off' }}");
-    snprintf(cmdt, sizeof(cmdt), "%s/cmd/auto_mode/set", s_base);
-    cJSON_AddStringToObject(o, "mode_command_topic", cmdt);
-    cJSON_AddStringToObject(o, "temperature_state_topic", state);
-    cJSON_AddStringToObject(o, "temperature_state_template", "{{ value_json.auto_target }}");
-    snprintf(cmdt, sizeof(cmdt), "%s/cmd/auto_target/set", s_base);
-    cJSON_AddStringToObject(o, "temperature_command_topic", cmdt);
-    cJSON_AddStringToObject(o, "current_temperature_topic", state);
-    tpl_value(tpl, sizeof(tpl), "effective_temp");
-    cJSON_AddStringToObject(o, "current_temperature_template", tpl);
-    cJSON_AddStringToObject(o, "action_topic", state);
-    cJSON_AddStringToObject(o, "action_template",
-                            "{{ 'heating' if value_json.burner_active else ('idle' if value_json.auto_enabled else 'off') }}");
-    cJSON_AddNumberToObject(o, "min_temp", 5);
-    cJSON_AddNumberToObject(o, "max_temp", 35);
-    cJSON_AddNumberToObject(o, "temp_step", 0.5);
-    cJSON_AddStringToObject(o, "temperature_unit", "C");
-    char *js = cJSON_PrintUnformatted(o);
-    cJSON_Delete(o);
-    if (js) {
-        snprintf(topic, sizeof(topic), "%s/climate/%s/thermostat/config", s_prefix, s_node);
-        pub_config(topic, js);
-        free(js);
+    char topic[160];
+    for (size_t i = 0; i < sizeof(OLD_ENTS) / sizeof(OLD_ENTS[0]); i++) {
+        snprintf(topic, sizeof(topic), "%s/%s/%s/%s/config", s_prefix, OLD_ENTS[i].comp, s_node, OLD_ENTS[i].id);
+        pub(topic, "", 0, true);
     }
 }
 
@@ -398,6 +239,9 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
     case MQTT_EVENT_DISCONNECTED:
         s_connected = false;
+        free(s_tbuf); /* a timers/set cut off mid-message */
+        s_tbuf = NULL;
+        s_tcollect = false;
         break;
     case MQTT_EVENT_DATA: {
         if (handle_timers_data(ev)) break;

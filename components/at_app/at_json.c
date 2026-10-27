@@ -63,10 +63,12 @@ static cJSON *timer_to_json(const at_timer_t *t)
 
 char *at_app_timers_json(void)
 {
-    at_timer_t list[AT_TIMERS_MAX];
+    at_timer_t *list = malloc(sizeof(at_timer_t) * AT_TIMERS_MAX);   /* ~1.8 KB: off the MQTT tasks' stacks */
+    if (!list) return NULL;
     int n = at_app_timers_get(list, AT_TIMERS_MAX);
     cJSON *arr = cJSON_CreateArray();
     for (int i = 0; i < n; i++) cJSON_AddItemToArray(arr, timer_to_json(&list[i]));
+    free(list);
     char *s = cJSON_PrintUnformatted(arr);
     cJSON_Delete(arr);
     return s;

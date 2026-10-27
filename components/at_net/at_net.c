@@ -1,6 +1,7 @@
 #include "at_net.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "at_app.h"
@@ -114,7 +115,13 @@ esp_err_t at_net_scan_json(char *out, size_t len)
     uint16_t n = 0;
     esp_wifi_scan_get_ap_num(&n);
     if (n > 20) n = 20;
-    wifi_ap_record_t recs[20];
+    /* ~2 KB: off the caller's stack (the Bluetooth scan task is small) */
+    wifi_ap_record_t *recs = calloc(20, sizeof(*recs));
+    if (!recs) {
+        esp_wifi_clear_ap_list();
+        snprintf(out, len, "[]");
+        return ESP_ERR_NO_MEM;
+    }
     esp_wifi_scan_get_ap_records(&n, recs);
     size_t pos = 0;
     pos += snprintf(out + pos, len - pos, "[");
@@ -137,6 +144,7 @@ esp_err_t at_net_scan_json(char *out, size_t len)
                         pos > 1 ? "," : "", esc, recs[i].rssi, auth_name(recs[i].authmode));
     }
     snprintf(out + pos, len - pos, "]");
+    free(recs);
     return ESP_OK;
 }
 
@@ -204,16 +212,37 @@ static bool s_have_creds;
 bool at_net_has_saved_network(void) { return s_own && s_have_creds; }
 static esp_timer_handle_t s_ap_off_timer;
 static esp_timer_handle_t s_reconnect_timer;
+static esp_timer_handle_t s_channel_timer;
+
+/* The saved network's channel, remembered so the next boot scans it first instead of every channel. Only a
+ * hint: if the network has moved, the station goes on to scan the rest. */
+#define CHANNEL_KEY "wifi_ch"
+static uint8_t s_saved_channel, s_seen_channel;
+
+static void channel_save_cb(void *arg)
+{
+    /* on the timer task: an NVS write is too much for the event task's small stack */
+    uint8_t ch = s_seen_channel;
+    if (ch && ch != s_saved_channel && at_settings_blob_save(CHANNEL_KEY, &ch, sizeof(ch)) == ESP_OK) {
+        s_saved_channel = ch;
+    }
+}
 
 static void reconnect_cb(void *arg)
 {
     esp_wifi_connect();
 }
 
+static void dns_task(void *arg);
+
 static void ap_start(void)
 {
     if (s_ap_active) {
         return;
+    }
+    static bool dns_started; /* the captive DNS only matters once there is a setup network */
+    if (!dns_started) {
+        dns_started = xTaskCreate(dns_task, "captive_dns", 3072, NULL, 3, NULL) == pdPASS;
     }
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA); /* same id as the hostname: last 3 MAC bytes */
@@ -262,7 +291,7 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
         if (now - s_first_fail_us > (int64_t)FALLBACK_AP_AFTER_MS * 1000) {
             ap_start();
         }
-        int delay = s_retry < 5 ? 1000 << s_retry : 30000; /* 1,2,4,8,16 then 30 s */
+        int delay = s_retry < 4 ? 1000 << s_retry : 10000; /* 1,2,4,8 then 10 s: back soon after the router is */
         s_retry++;
         esp_timer_start_once(s_reconnect_timer, (int64_t)delay * 1000);
         break;
@@ -270,6 +299,8 @@ static void on_wifi(void *arg, esp_event_base_t base, int32_t id, void *data)
     case WIFI_EVENT_STA_CONNECTED:
         s_retry = 0;
         s_first_fail_us = 0;
+        s_seen_channel = ((wifi_event_sta_connected_t *)data)->channel;
+        if (s_seen_channel != s_saved_channel && s_channel_timer) esp_timer_start_once(s_channel_timer, 0);
         break;
     case WIFI_EVENT_AP_STACONNECTED:
         ESP_LOGI(TAG, "setup client joined");
@@ -345,6 +376,7 @@ esp_err_t at_net_set_credentials(const char *ssid, const char *pass)
     sta.sta.threshold.authmode = cfg.wifi_pass[0] ? WIFI_AUTH_WPA_PSK : WIFI_AUTH_OPEN;
     sta.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
     s_have_creds = cfg.wifi_ssid[0] != 0;
+    s_saved_channel = 0; /* a new network: scan everything; the channel is saved again once it connects */
     s_retry = 0;
     s_first_fail_us = 0;
     esp_wifi_set_config(WIFI_IF_STA, &sta);
@@ -368,6 +400,8 @@ static esp_err_t start_own_wifi(void)
     esp_timer_create(&ta, &s_ap_off_timer);
     esp_timer_create_args_t tr = {.callback = reconnect_cb, .name = "wifi_retry"};
     esp_timer_create(&tr, &s_reconnect_timer);
+    esp_timer_create_args_t tc = {.callback = channel_save_cb, .name = "wifi_ch"};
+    esp_timer_create(&tc, &s_channel_timer);
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM)); /* credentials live in our own settings */
 
     esp_netif_t *sta_if = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
@@ -384,6 +418,11 @@ static esp_err_t start_own_wifi(void)
         strlcpy((char *)sta.sta.password, cfg.wifi_pass, sizeof(sta.sta.password));
         sta.sta.threshold.authmode = cfg.wifi_pass[0] ? WIFI_AUTH_WPA_PSK : WIFI_AUTH_OPEN;
         sta.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
+        if (at_settings_blob_load(CHANNEL_KEY, &s_saved_channel, sizeof(s_saved_channel)) && s_saved_channel <= 14) {
+            sta.sta.channel = s_saved_channel; /* scan this channel first */
+        } else {
+            s_saved_channel = 0;
+        }
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta));
     } else {
@@ -405,8 +444,6 @@ static esp_err_t start_own_wifi(void)
     mdns_service_add(NULL, "_hearth-app", "_tcp", 80, NULL, 0);
     s_mdns_ready = true;
     at_net_ha_advertise(true);
-
-    xTaskCreate(dns_task, "captive_dns", 3072, NULL, 3, NULL);
     return ESP_OK;
 }
 

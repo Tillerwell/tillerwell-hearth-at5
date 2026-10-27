@@ -10,6 +10,7 @@
 #include "cJSON.h"
 #include "esp_app_desc.h"
 #include "esp_app_format.h"
+#include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
@@ -189,6 +190,11 @@ static esp_err_t h_info(httpd_req_t *req)
     cJSON_AddStringToObject(o, "mode", own_wifi ? "wifi" : "matter");
     cJSON_AddBoolToObject(o, "wifi_setup", own_wifi);
     cJSON_AddBoolToObject(o, "web_password_set", cfg.web_password[0] != 0);
+    /* bytes: free now, lowest since boot, largest single block (falling over days = a leak or fragmentation) */
+    cJSON *hp = cJSON_AddObjectToObject(o, "heap");
+    cJSON_AddNumberToObject(hp, "free", heap_caps_get_free_size(MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(hp, "min_free", heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(hp, "largest", heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     at_matter_info_t mi;
     at_matter_get_info(&mi);
     if (mi.transport && mi.transport[0]) {

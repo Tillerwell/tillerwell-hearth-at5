@@ -94,4 +94,11 @@ void app_main(void)
 #if CONFIG_AUTOTERM_FACTORY_RESET_GPIO >= 0
     xTaskCreate(button_task, "button", 2048, NULL, 2, NULL);
 #endif
+    if (!use_matter) {
+        /* The broker listens on every interface and our client dials it over loopback, so neither needs an
+         * address: start them now rather than when Wi-Fi comes up, so MQTT is ready the moment it does (and the
+         * event task is not held up starting them). Matter mode still waits for Wi-Fi: over Thread alone it
+         * may never come, and Matter needs the memory more. */
+        at_mqtt_start();
+    }
 }

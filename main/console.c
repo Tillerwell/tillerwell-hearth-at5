@@ -10,6 +10,7 @@
 #include "at_mqtt.h"
 #include "at_net.h"
 #include "esp_console.h"
+#include "esp_heap_caps.h"
 #include "esp_system.h"
 
 static int cmd_status(int argc, char **argv)
@@ -34,6 +35,9 @@ static int cmd_status(int argc, char **argv)
     char ip[20];
     at_net_ip_str(ip, sizeof(ip));
     printf("network: %s%s\n", ip[0] ? ip : "not connected", at_net_setup_ap_active() ? " (setup AP up)" : "");
+    printf("heap: %u free, %u lowest, %u largest block\n", (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+           (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),
+           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     return 0;
 }
 

@@ -17,3 +17,11 @@ CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 
 CONFIG_LWIP_MAX_SOCKETS=16
+
+# Back on the network sooner after a restart or update. DHCP asks the router for the address it had last time (one
+# round trip fewer) and skips the ARP probe of the offered address (about a second).
+CONFIG_LWIP_DHCP_RESTORE_LAST_IP=y
+CONFIG_LWIP_DHCP_DOES_NOT_CHECK_OFFERED_IP=y
+# No ROM banner, and the bootloader only prints warnings
+CONFIG_BOOT_ROM_LOG_ALWAYS_OFF=y
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y

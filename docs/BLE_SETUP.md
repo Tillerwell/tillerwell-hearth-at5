@@ -4,7 +4,7 @@ The Tillerwell app sets the box up over Bluetooth: no joining the box's Wi-Fi by
 
 The box advertises as `Hearth-xxxxxx` (same last 3 MAC bytes as the access point) with the service UUID below in the advert. Manufacturer data in the scan response: company `0xFFFF`, one byte, bit 0 = a Wi-Fi network is already saved.
 
-**When it's available:** while the box is not on a Wi-Fi network, for 10 minutes after power-up, and for 3 minutes after the last setup write. Otherwise it stops advertising and refuses setup writes, so a working box can't be re-pointed by a passer-by. Power-cycling the box opens the window again. There is no pairing or encryption: the Wi-Fi password crosses the air in clear over a short-range link, like the open setup access point does.
+**When it's available:** for 10 minutes after power-up, for 3 minutes after the last setup write, and once the box has been off its Wi-Fi network for 30 seconds (a short drop doesn't count). Otherwise it stops advertising and refuses setup writes, so a working box can't be re-pointed by a passer-by, and Bluetooth is switched off altogether to free its memory and radio time. Power-cycling the box opens the window again. There is no pairing or encryption: the Wi-Fi password crosses the air in clear over a short-range link, like the open setup access point does.
 
 Service `6e2f0001-5d1c-4f3a-9b7e-2a4c8d1e0f01`. Characteristics share the base with the 16-bit part changed:
 

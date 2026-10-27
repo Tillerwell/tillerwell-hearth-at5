@@ -25,6 +25,8 @@ static const char *TAG = "ble";
 #define OPEN_AFTER_BOOT_US   (10 * 60 * 1000000LL)
 #define OPEN_AFTER_WRITE_US  (3 * 60 * 1000000LL)
 #define FAILS_BEFORE_REPORT  3
+#define REOPEN_OFFLINE_US    (30 * 1000000LL) /* after the window: Wi-Fi down this long brings Bluetooth back */
+#define RETRY_INIT_US        (30 * 1000000LL)
 
 /* 6e2f00NN-5d1c-4f3a-9b7e-2a4c8d1e0f01 (little-endian bytes) */
 #define UUID(n) BLE_UUID128_INIT(0x01, 0x0f, 0x1e, 0x8d, 0x4c, 0x2a, 0x7e, 0x9b, 0x3a, 0x4f, 0x1c, 0x5d, (n), 0x00, 0x2f, 0x6e)
@@ -39,7 +41,8 @@ static uint16_t s_status_handle;
 static uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
 static uint8_t s_own_addr_type;
 static char s_ble_name[24];
-static bool s_synced;
+static volatile bool s_running; /* NimBLE is initialised (it is shut down while setup is closed, to free its memory) */
+static volatile bool s_synced;
 static bool s_adv_on;
 static int64_t s_open_until_us;
 
@@ -117,8 +120,7 @@ static void scan_task(void *arg)
     at_net_scan_json(buf, sizeof(buf));
     memcpy(s_scan_json, buf, sizeof(buf));
     s_scan_done = true;
-    s_scanning = false;
-    ble_gatts_chr_updated(s_status_handle);
+    s_scanning = false; /* monitor_task notifies the phone: the stack may be on its way down by now */
     vTaskDelete(NULL);
 }
 
@@ -318,23 +320,74 @@ static void host_task(void *arg)
     nimble_port_freertos_deinit();
 }
 
+static esp_err_t ble_up(void)
+{
+    esp_err_t err = nimble_port_init();
+    if (err != ESP_OK) return err;
+    ble_hs_cfg.sync_cb = on_sync;
+    ble_svc_gap_init();
+    ble_svc_gatt_init();
+    ble_svc_gap_device_name_set(s_ble_name);
+    if (ble_gatts_count_cfg(gatt_svcs) != 0 || ble_gatts_add_svcs(gatt_svcs) != 0) {
+        nimble_port_deinit();
+        return ESP_FAIL;
+    }
+    s_running = true;
+    nimble_port_freertos_init(host_task);
+    return ESP_OK;
+}
+
+/* Setup is closed and nobody is connected: release the controller and host (tens of KB of RAM, and the radio
+ * time Wi-Fi shares with Bluetooth on the C6). */
+static void ble_down(void)
+{
+    s_synced = false;
+    if (nimble_port_stop() != 0) {
+        ESP_LOGW(TAG, "Bluetooth did not stop");
+        s_synced = true;
+        return;
+    }
+    nimble_port_deinit();
+    s_running = false;
+    s_synced = false; /* in case the host synced while it was being stopped */
+    s_adv_on = false;
+    ESP_LOGI(TAG, "setup closed, Bluetooth off");
+}
+
 /* Opens/closes the window, and tells the phone when setup progress changes. */
 static void monitor_task(void *arg)
 {
     char last[96] = "";
+    int64_t offline_since = 0, next_try = 0;
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        if (!s_synced) continue;
-        if (provisionable()) adv_start();
-        else if (s_conn == BLE_HS_CONN_HANDLE_NONE) adv_stop();
-        char *s = status_json();
-        if (s) {
-            if (strcmp(s, last) != 0) {
-                strlcpy(last, s, sizeof(last));
-                ble_gatts_chr_updated(s_status_handle);
+        const int64_t now = esp_timer_get_time();
+        if (at_net_connected()) offline_since = 0;
+        else if (!offline_since) offline_since = now;
+        /* in the window: always; after it: once Wi-Fi has been gone for a while, not on every short drop */
+        const bool want = now < s_open_until_us || (offline_since && now - offline_since >= REOPEN_OFFLINE_US);
+        if (want && !s_running && now >= next_try) {
+            esp_err_t err = ble_up();
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Bluetooth setup failed to start: %s", esp_err_to_name(err));
+                next_try = now + RETRY_INIT_US;
             }
-            free(s);
+            last[0] = 0;
+        } else if (!want && s_running && s_conn == BLE_HS_CONN_HANDLE_NONE && !s_scanning) {
+            ble_down();
         }
+        if (s_synced) {
+            if (provisionable()) adv_start();
+            else if (s_conn == BLE_HS_CONN_HANDLE_NONE) adv_stop();
+            char *s = status_json();
+            if (s) {
+                if (strcmp(s, last) != 0) {
+                    strlcpy(last, s, sizeof(last));
+                    ble_gatts_chr_updated(s_status_handle);
+                }
+                free(s);
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -345,14 +398,7 @@ esp_err_t at_ble_start(void)
     snprintf(s_ble_name, sizeof(s_ble_name), "Hearth-%02x%02x%02x", mac[3], mac[4], mac[5]);
     s_open_until_us = esp_timer_get_time() + OPEN_AFTER_BOOT_US;
 
-    esp_err_t err = nimble_port_init();
+    esp_err_t err = ble_up();
     if (err != ESP_OK) return err;
-    ble_hs_cfg.sync_cb = on_sync;
-    ble_svc_gap_init();
-    ble_svc_gatt_init();
-    ble_svc_gap_device_name_set(s_ble_name);
-    if (ble_gatts_count_cfg(gatt_svcs) != 0 || ble_gatts_add_svcs(gatt_svcs) != 0) return ESP_FAIL;
-    nimble_port_freertos_init(host_task);
-    xTaskCreate(monitor_task, "ble_mon", 3072, NULL, 2, NULL);
-    return ESP_OK;
+    return xTaskCreate(monitor_task, "ble_mon", 4096, NULL, 2, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
