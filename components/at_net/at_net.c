@@ -37,15 +37,15 @@ static bool s_mdns_ready;  /* mDNS is up (own Wi-Fi: after at_net_start; Matter:
 void at_net_ha_advertise(bool on)
 {
     if (!s_mdns_ready || on == s_ha_adv) return;
-    at_settings_t cfg;
-    at_settings_get(&cfg);
+    char host[AT_HOSTNAME_MAX + 1];
+    at_settings_hostname(host, sizeof(host));
     esp_err_t err;
     if (on) {
         err = s_own ? mdns_service_add(NULL, HA_SERVICE, "_tcp", 80, NULL, 0)
-                    : mdns_service_add_for_host("Tillerwell Hearth", HA_SERVICE, "_tcp", cfg.device_name, 80, NULL, 0);
+                    : mdns_service_add_for_host("Tillerwell Hearth", HA_SERVICE, "_tcp", host, 80, NULL, 0);
     } else {
         err = s_own ? mdns_service_remove(HA_SERVICE, "_tcp")
-                    : mdns_service_remove_for_host("Tillerwell Hearth", HA_SERVICE, "_tcp", cfg.device_name);
+                    : mdns_service_remove_for_host("Tillerwell Hearth", HA_SERVICE, "_tcp", host);
     }
     if (err == ESP_OK) s_ha_adv = on;
     else ESP_LOGW(TAG, "mDNS Home Assistant service %s: %s", on ? "add" : "remove", esp_err_to_name(err));
@@ -146,8 +146,8 @@ esp_err_t at_net_scan_json(char *out, size_t len)
  * the Tillerwell app alongside Matter. Called on every address change. */
 static void matter_mdns_publish(const esp_ip4_addr_t *ip)
 {
-    at_settings_t cfg;
-    at_settings_get(&cfg);
+    char host[AT_HOSTNAME_MAX + 1];
+    at_settings_hostname(host, sizeof(host));
     esp_err_t err = mdns_init(); /* idempotent: Matter normally started it already */
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "mdns_init: %s", esp_err_to_name(err));
@@ -160,20 +160,20 @@ static void matter_mdns_publish(const esp_ip4_addr_t *ip)
      * unknown host, so remember whether the first call already ran */
     static bool added;
     if (added) {
-        mdns_delegate_hostname_set_address(cfg.device_name, &addr);
+        mdns_delegate_hostname_set_address(host, &addr);
         return;
     }
-    err = mdns_delegate_hostname_add(cfg.device_name, &addr);
+    err = mdns_delegate_hostname_add(host, &addr);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "mdns delegate host: %s", esp_err_to_name(err));
         return;
     }
     added = true;
-    mdns_service_add_for_host("Tillerwell Hearth", "_http", "_tcp", cfg.device_name, 80, NULL, 0);
-    mdns_service_add_for_host("Tillerwell Hearth", "_hearth-app", "_tcp", cfg.device_name, 80, NULL, 0);
+    mdns_service_add_for_host("Tillerwell Hearth", "_http", "_tcp", host, 80, NULL, 0);
+    mdns_service_add_for_host("Tillerwell Hearth", "_hearth-app", "_tcp", host, 80, NULL, 0);
     s_mdns_ready = true;
     at_net_ha_advertise(true);
-    ESP_LOGI(TAG, "mDNS: %s.local (Matter mode)", cfg.device_name);
+    ESP_LOGI(TAG, "mDNS: %s.local (Matter mode)", host);
 }
 
 static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -371,7 +371,11 @@ static esp_err_t start_own_wifi(void)
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM)); /* credentials live in our own settings */
 
     esp_netif_t *sta_if = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    if (sta_if) esp_netif_set_hostname(sta_if, cfg.device_name);
+    if (sta_if) {
+        char host[AT_HOSTNAME_MAX + 1];
+        at_settings_hostname(host, sizeof(host));
+        esp_netif_set_hostname(sta_if, host);
+    }
 
     s_have_creds = cfg.wifi_ssid[0] != 0;
     if (s_have_creds) {
@@ -391,7 +395,11 @@ static esp_err_t start_own_wifi(void)
     }
 
     ESP_ERROR_CHECK(mdns_init());
-    mdns_hostname_set(cfg.device_name);
+    {
+        char host[AT_HOSTNAME_MAX + 1];
+        at_settings_hostname(host, sizeof(host));
+        mdns_hostname_set(host);
+    }
     mdns_instance_name_set("Tillerwell Hearth");
     mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
     mdns_service_add(NULL, "_hearth-app", "_tcp", 80, NULL, 0);

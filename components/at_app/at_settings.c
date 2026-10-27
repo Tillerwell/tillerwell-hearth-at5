@@ -89,6 +89,46 @@ esp_err_t at_settings_blob_save(const char *key, const void *in, size_t len)
     return err;
 }
 
+/* The name the user gave the box in the app ("Autoterm 5D"). Kept in its own blob, not in at_settings_t, so adding it
+ * doesn't invalidate saved settings on update; a factory reset erases it with the rest of NVS. */
+#define DISPLAY_NAME_KEY "dispname"
+
+void at_settings_display_name(char *out, size_t len)
+{
+    char buf[AT_DISPLAY_NAME_MAX] = {0};
+    if (!at_settings_blob_load(DISPLAY_NAME_KEY, buf, sizeof(buf))) buf[0] = 0;
+    buf[sizeof(buf) - 1] = 0;
+    strlcpy(out, buf, len);
+}
+
+esp_err_t at_settings_display_name_set(const char *name)
+{
+    char buf[AT_DISPLAY_NAME_MAX] = {0};
+    strlcpy(buf, name ? name : "", sizeof(buf));
+    return at_settings_blob_save(DISPLAY_NAME_KEY, buf, sizeof(buf));
+}
+
+/* Network name (DHCP, mDNS): the display name made hostname-safe ("Autoterm 5D" -> "Autoterm-5D"), or the
+ * hearth-xxxxxx id when no name is set or nothing usable is left of it. */
+void at_settings_hostname(char *out, size_t len)
+{
+    char name[AT_DISPLAY_NAME_MAX];
+    at_settings_display_name(name, sizeof(name));
+    size_t n = 0;
+    for (const char *p = name; *p && n < len - 1 && n < AT_HOSTNAME_MAX; p++) {
+        char c = *p;
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) out[n++] = c;
+        else if ((c == ' ' || c == '-' || c == '_') && n > 0 && out[n - 1] != '-') out[n++] = '-';
+    }
+    while (n > 0 && out[n - 1] == '-') n--;
+    out[n] = 0;
+    if (n == 0) {
+        at_settings_t cfg;
+        at_settings_get(&cfg);
+        strlcpy(out, cfg.device_name, len);
+    }
+}
+
 float at_settings_preheat_temp_load(void)
 {
     nvs_handle_t h;

@@ -169,6 +169,10 @@ static esp_err_t h_info(httpd_req_t *req)
     cJSON_AddStringToObject(o, "variant", "all");
     cJSON_AddStringToObject(o, "device_name", cfg.device_name);
     char buf[40];
+    at_settings_display_name(buf, sizeof(buf));
+    cJSON_AddStringToObject(o, "display_name", buf);
+    at_settings_hostname(buf, sizeof(buf));
+    cJSON_AddStringToObject(o, "hostname", buf);
     at_net_ip_str(buf, sizeof(buf));
     cJSON_AddStringToObject(o, "ip", buf);
     at_net_ap_ssid(buf, sizeof(buf));
@@ -195,6 +199,22 @@ static esp_err_t h_info(httpd_req_t *req)
         cJSON_AddBoolToObject(mt, "commissioned", mi.commissioned);
     }
     return send_json(req, o);
+}
+
+static void schedule_restart(int ms);
+
+/* The app's name for the box becomes its network hostname ("Autoterm 5D" -> Autoterm-5D.local, see
+ * at_settings_hostname); "" goes back to hearth-xxxxxx. The hostname is applied at startup (DHCP, mDNS, Matter's
+ * delegated host), so an actual change restarts the box. */
+static bool set_display_name(const char *name)
+{
+    char cur[AT_DISPLAY_NAME_MAX];
+    at_settings_display_name(cur, sizeof(cur));
+    if (strlen(name) >= sizeof(cur)) return false;
+    if (!strcmp(cur, name)) return true;
+    if (at_settings_display_name_set(name) != ESP_OK) return false;
+    schedule_restart(800); /* let the HTTP reply go out first */
+    return true;
 }
 
 static esp_err_t h_cmd(httpd_req_t *req)
@@ -230,6 +250,9 @@ static esp_err_t h_cmd(httpd_req_t *req)
         at_app_set_hysteresis((float)jnum(j, "min", 0), (float)jnum(j, "max", 0));
     } else if (!strcmp(c, "preheat_temp")) {
         at_app_set_preheat_temp((float)jnum(j, "value", 88));
+    } else if (!strcmp(c, "display_name")) {
+        const char *v = jstr(j, "value");
+        ok = v && set_display_name(v);
     } else if (!strcmp(c, "factory_reset")) {
         at_settings_factory_reset_soon(); /* wipes Wi-Fi and settings, restarts into setup mode */
     } else if (!strcmp(c, "freeze")) {
@@ -343,8 +366,11 @@ static esp_err_t h_settings(httpd_req_t *req)
         if (okname) copy_str(cfg.device_name, sizeof(cfg.device_name), s);
     }
     if ((s = jstr(j, "web_password")) && strlen(s) < sizeof(cfg.web_password)) copy_str(cfg.web_password, sizeof(cfg.web_password), s);
+    bool name_ok = true;
+    if ((s = jstr(j, "display_name"))) name_ok = set_display_name(s);
     cJSON_Delete(j);
     esp_err_t err = at_settings_set(&cfg);
+    if (err == ESP_OK && !name_ok) err = ESP_FAIL;
     if (err == ESP_OK) at_mqtt_reload();
         return send_ok(req, err == ESP_OK);
 }

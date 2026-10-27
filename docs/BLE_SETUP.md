@@ -15,4 +15,4 @@ Service `6e2f0001-5d1c-4f3a-9b7e-2a4c8d1e0f01`. Characteristics share the base w
 | `6e2f0004-…` Provision | write | `{"ssid":"…","pass":"…"}`; the box saves it and joins |
 | `6e2f0005-…` Status | read, notify | `{"state":"idle\|connecting\|connected\|failed","ip":"192.168.1.20","reason":"auth\|not_found\|other","scan":"idle\|busy\|done"}`. `reason` only with `failed` (after 3 failed attempts). Notifications can be cut to the MTU: read the characteristic when one arrives. |
 
-`device_name` is also the mDNS hostname (`hearth-a1b2c3.local`) and the ID the app keys on. The friendly name ("Cabin heater") lives only in the app.
+`device_name` is also the mDNS hostname (`hearth-a1b2c3.local`) and the ID the app keys on. The friendly name ("Cabin heater") is kept by the app and also sent to the box (`display_name` command), which uses it as its network hostname (`Cabin-heater.local`); `device_name` stays the ID and a factory reset clears the name.

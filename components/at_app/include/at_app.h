@@ -80,6 +80,14 @@ esp_err_t at_settings_preheat_temp_save(float celsius);
 bool at_settings_blob_load(const char *key, void *out, size_t len);
 esp_err_t at_settings_blob_save(const char *key, const void *in, size_t len);
 
+#define AT_DISPLAY_NAME_MAX 32
+#define AT_HOSTNAME_MAX 31
+/* The user's name for the box (empty by default), and the hostname derived from it for DHCP/mDNS. device_name stays the
+ * stable hearth-xxxxxx id; the hostname is that id until a display name is set, and again after a factory reset. */
+void at_settings_display_name(char *out, size_t len);
+esp_err_t at_settings_display_name_set(const char *name);
+void at_settings_hostname(char *out, size_t len);
+
 esp_err_t at_settings_init(void);
 void at_settings_get(at_settings_t *out);
 /* Replace and persist. */
