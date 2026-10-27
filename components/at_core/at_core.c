@@ -95,6 +95,7 @@ static void note_frame(at_core_t *c, uint32_t now, bool from_heater, const uint8
         c->cabin_ms = now;
     } else if (dev == 0x02 && type == 0x01 && plen >= 2) {
         if (at_decode_ext(p, plen, &c->ext)) {
+            if (!c->ext_frames++) c->ext_first_ms = now;
             c->have_ext = true;
             c->ext_ms = now;
         }
@@ -331,8 +332,10 @@ static void try_start_injection(at_core_t *c, uint32_t now)
     }
 
     if (it->direct) {
+        /* our own polls count too: the heater answers them ~175 ms later */
         bool quiet = (!c->seen_panel || now - c->last_panel_ms >= AT_QUIET_GAP_MS) &&
                      (!c->seen_heater || now - c->last_heater_ms >= AT_QUIET_GAP_MS) &&
+                     (!c->polled || now - c->last_poll_ms >= AT_QUIET_GAP_MS) &&
                      at_framer_empty(&c->fh) && at_framer_empty(&c->fp);
         if (!quiet && now - it->not_before_ms < AT_QUIET_MAX_WAIT_MS) {
             return;
@@ -341,6 +344,7 @@ static void try_start_injection(at_core_t *c, uint32_t now)
         log_add(c, now, 'I', it->frame, it->len, true);
         set_last_cmd(c, now, it->note);
         c->last_cmd_replied = true; /* fire-and-forget: nothing to wait for */
+        c->hush_until_ms = now + AT_DIRECT_HUSH_MS;
         q_pop(c, now);
         return;
     }
@@ -409,6 +413,9 @@ static void standalone_poll(at_core_t *c, uint32_t now)
         return; /* a command is about to go: leave the heater line to it */
     }
     if (c->polled && now - c->last_poll_ms < AT_OWN_POLL_MS) {
+        return;
+    }
+    if ((int32_t)(now - c->hush_until_ms) < 0) {
         return;
     }
     uint8_t f[AT_MAX_FRAME];
@@ -553,6 +560,8 @@ void at_core_snapshot(const at_core_t *c, uint32_t now, at_snapshot_t *s)
     if (c->have_ext) {
         s->ext = c->ext;
         s->ext_active = now - c->ext_ms <= AT_EXT_STALE_AFTER_MS;
+        s->ext_frames = c->ext_frames;
+        s->ext_first_ms = c->ext_first_ms;
     }
     s->have_last_fault = c->have_last_fault;
     if (c->have_last_fault) {

@@ -465,6 +465,18 @@ static void test_standalone(void)
     sim_run(&s, &c, 10000);
     CHECK(count_type(&s, 0x11) == 2); /* every 10 s */
 
+    /* PUBR0: never sent while the heater may be answering our own poll, and our polls pause after it */
+    CHECK(at_cmd_send_pubr0(&c, s.now));
+    uint32_t before = c.own_polls;
+    while (c.q_count) sim_run(&s, &c, 10);
+    CHECK(s.now - c.last_poll_ms >= AT_QUIET_GAP_MS);
+    uint32_t sent_at = s.now;
+    sim_run(&s, &c, AT_DIRECT_HUSH_MS - 100);
+    CHECK(c.own_polls - before <= 1); /* at most the poll the handshake waited behind */
+    uint32_t hushed = c.own_polls;
+    sim_run(&s, &c, 2000);
+    CHECK(c.own_polls > hushed && c.last_poll_ms >= sent_at + AT_DIRECT_HUSH_MS);
+
     /* controller comes back: the box stops polling within a poll interval */
     s.panel_polling = true;
     s.panel_next_poll = s.now;

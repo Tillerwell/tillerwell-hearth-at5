@@ -177,6 +177,8 @@ static void snapshot_locked(at_snapshot_t *s)
     xSemaphoreGive(s_core_lock);
 }
 
+static void boot_burst_task(void *arg);
+
 static void ops_start(void *ctx) { (void)ctx; core_cmd(at_cmd_start_thermostat); }
 static void ops_stop(void *ctx) { (void)ctx; core_cmd(at_cmd_stop); }
 static const at_ctl_ops_t s_ops = {ops_start, ops_stop, NULL};
@@ -254,6 +256,9 @@ esp_err_t at_app_start(void)
     xTaskCreate(bridge_task, "bridge", 6144, NULL, configMAX_PRIORITIES - 4, NULL);
     xTaskCreate(ctl_task, "thermostat", 4096, NULL, 5, NULL);
     xTaskCreate(probe_task, "probe", 3072, NULL, 2, NULL);
+    if (cfg.debug_mode && !cfg.bypass) {
+        xTaskCreate(boot_burst_task, "boot-burst", 2048, NULL, 4, NULL);
+    }
     s_started = true;
     at_timers_start();
     ESP_LOGI(TAG, "bridge running: heater UART%d (RX %d TX %d), controller UART%d (RX %d TX %d), %d baud",
@@ -324,6 +329,17 @@ bool at_app_start_thermostat(void) { return core_cmd(at_cmd_start_thermostat); }
 bool at_app_stop(void) { return core_cmd(at_cmd_stop); }
 bool at_app_start_pump(void) { return core_cmd(at_cmd_start_pump); }
 bool at_app_send_pubr0(void) { return core_cmd(at_cmd_send_pubr0); }
+
+/* Debug mode on at boot: a PUBR0 handshake every second for the first 30 s, in case the heater only
+ * takes it while it is starting up (the box powers up with it, off the same red wire). */
+static void boot_burst_task(void *arg)
+{
+    for (int i = 0; i < 30; i++) {
+        core_cmd(at_cmd_send_pubr0);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    vTaskDelete(NULL);
+}
 
 static void persist(void (*mutate)(at_settings_t *, const void *), const void *arg)
 {

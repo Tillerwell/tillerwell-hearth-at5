@@ -87,6 +87,7 @@ typedef struct {
     bool have_status;  at_status_t status;  uint32_t status_ms;
     bool have_cabin;   int cabin_temp;      uint32_t cabin_ms;
     bool have_ext;     at_ext_t ext;        uint32_t ext_ms;
+    uint32_t ext_frames, ext_first_ms;   /* extended frames decoded since boot, and when the first came */
     bool have_last_fault; uint8_t last_fault_code; uint32_t last_fault_ms;
     bool seen_panel, seen_heater;
     uint32_t last_panel_ms, last_heater_ms;
@@ -95,6 +96,7 @@ typedef struct {
     /* standalone polling */
     bool have_room;    int room_temp;       uint32_t room_ms;
     bool polled;       uint32_t last_poll_ms;
+    uint32_t hush_until_ms; /* no own polls before this: a PUBR0 handshake was just sent */
     bool cabin_sent;   uint32_t last_cabin_sent_ms;
     uint32_t own_polls;
 
@@ -139,6 +141,7 @@ typedef struct {
 #define AT_QUIET_MAX_WAIT_MS    2000u
 #define AT_PANEL_SILENT_MS      5000u   /* no controller frame for this long: poll the heater ourselves */
 #define AT_OWN_POLL_MS          1000u
+#define AT_DIRECT_HUSH_MS       5000u   /* own polls pause this long after a direct send, as the vendor tool never polls */
 #define AT_OWN_CABIN_MS         10000u
 #define AT_ROOM_FRESH_MS        90000u
 
@@ -186,6 +189,7 @@ typedef struct {
     bool have_ext;
     at_ext_t ext;
     bool ext_active;
+    uint32_t ext_frames, ext_first_ms;
 
     bool have_last_fault;
     uint8_t last_fault_code;

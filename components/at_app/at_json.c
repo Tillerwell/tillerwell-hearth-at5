@@ -226,6 +226,8 @@ char *at_app_state_json(void)
     cJSON_AddBoolToObject(o, "debug_mode", v.debug_mode);
     cJSON_AddNumberToObject(o, "debug_interval", v.debug_interval_s);
     cJSON_AddBoolToObject(o, "extended_active", s->have_ext && s->ext_active);
+    cJSON_AddNumberToObject(o, "ext_frames", s->have_ext ? s->ext_frames : 0);
+    if (s->have_ext) cJSON_AddNumberToObject(o, "ext_first_s", s->ext_first_ms / 1000.0);
 
     add_str_or_null(o, "last_command", s->have_last_cmd ? s->last_cmd : NULL);
     cJSON_AddBoolToObject(o, "last_command_replied", s->have_last_cmd && s->last_cmd_replied);
