@@ -64,6 +64,31 @@ esp_err_t at_settings_init(void)
     return ESP_OK;
 }
 
+bool at_settings_blob_load(const char *key, void *out, size_t len)
+{
+    nvs_handle_t h;
+    bool ok = false;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+        size_t got = len;
+        ok = nvs_get_blob(h, key, out, &got) == ESP_OK && got == len;
+        nvs_close(h);
+    }
+    return ok;
+}
+
+esp_err_t at_settings_blob_save(const char *key, const void *in, size_t len)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err == ESP_OK) {
+        err = nvs_set_blob(h, key, in, len);
+        if (err == ESP_OK) err = nvs_commit(h);
+        nvs_close(h);
+    }
+    if (err != ESP_OK) ESP_LOGW(TAG, "saving %s failed: %s", key, esp_err_to_name(err));
+    return err;
+}
+
 float at_settings_preheat_temp_load(void)
 {
     nvs_handle_t h;

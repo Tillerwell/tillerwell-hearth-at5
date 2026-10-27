@@ -88,6 +88,8 @@ typedef struct {
 bool at_decode_status(const uint8_t *payload, size_t len, at_status_t *out);
 /* "idle", "running", "late-run", "cooldown", "final-shutdown" or NULL. */
 const char *at_state_name(uint8_t state_raw);
+/* The vendor profile's name for a state/substate pair ("High", "Ignition 1", ...), never NULL. */
+const char *at_mode_name(uint8_t state_raw, uint8_t substate);
 /* Fault name from the Flow 5 / BINAR-5S table, or NULL if not in the table. */
 const char *at_fault_name(uint8_t code);
 

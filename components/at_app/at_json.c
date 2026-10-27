@@ -18,6 +18,12 @@ static void add_num_or_null(cJSON *o, const char *k, bool have, double v)
     }
 }
 
+/* Settings are kept as floats: 0.15f would print as 0.150000006 */
+static double round3(double v)
+{
+    return round(v * 1000.0) / 1000.0;
+}
+
 static void add_str_or_null(cJSON *o, const char *k, const char *s)
 {
     if (s) {
@@ -176,6 +182,33 @@ int at_app_timers_put_json(const char *json, char *err, size_t err_len)
     return 200;
 }
 
+/* GET /api/fuel: the daily log, newest first, with local dates. */
+char *at_app_fuel_json(void)
+{
+    at_fuel_day_t *days = malloc(sizeof(at_fuel_day_t) * AT_FUEL_DAYS);
+    if (!days) return NULL;
+    int n = at_app_fuel_log_copy(days, AT_FUEL_DAYS);
+    cJSON *o = cJSON_CreateObject();
+    cJSON *arr = cJSON_AddArrayToObject(o, "days");
+    for (int i = 0; i < n; i++) {
+        int y, m, d;
+        at_civil_from_days(days[i].day, &y, &m, &d);
+        char date[12];
+        snprintf(date, sizeof(date), "%04d-%02d-%02d", y, m, d);
+        cJSON *e = cJSON_CreateObject();
+        cJSON_AddStringToObject(e, "date", date);
+        cJSON_AddNumberToObject(e, "litres", days[i].ml / 1000.0);
+        cJSON_AddNumberToObject(e, "cost", days[i].cost_m / 1000.0);
+        cJSON_AddNumberToObject(e, "burn_min", days[i].burn_min);
+        cJSON_AddNumberToObject(e, "starts", days[i].starts);
+        cJSON_AddItemToArray(arr, e);
+    }
+    free(days);
+    char *str = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    return str;
+}
+
 char *at_app_state_json(void)
 {
     at_view_t v;
@@ -298,6 +331,30 @@ char *at_app_state_json(void)
         const bool ok = s->have_status && !s->stale && s->status.supply_v >= 6.0f && s->status.supply_v <= 36.0f;
         add_num_or_null(o, "supply_voltage", ok, s->status.supply_v);
     }
+
+    /* What the status frame says the heater is doing, and the fuel estimate built on it */
+    add_str_or_null(o, "mode_name", s->have_status ? at_mode_name(s->status.state_raw, s->status.substate) : NULL);
+    at_fuel_view_t fv;
+    at_app_fuel_view(&fv);
+    cJSON_AddStringToObject(o, "power_level", at_fuel_level_name(fv.level));
+    cJSON_AddNumberToObject(o, "fuel_rate_lph", round3(fv.rate_lph));
+    cJSON_AddNumberToObject(o, "fuel_litres_total", fv.totals.litres);
+    cJSON_AddNumberToObject(o, "fuel_cost_total", fv.totals.cost);
+    cJSON_AddNumberToObject(o, "fuel_litres_today", fv.have_today ? fv.today.ml / 1000.0 : 0);
+    cJSON_AddNumberToObject(o, "fuel_cost_today", fv.have_today ? fv.today.cost_m / 1000.0 : 0);
+    cJSON_AddNumberToObject(o, "fuel_price", round3(fv.cfg.price));
+    cJSON_AddNumberToObject(o, "fuel_factor", round3(fv.cfg.factor));
+    cJSON *rates = cJSON_AddObjectToObject(o, "fuel_rates");
+    for (int l = AT_FUEL_STARTING; l < AT_FUEL_LEVELS; l++) {
+        cJSON_AddNumberToObject(rates, at_fuel_level_name((at_fuel_level_t)l), round3(fv.cfg.rate_lph[l]));
+    }
+    uint32_t burn_s = 0;
+    for (int l = AT_FUEL_STARTING; l < AT_FUEL_LEVELS; l++) burn_s += fv.totals.level_s[l];
+    cJSON_AddNumberToObject(o, "burn_hours_total", burn_s / 3600.0);
+    cJSON_AddNumberToObject(o, "hours_low", fv.totals.level_s[AT_FUEL_LOW] / 3600.0);
+    cJSON_AddNumberToObject(o, "hours_middle", fv.totals.level_s[AT_FUEL_MIDDLE] / 3600.0);
+    cJSON_AddNumberToObject(o, "hours_high", fv.totals.level_s[AT_FUEL_HIGH] / 3600.0);
+    cJSON_AddNumberToObject(o, "starts_total", fv.totals.starts);
 
     if (!(s->have_ext && s->ext_active)) {
         /* keep the keys present (null) so Home Assistant templates never see an undefined field */

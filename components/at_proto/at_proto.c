@@ -225,6 +225,12 @@ static const char *const FLOW5_MODES[] = {
 };
 #define FLOW5_MODES_N (sizeof(FLOW5_MODES) / sizeof(FLOW5_MODES[0]))
 
+const char *at_mode_name(uint8_t state, uint8_t substate)
+{
+    size_t code = (size_t)state * 10 + substate;
+    return substate < 10 && code < FLOW5_MODES_N ? FLOW5_MODES[code] : "unknown";
+}
+
 bool at_decode_ext(const uint8_t *p, size_t len, at_ext_t *o)
 {
     if (len < AT_EXT_MIN_PAYLOAD) {

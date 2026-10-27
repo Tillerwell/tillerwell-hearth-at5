@@ -200,6 +200,7 @@ static void ctl_task(void *arg)
         at_ctl_tick(&s_ctl, &snap, now, &s_ops);
         bool thermostat = s_ctl.autot.enabled;
         xSemaphoreGive(s_ctl_lock);
+        at_app_fuel_tick(&snap, now);
 
         /* A timed preheat also ends when the coolant is hot enough; the thermostat has its own limits. */
         if (!thermostat && !cfg.bypass && snap.have_status && !snap.stale &&
@@ -253,6 +254,7 @@ esp_err_t at_app_start(void)
     s_ctl.autot.enabled = cfg.auto_enabled; /* no immediate action at boot, the loop decides */
     s_ctl.freeze.enabled = cfg.freeze_enabled;
 
+    at_app_fuel_init();
     xTaskCreate(bridge_task, "bridge", 6144, NULL, configMAX_PRIORITIES - 4, NULL);
     xTaskCreate(ctl_task, "thermostat", 4096, NULL, 5, NULL);
     xTaskCreate(probe_task, "probe", 3072, NULL, 2, NULL);

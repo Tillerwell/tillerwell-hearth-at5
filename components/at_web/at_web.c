@@ -254,6 +254,13 @@ static esp_err_t h_cmd(httpd_req_t *req)
         at_app_set_freeze(jbool(j, "enabled", false));
     } else if (!strcmp(c, "freeze_target")) {
         at_app_set_freeze_target((float)jnum(j, "value", 5));
+    } else if (!strcmp(c, "fuel_price")) {
+        ok = at_app_fuel_set_price((float)jnum(j, "value", -1));
+    } else if (!strcmp(c, "fuel_factor")) {
+        ok = at_app_fuel_set_factor((float)jnum(j, "value", -1));
+    } else if (!strcmp(c, "fuel_rates")) {
+        ok = at_app_fuel_set_rates((float)jnum(j, "starting", -1), (float)jnum(j, "low", -1),
+                                   (float)jnum(j, "middle", -1), (float)jnum(j, "high", -1));
     } else if (!strcmp(c, "preheat_minutes")) {
         at_app_set_preheat_minutes((int)jnum(j, "value", 30));
     } else if (!strcmp(c, "bypass")) {
@@ -296,6 +303,16 @@ static esp_err_t h_timers_get(httpd_req_t *req)
 {
     REQUIRE_AUTH(req);
     char *s = at_app_timers_json();
+    if (!s) return httpd_resp_send_500(req);
+    esp_err_t e = send_json_str(req, s);
+    free(s);
+    return e;
+}
+
+static esp_err_t h_fuel_get(httpd_req_t *req)
+{
+    REQUIRE_AUTH(req);
+    char *s = at_app_fuel_json();
     if (!s) return httpd_resp_send_500(req);
     esp_err_t e = send_json_str(req, s);
     free(s);
@@ -553,6 +570,7 @@ esp_err_t at_web_start(void)
         {.uri = "/api/wifi/scan", .method = HTTP_GET, .handler = h_wifi_scan},
         {.uri = "/api/wifi", .method = HTTP_POST, .handler = h_wifi_set},
         {.uri = "/api/log", .method = HTTP_GET, .handler = h_log},
+        {.uri = "/api/fuel", .method = HTTP_GET, .handler = h_fuel_get},
         {.uri = "/api/mode", .method = HTTP_POST, .handler = h_mode},
         {.uri = "/api/reboot", .method = HTTP_POST, .handler = h_reboot},
         {.uri = "/api/factory_reset", .method = HTTP_POST, .handler = h_factory},

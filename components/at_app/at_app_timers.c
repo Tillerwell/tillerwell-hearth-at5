@@ -123,6 +123,14 @@ static void local_now(at_localtime_t *out)
     out->minute = (uint16_t)(tm.tm_hour * 60 + tm.tm_min);
 }
 
+bool at_app_local_day(int32_t *day)
+{
+    at_localtime_t now;
+    local_now(&now);
+    if (now.ok) *day = now.day;
+    return now.ok;
+}
+
 static int64_t local_minute_to_epoch(int64_t lm)
 {
     int y, m, d;

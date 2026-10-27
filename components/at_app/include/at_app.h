@@ -10,6 +10,7 @@
 
 #include "at_core.h"
 #include "at_ctl.h"
+#include "at_fuel.h"
 #include "at_timers.h"
 #include "at_tz.h"
 #include "esp_err.h"
@@ -75,6 +76,10 @@ esp_err_t at_settings_band_save(const at_band_t *in);
 float at_settings_preheat_temp_load(void);
 esp_err_t at_settings_preheat_temp_save(float celsius);
 
+/* A small blob in the settings namespace. False if missing or not exactly `len` bytes. */
+bool at_settings_blob_load(const char *key, void *out, size_t len);
+esp_err_t at_settings_blob_save(const char *key, const void *in, size_t len);
+
 esp_err_t at_settings_init(void);
 void at_settings_get(at_settings_t *out);
 /* Replace and persist. */
@@ -128,6 +133,30 @@ bool at_app_start_thermostat(void);
 bool at_app_stop(void);
 bool at_app_start_pump(void);
 bool at_app_send_pubr0(void);
+
+/* ---- fuel estimate (at_app_fuel.c) ---------------------------------------- */
+
+typedef struct {
+    at_fuel_cfg_t cfg;
+    at_fuel_totals_t totals;
+    at_fuel_level_t level;
+    float rate_lph;           /* now, calibration applied */
+    bool have_today;
+    at_fuel_day_t today;
+} at_fuel_view_t;
+
+void at_app_fuel_init(void);
+/* Called every few seconds with a fresh snapshot: accounts the time since the last call. */
+void at_app_fuel_tick(const at_snapshot_t *snap, uint32_t now_ms);
+void at_app_fuel_view(at_fuel_view_t *out);
+/* Newest first; returns how many were copied. */
+int at_app_fuel_log_copy(at_fuel_day_t *out, int max);
+/* Each returns false (and changes nothing) if the value is out of range. */
+bool at_app_fuel_set_price(float per_litre);
+bool at_app_fuel_set_factor(float factor);
+bool at_app_fuel_set_rates(float starting, float low, float middle, float high);
+/* Today's local date in days since 1970-01-01; false without a clock and time zone. */
+bool at_app_local_day(int32_t *day);
 
 void at_app_set_auto(bool enabled);
 void at_app_set_auto_target(float target);
@@ -202,6 +231,8 @@ void at_app_clock_sntp_start(void);
 /* The state document shared by the web UI (/api/status) and the MQTT state
  * topic. Returns a malloc'd JSON string; the caller frees it. */
 char *at_app_state_json(void);
+/* GET /api/fuel: the daily fuel log, newest first. Caller frees. */
+char *at_app_fuel_json(void);
 
 #ifdef __cplusplus
 }

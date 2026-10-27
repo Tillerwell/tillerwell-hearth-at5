@@ -6,6 +6,7 @@
 
 #include "at_core.h"
 #include "at_ctl.h"
+#include "at_fuel.h"
 #include "at_proto.h"
 #include "at_timers.h"
 #include "at_tz.h"
@@ -1253,6 +1254,86 @@ static void test_version(void)
     CHECK(at_update_check("0.0006", "0.1.0", true) == AT_UPDATE_OK);
 }
 
+/* ---- fuel estimate ---------------------------------------------------------- */
+
+static void test_fuel(void)
+{
+    printf("fuel estimate\n");
+    /* levels from the status frame's state/substate */
+    CHECK(at_fuel_level(0, 1, false) == AT_FUEL_OFF);
+    CHECK(at_fuel_level(2, 1, false) == AT_FUEL_OFF);      /* glow plug warming up: no fuel yet */
+    CHECK(at_fuel_level(2, 3, false) == AT_FUEL_STARTING);
+    CHECK(at_fuel_level(2, 6, true) == AT_FUEL_STARTING);
+    CHECK(at_fuel_level(3, 0, true) == AT_FUEL_LOW);
+    CHECK(at_fuel_level(3, 8, true) == AT_FUEL_MIDDLE);
+    CHECK(at_fuel_level(3, 2, true) == AT_FUEL_HIGH);
+    CHECK(at_fuel_level(3, 7, false) == AT_FUEL_OFF);      /* pump only */
+    CHECK(at_fuel_level(3, 5, true) == AT_FUEL_MIDDLE);    /* burning, level unnamed */
+    CHECK(at_fuel_level(4, 0, false) == AT_FUEL_OFF);      /* cooldown */
+    CHECK(strcmp(at_fuel_level_name(AT_FUEL_HIGH), "high") == 0);
+
+    at_fuel_cfg_t cfg;
+    at_fuel_cfg_defaults(&cfg);
+    CHECK(at_fuel_cfg_valid(&cfg));
+    cfg.price = 1.50f;
+    at_fuel_totals_t t;
+    at_fuel_totals_init(&t);
+    static at_fuel_log_t log;
+    at_fuel_log_init(&log);
+    at_fuel_run_t run = {0};
+    const int32_t day = at_days_from_civil(2026, 10, 27);
+
+    /* idle, then a start: counted once */
+    at_fuel_tick(&t, &log, &run, &cfg, 0, 1, false, 3, day);
+    CHECK(t.litres == 0 && log.count == 0);
+    for (int i = 0; i < 60; i++) at_fuel_tick(&t, &log, &run, &cfg, 2, 3, true, 3, day); /* 3 min starting */
+    CHECK(t.starts == 1);
+    for (int i = 0; i < 1200; i++) at_fuel_tick(&t, &log, &run, &cfg, 3, 2, true, 3, day); /* 1 h high */
+    double want = 0.15 * 3 / 60.0 + 0.62;
+    CHECK(fabs(t.litres - want) < 1e-6);
+    CHECK(fabs(t.cost - want * 1.50) < 1e-6);
+    CHECK(t.level_s[AT_FUEL_HIGH] == 3600 && t.level_s[AT_FUEL_STARTING] == 180);
+    const at_fuel_day_t *e = at_fuel_log_find(&log, day);
+    CHECK(e && e->starts == 1 && e->burn_min == 63);
+    CHECK(e && abs((int)e->ml - (int)(want * 1000)) <= 1);
+    CHECK(e && abs((int)e->cost_m - (int)(want * 1500)) <= 1);
+
+    /* cooldown back to a start is a new start; middle via calibration factor */
+    at_fuel_tick(&t, &log, &run, &cfg, 4, 0, false, 3, day);
+    at_fuel_tick(&t, &log, &run, &cfg, 2, 3, true, 3, day);
+    CHECK(t.starts == 2);
+    cfg.factor = 2.0f;
+    CHECK(fabs(at_fuel_rate_now(&cfg, AT_FUEL_MIDDLE) - 0.70f) < 1e-6);
+
+    /* next day: a new log entry, newest first */
+    double before = t.litres;
+    for (int i = 0; i < 1200; i++) at_fuel_tick(&t, &log, &run, &cfg, 3, 8, true, 3, day + 1);
+    CHECK(fabs(t.litres - before - 0.70) < 1e-6);
+    CHECK(log.count == 2 && at_fuel_log_at(&log, 0)->day == day + 1 && at_fuel_log_at(&log, 1)->day == day);
+    CHECK(abs((int)at_fuel_log_at(&log, 0)->ml - 700) <= 1);
+
+    /* no clock: totals count, the log does not; a clock that went backwards leaves the log alone */
+    at_fuel_tick(&t, &log, &run, &cfg, 3, 2, true, 3, -1);
+    at_fuel_tick(&t, &log, &run, &cfg, 3, 2, true, 3, day - 5);
+    CHECK(log.count == 2 && at_fuel_log_find(&log, day - 5) == NULL);
+
+    /* the ring keeps the newest AT_FUEL_DAYS days */
+    at_fuel_log_init(&log);
+    for (int d = 0; d < AT_FUEL_DAYS + 10; d++) at_fuel_tick(&t, &log, &run, &cfg, 3, 2, true, 60, day + d);
+    CHECK(log.count == AT_FUEL_DAYS);
+    CHECK(at_fuel_log_at(&log, 0)->day == day + AT_FUEL_DAYS + 9);
+    CHECK(at_fuel_log_at(&log, AT_FUEL_DAYS - 1)->day == day + 10);
+    CHECK(at_fuel_log_at(&log, AT_FUEL_DAYS) == NULL);
+
+    /* settings limits */
+    at_fuel_cfg_defaults(&cfg);
+    cfg.factor = 0.1f;
+    CHECK(!at_fuel_cfg_valid(&cfg));
+    at_fuel_cfg_defaults(&cfg);
+    cfg.rate_lph[AT_FUEL_HIGH] = -1;
+    CHECK(!at_fuel_cfg_valid(&cfg));
+}
+
 int main(void)
 {
     test_frames();
@@ -1272,6 +1353,7 @@ int main(void)
     test_timer_next();
     test_tz();
     test_version();
+    test_fuel();
     printf("\n%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }
