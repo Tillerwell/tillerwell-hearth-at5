@@ -1,6 +1,6 @@
 // Matter front end. Written against the esp-matter C++ API (see docs/MATTER.md
 // for the esp-matter / ESP-IDF versions this was written for). This file is
-// only compiled in the Matter build variants.
+// always compiled in.
 
 #include "at_matter.h"
 
@@ -176,16 +176,8 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t)
     case chip::DeviceLayer::DeviceEventType::kCommissioningWindowClosed:
         // Also closes when pairing succeeds; only a window that ran out with no pairing matters here
         if (chip::Server::GetInstance().GetFabricTable().FabricCount() > 0) break;
-#if CONFIG_AUTOTERM_VARIANT_ALL
         ESP_LOGW(TAG, "nobody paired before the pairing window closed: back to Wi-Fi mode");
         at_settings_set_mode_and_restart(AT_MODE_WIFI);
-#else
-        // Matter is the only mode in this image, so keep it pairable
-        ESP_LOGI(TAG, "pairing window closed with nobody paired: reopening it");
-        if (chip::Server::GetInstance().GetCommissioningWindowManager().OpenBasicCommissioningWindow() != CHIP_NO_ERROR) {
-            ESP_LOGE(TAG, "could not reopen the pairing window");
-        }
-#endif
         break;
     default:
         break;

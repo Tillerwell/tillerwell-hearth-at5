@@ -133,6 +133,7 @@ bool at_app_start_thermostat(void);
 bool at_app_stop(void);
 bool at_app_start_pump(void);
 bool at_app_send_pubr0(void);
+bool at_app_send_pubr0_variant(int variant); /* see at_cmd_send_pubr0_variant */
 
 /* ---- fuel estimate (at_app_fuel.c) ---------------------------------------- */
 
@@ -146,6 +147,9 @@ typedef struct {
     at_fuel_tank_t tank;
     bool have_tank_left;      /* a level was set */
     float tank_left_l;
+    at_fuel_pump_t pump;
+    bool from_pump;           /* rate_lph is the pump's measured rate, not the per-level estimate */
+    float pump_hz;            /* last measured, 0 when not streaming */
 } at_fuel_view_t;
 
 void at_app_fuel_init(void);
@@ -159,6 +163,11 @@ bool at_app_fuel_set_price(float per_litre);
 bool at_app_fuel_set_factor(float factor);
 bool at_app_fuel_set_rates(float starting, float low, float middle, float high);
 /* The tank's size, what is in it now, or "filled to the top" (needs the size). */
+/* Pump calibration (see at_fuel.h): reset the count at a known fill, burn, refill to the same mark, then
+ * calibrate with the litres it took. set_ml_per_pulse(0) goes back to the estimate. */
+bool at_app_fuel_pump_reset_count(void);
+bool at_app_fuel_pump_calibrate(float litres);
+bool at_app_fuel_set_ml_per_pulse(float ml);
 bool at_app_fuel_set_tank_capacity(float litres);
 bool at_app_fuel_set_tank_level(float litres);
 bool at_app_fuel_tank_filled(void);

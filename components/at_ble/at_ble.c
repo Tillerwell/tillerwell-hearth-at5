@@ -198,12 +198,8 @@ static int mode_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt
     if (ble_hs_mbuf_to_flat(ctxt->om, buf, sizeof(buf) - 1, &got) != 0) return BLE_ATT_ERR_UNLIKELY;
     buf[got] = 0;
     if (strcmp(buf, "matter") != 0) return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
-#if CONFIG_AUTOTERM_VARIANT_ALL
     ESP_LOGI(TAG, "switching to Matter mode (from phone)");
     return at_settings_set_mode_and_restart(AT_MODE_MATTER) == ESP_OK ? 0 : BLE_ATT_ERR_UNLIKELY;
-#else
-    return BLE_ATT_ERR_REQ_NOT_SUPPORTED;
-#endif
 }
 
 static int status_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg)

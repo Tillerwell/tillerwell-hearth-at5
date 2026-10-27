@@ -338,6 +338,9 @@ char *at_app_state_json(void)
     at_app_fuel_view(&fv);
     cJSON_AddStringToObject(o, "power_level", at_fuel_level_name(fv.level));
     cJSON_AddNumberToObject(o, "fuel_rate_lph", round3(fv.rate_lph));
+    cJSON_AddStringToObject(o, "fuel_source", fv.from_pump ? "pump" : "estimate");
+    cJSON_AddNumberToObject(o, "fuel_ml_per_pulse", round(fv.pump.ml_per_pulse * 1e5) / 1e5);
+    cJSON_AddNumberToObject(o, "fuel_pump_pulses", (double)(long long)fv.pump.pulses);
     cJSON_AddNumberToObject(o, "fuel_litres_total", fv.totals.litres);
     cJSON_AddNumberToObject(o, "fuel_cost_total", fv.totals.cost);
     cJSON_AddNumberToObject(o, "fuel_litres_today", fv.have_today ? fv.today.ml / 1000.0 : 0);

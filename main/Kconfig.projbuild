@@ -1,34 +1,6 @@
 menu "Tillerwell Hearth"
 
-    choice AUTOTERM_VARIANT
-        prompt "Firmware variant"
-        default AUTOTERM_VARIANT_WIFI
-        help
-            Selected by build.sh through an sdkconfig overlay.
-
-        config AUTOTERM_VARIANT_WIFI
-            bool "Wi-Fi + MQTT + web UI (no Matter)"
-        config AUTOTERM_VARIANT_MATTER_WIFI
-            bool "Matter over Wi-Fi (+ web UI and MQTT)"
-        config AUTOTERM_VARIANT_MATTER_THREAD
-            bool "Matter over Thread (no Wi-Fi, no web UI)"
-        config AUTOTERM_VARIANT_ALL
-            bool "All in one: Wi-Fi only, Matter over Wi-Fi or Matter over Thread, chosen at run time"
-    endchoice
-
-    # derived, no prompt
-    config AUTOTERM_HAS_OWN_WIFI
-        bool
-        default y if AUTOTERM_VARIANT_WIFI || AUTOTERM_VARIANT_ALL
-    config AUTOTERM_HAS_MATTER
-        bool
-        default y if AUTOTERM_VARIANT_MATTER_WIFI || AUTOTERM_VARIANT_MATTER_THREAD || AUTOTERM_VARIANT_ALL
-    config AUTOTERM_HAS_BLE_SETUP
-        bool
-        default y if AUTOTERM_VARIANT_WIFI || AUTOTERM_VARIANT_ALL
-    config AUTOTERM_HAS_NET_SERVICES
-        bool
-        default y if !AUTOTERM_VARIANT_MATTER_THREAD
+    # One image: Wi-Fi only, Matter over Wi-Fi or Matter over Thread, chosen at run time (see sdkconfig.defaults.all).
 
     config AUTOTERM_MODEL
         string "Control unit model name (shown in the app)"
@@ -57,7 +29,6 @@ menu "Tillerwell Hearth"
     config AUTOTERM_SETUP_AP_PASSWORD
         string "Setup access point password (8+ characters, empty = open network)"
         default ""
-        depends on AUTOTERM_HAS_OWN_WIFI
         help
             The setup network only exists while no Wi-Fi is configured (or the
             saved one cannot be reached). An open network is easiest but the

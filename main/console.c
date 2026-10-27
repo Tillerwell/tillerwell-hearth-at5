@@ -6,10 +6,9 @@
 
 #include "sdkconfig.h"
 #include "at_app.h"
-#if CONFIG_AUTOTERM_HAS_NET_SERVICES
+#include "at_matter.h"
 #include "at_mqtt.h"
 #include "at_net.h"
-#endif
 #include "esp_console.h"
 #include "esp_system.h"
 
@@ -32,11 +31,9 @@ static int cmd_status(int argc, char **argv)
     printf("frames: heater %lu (crc %lu), controller %lu (crc %lu); commands ok %lu failed %lu\n",
            (unsigned long)s->frames_heater, (unsigned long)s->bad_crc_heater, (unsigned long)s->frames_panel,
            (unsigned long)s->bad_crc_panel, (unsigned long)s->inject_ok, (unsigned long)s->inject_fail);
-#if CONFIG_AUTOTERM_HAS_NET_SERVICES
     char ip[20];
     at_net_ip_str(ip, sizeof(ip));
     printf("network: %s%s\n", ip[0] ? ip : "not connected", at_net_setup_ap_active() ? " (setup AP up)" : "");
-#endif
     return 0;
 }
 
@@ -83,7 +80,6 @@ static int cmd_bypass(int argc, char **argv)
     return 0;
 }
 
-#if CONFIG_AUTOTERM_HAS_OWN_WIFI
 static int cmd_wifi(int argc, char **argv)
 {
     if (argc < 2) {
@@ -94,8 +90,6 @@ static int cmd_wifi(int argc, char **argv)
     printf(e == ESP_OK ? "saved, joining\n" : "failed: %s\n", esp_err_to_name(e));
     return 0;
 }
-#endif
-
 
 static int cmd_matter(int argc, char **argv)
 {
@@ -109,7 +103,6 @@ static int cmd_matter(int argc, char **argv)
     return 0;
 }
 
-#if CONFIG_AUTOTERM_VARIANT_ALL
 static int cmd_mode(int argc, char **argv)
 {
     at_settings_t c;
@@ -122,7 +115,6 @@ static int cmd_mode(int argc, char **argv)
     at_settings_set_mode_and_restart(!strcmp(argv[1], "matter") ? AT_MODE_MATTER : AT_MODE_WIFI);
     return 0;
 }
-#endif
 
 static int cmd_timezone(int argc, char **argv)
 {
@@ -202,14 +194,8 @@ void at_console_start(void)
         {.command = "auto", .help = "auto on|off|<target C>", .func = cmd_auto},
         {.command = "freeze", .help = "freeze on|off|<floor C>", .func = cmd_freeze},
         {.command = "bypass", .help = "bypass on|off (never send commands)", .func = cmd_bypass},
-#if CONFIG_AUTOTERM_HAS_OWN_WIFI
         {.command = "wifi", .help = "wifi <ssid> [password]", .func = cmd_wifi},
-#endif
-#if CONFIG_AUTOTERM_HAS_NET_SERVICES
-#endif
-#if CONFIG_AUTOTERM_VARIANT_ALL
         {.command = "mode", .help = "mode wifi|matter (restarts)", .func = cmd_mode},
-#endif
         {.command = "matter", .help = "Matter pairing info", .func = cmd_matter},
         {.command = "timezone", .help = "timezone [IANA name | POSIX string]", .func = cmd_timezone},
         {.command = "timers", .help = "show the clock, the timers and the next one", .func = cmd_timers},

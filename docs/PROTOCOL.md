@@ -496,6 +496,23 @@ directly observed, CRC-valid, echoed back by the heater, and produced the
 correct physical state transition. The `.pfl` reference is left as an
 open question in case it becomes relevant when profiling other models.
 
+## Fuel from the pump's pulses
+
+With debug mode on and the extended frames streaming, the box counts the pump frequency (`[15]/10` Hz) as pulses
+and, once calibrated, reports litres as pulses x ml per pulse instead of the per-level estimate. `/api/status`
+shows `fuel_source` (`pump` or `estimate`), `fuel_ml_per_pulse` and `fuel_pump_pulses`. When the frames stop
+(5 s without one) it falls back to the estimate. The ignition phase, where the pump may not pulse yet, keeps the
+starting rate; fuel pumped outside a burn (pump-only, priming) is counted from its pulses.
+
+Calibrate once, with real fuel:
+
+1. Fill the tank to a mark, then `POST /api/cmd {"cmd":"pump_count_reset"}`.
+2. Burn for a few hours (the count must pass 500 pulses).
+3. Top back up to the same mark with a measuring jug, and send `{"cmd":"pump_calibrate","litres":<jug>}`.
+
+`{"cmd":"ml_per_pulse","value":0.03}` sets it directly, and 0 goes back to the estimate. The count is sampled
+at the 3 s fuel tick, so it is only as good as the pump frequency is steady between ticks.
+
 ## What's still open
 
 - The `type04`/`type06` unprompted messages (5-byte payloads, ~7 min apart,

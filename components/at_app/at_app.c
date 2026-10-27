@@ -332,6 +332,14 @@ bool at_app_stop(void) { return core_cmd(at_cmd_stop); }
 bool at_app_start_pump(void) { return core_cmd(at_cmd_start_pump); }
 bool at_app_send_pubr0(void) { return core_cmd(at_cmd_send_pubr0); }
 
+bool at_app_send_pubr0_variant(int variant)
+{
+    xSemaphoreTake(s_core_lock, portMAX_DELAY);
+    bool ok = at_cmd_send_pubr0_variant(&s_core, variant, at_now_ms());
+    xSemaphoreGive(s_core_lock);
+    return ok;
+}
+
 /* Debug mode on at boot: a PUBR0 handshake every second for the first 30 s, in case the heater only
  * takes it while it is starting up (the box powers up with it, off the same red wire). */
 static void boot_burst_task(void *arg)

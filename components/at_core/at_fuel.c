@@ -89,8 +89,51 @@ static at_fuel_day_t *log_today(at_fuel_log_t *log, at_fuel_run_t *run, int32_t 
     return e;
 }
 
+void at_fuel_pump_init(at_fuel_pump_t *p)
+{
+    memset(p, 0, sizeof(*p));
+    p->version = AT_FUEL_PUMP_VERSION;
+}
+
+bool at_fuel_pump_valid(const at_fuel_pump_t *p)
+{
+    return p->version == AT_FUEL_PUMP_VERSION && (p->ml_per_pulse == 0.0f || (p->ml_per_pulse >= 0.005f && p->ml_per_pulse <= 0.2f)) &&
+           p->pulses >= 0.0;
+}
+
+bool at_fuel_pump_set_ml(at_fuel_pump_t *p, float ml_per_pulse)
+{
+    if (!(ml_per_pulse == 0.0f || (ml_per_pulse >= 0.005f && ml_per_pulse <= 0.2f))) return false;
+    p->ml_per_pulse = ml_per_pulse;
+    return true;
+}
+
+void at_fuel_pump_reset_count(at_fuel_pump_t *p)
+{
+    p->pulses = 0;
+}
+
+bool at_fuel_pump_calibrate(at_fuel_pump_t *p, float litres)
+{
+    if (p->pulses < AT_FUEL_PUMP_MIN_PULSES || !(litres > 0.0f)) return false;
+    return at_fuel_pump_set_ml(p, (float)(litres * 1000.0 / p->pulses)) && p->ml_per_pulse != 0.0f;
+}
+
+float at_fuel_pump_rate_lph(const at_fuel_pump_t *p, float pump_hz)
+{
+    if (!p || p->ml_per_pulse <= 0.0f || !(pump_hz > 0.0f)) return 0.0f;
+    return pump_hz * p->ml_per_pulse * 3.6f; /* ml/s -> l/h */
+}
+
 at_fuel_level_t at_fuel_tick(at_fuel_totals_t *t, at_fuel_log_t *log, at_fuel_run_t *run, const at_fuel_cfg_t *cfg,
                              uint8_t state, uint8_t substate, bool burner_active, double dt_s, int32_t day)
+{
+    return at_fuel_tick_pump(t, log, run, cfg, NULL, -1.0f, state, substate, burner_active, dt_s, day);
+}
+
+at_fuel_level_t at_fuel_tick_pump(at_fuel_totals_t *t, at_fuel_log_t *log, at_fuel_run_t *run, const at_fuel_cfg_t *cfg,
+                                  at_fuel_pump_t *pump, float pump_hz, uint8_t state, uint8_t substate,
+                                  bool burner_active, double dt_s, int32_t day)
 {
     at_fuel_level_t level = at_fuel_level(state, substate, burner_active);
     bool started = run->have_state && state == 2 && run->last_state != 2 && run->last_state != 3;
@@ -99,6 +142,13 @@ at_fuel_level_t at_fuel_tick(at_fuel_totals_t *t, at_fuel_log_t *log, at_fuel_ru
     if (dt_s < 0) dt_s = 0;
 
     double litres = at_fuel_rate_now(cfg, level) * dt_s / 3600.0;
+    if (pump && pump_hz >= 0.0f) {
+        double pulses = pump_hz * dt_s;
+        pump->pulses += pulses;
+        if (pump->ml_per_pulse > 0.0f && !(level == AT_FUEL_STARTING && pump_hz == 0.0f)) {
+            litres = pulses * pump->ml_per_pulse / 1000.0;
+        }
+    }
     double cost = litres * cfg->price;
     t->litres += litres;
     t->cost += cost;

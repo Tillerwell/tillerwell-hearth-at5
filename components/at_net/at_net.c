@@ -16,9 +16,7 @@
 #include "sdkconfig.h"
 
 #include "mdns.h"
-#if CONFIG_AUTOTERM_HAS_OWN_WIFI
 #include "lwip/sockets.h"
-#endif
 
 static const char *TAG = "net";
 
@@ -193,10 +191,8 @@ static void on_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
 }
 
-#if CONFIG_AUTOTERM_HAS_OWN_WIFI
-
 /* ------------------------------------------------------------------------- *
- * Plain Wi-Fi build
+ * Wi-Fi manager
  * ------------------------------------------------------------------------- */
 
 #define FALLBACK_AP_AFTER_MS 120000
@@ -405,24 +401,6 @@ static esp_err_t start_own_wifi(void)
     xTaskCreate(dns_task, "captive_dns", 3072, NULL, 3, NULL);
     return ESP_OK;
 }
-
-#else /* no Wi-Fi manager in this build */
-
-bool at_net_has_saved_network(void) { return false; }
-
-static esp_err_t start_own_wifi(void)
-{
-    return ESP_ERR_NOT_SUPPORTED;
-}
-
-esp_err_t at_net_set_credentials(const char *ssid, const char *pass)
-{
-    (void)ssid;
-    (void)pass;
-    return ESP_ERR_NOT_SUPPORTED; /* credentials come from Matter commissioning */
-}
-
-#endif
 
 esp_err_t at_net_start(at_net_ip_cb_t cb, bool own_wifi)
 {

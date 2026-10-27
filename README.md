@@ -18,7 +18,7 @@ Based on [sinise/autoterm-heater-control](https://github.com/sinise/autoterm-hea
 
 Wi-Fi only vs Matter is a switch on the web page (Setup → Connection mode) or `mode wifi` / `mode matter` on the USB console; it restarts the device. Within Matter, your Home app chooses Wi-Fi or Thread while pairing; either way the box keeps the home Wi-Fi up in Matter mode, so the Tillerwell app keeps working over the same web API at `hearth-<id>.local`. Switching modes keeps the Matter pairing, so going back to Matter later needs no re-pairing. The BOOT button no longer enters Matter mode: units are always paired over Wi-Fi. Hold it 5 s (the LED flashes slow yellow) and let go and nothing happens; keep holding to 10 s (the LED flashes fast red) and let go for a factory reset, which erases everything, pairing included, and returns to Wi-Fi mode with the setup network. Keep holding past 15 s and the LED goes back to normal and letting go does nothing, which is how to call off a reset. LED in Wi-Fi mode: slow flashing blue = not set up yet (fast while a phone is connected over Bluetooth), solid green = on the network, fast flashing yellow at full brightness = Wi-Fi dropped. If nobody pairs it within 15 minutes of entering Matter mode, it goes back to Wi-Fi mode by itself.
 
-Smaller single-purpose builds also exist (`./build.sh wifi`, `matter-wifi`, `matter-thread`; 1.1 / 2.0 / 1.7 MB against `all` at 2.2 MB) for anyone who wants only one behaviour.
+There is only one firmware image (`./build.sh build`, `build/all/hearth.bin`); the modes above are chosen on the device.
 
 **Which mode:** start with Wi-Fi only. Choose Matter if you want Apple Home, Google Home, Alexa or Home Assistant's Matter integration without MQTT; Wi-Fi only gives the richest Home Assistant entities (fault names, pump-only, frost protection, bypass). Thread is only worth it if you already have a Thread border router (HomePod mini, Apple TV 4K, Nest Hub 2nd gen, Home Assistant with an OTBR). See [docs/MATTER.md](docs/MATTER.md).
 
@@ -101,7 +101,7 @@ components/at_app      settings (NVS), UART tasks, shared state
 components/at_net      Wi-Fi, setup AP, captive DNS
 components/at_web      web UI + API + OTA
 components/at_mqtt     MQTT client + Home Assistant discovery + built-in broker (managed component espressif/mosquitto)
-components/at_matter   Matter endpoints (Matter variants)
+components/at_matter   Matter endpoints
 main/                  startup, USB console, factory-reset button
 host_tests/            make -C host_tests
 ```

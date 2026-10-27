@@ -178,7 +178,7 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:
     <input type="file" id="file" accept=".bin">
     <div class="sw"><span>Allow an older version (roll back)</span><input type="checkbox" id="older"></div>
     <div class="row"><button class="b p" onclick="upload()">Upload and restart</button><span id="up"></span></div>
-    <div class="note">Use the same variant you are running unless you mean to switch (Wi-Fi ↔ Matter). Switching to the Thread image removes the web page, so write down how to flash a new one before you do.</div>
+    <div class="note">Upload the hearth.bin from the release. Wi-Fi and Matter are chosen above, not by the image.</div>
   </div>
 </section>
 
@@ -248,7 +248,7 @@ async function loadInfo(){
   if(!document.activeElement||document.activeElement.tagName!=='INPUT'){
     $('d_name').value=info.device_name;
   }
-  $('fwinfo').textContent='Hearth · RoamOS '+info.version+' · variant '+info.variant+' · ESP-IDF '+info.idf;
+  $('fwinfo').textContent='Hearth · RoamOS '+info.version+'' · ESP-IDF '+info.idf;
   $('c-mode').classList.toggle('hide',!info.can_switch_mode);
   if(info.can_switch_mode){
     $('modenow').textContent='Current mode: '+(info.mode==='matter'?'Matter':'Wi-Fi only');

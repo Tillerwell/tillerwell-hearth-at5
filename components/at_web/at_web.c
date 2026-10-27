@@ -27,17 +27,6 @@ extern const char index_html_end[] asm("_binary_index_html_end");
 
 static httpd_handle_t s_server;
 
-static const char *variant_name(void)
-{
-#if CONFIG_AUTOTERM_VARIANT_ALL
-    return "all";
-#elif CONFIG_AUTOTERM_VARIANT_MATTER_WIFI
-    return "matter-wifi";
-#else
-    return "wifi";
-#endif
-}
-
 /* ---- helpers --------------------------------------------------------------- */
 
 static bool ct_equal(const char *a, const char *b)
@@ -177,7 +166,7 @@ static esp_err_t h_info(httpd_req_t *req)
     const esp_app_desc_t *d = esp_app_get_description();
     cJSON_AddStringToObject(o, "version", d->version);
     cJSON_AddStringToObject(o, "idf", d->idf_ver);
-    cJSON_AddStringToObject(o, "variant", variant_name());
+    cJSON_AddStringToObject(o, "variant", "all");
     cJSON_AddStringToObject(o, "device_name", cfg.device_name);
     char buf[40];
     at_net_ip_str(buf, sizeof(buf));
@@ -191,18 +180,9 @@ static esp_err_t h_info(httpd_req_t *req)
     cJSON_AddStringToObject(o, "wifi_ssid", cfg.wifi_ssid);
     /* the Wi-Fi setup card applies when this boot manages Wi-Fi itself */
     bool own_wifi = false;
-#if CONFIG_AUTOTERM_VARIANT_ALL
     own_wifi = cfg.mode != AT_MODE_MATTER;
     cJSON_AddBoolToObject(o, "can_switch_mode", true);
     cJSON_AddStringToObject(o, "mode", own_wifi ? "wifi" : "matter");
-#elif CONFIG_AUTOTERM_VARIANT_WIFI
-    own_wifi = true;
-    cJSON_AddBoolToObject(o, "can_switch_mode", false);
-    cJSON_AddStringToObject(o, "mode", "wifi");
-#else
-    cJSON_AddBoolToObject(o, "can_switch_mode", false);
-    cJSON_AddStringToObject(o, "mode", "matter");
-#endif
     cJSON_AddBoolToObject(o, "wifi_setup", own_wifi);
     cJSON_AddBoolToObject(o, "web_password_set", cfg.web_password[0] != 0);
     at_matter_info_t mi;
@@ -238,6 +218,8 @@ static esp_err_t h_cmd(httpd_req_t *req)
         ok = at_app_start_pump();
     } else if (!strcmp(c, "send_pubr0")) {
         ok = at_app_send_pubr0();
+    } else if (!strcmp(c, "send_pubr0_variant")) {
+        ok = at_app_send_pubr0_variant((int)jnum(j, "variant", 0));
     } else if (!strcmp(c, "auto")) {
         at_app_set_auto(jbool(j, "enabled", false));
     } else if (!strcmp(c, "auto_target")) {
@@ -261,6 +243,12 @@ static esp_err_t h_cmd(httpd_req_t *req)
     } else if (!strcmp(c, "fuel_rates")) {
         ok = at_app_fuel_set_rates((float)jnum(j, "starting", -1), (float)jnum(j, "low", -1),
                                    (float)jnum(j, "middle", -1), (float)jnum(j, "high", -1));
+    } else if (!strcmp(c, "pump_count_reset")) {
+        ok = at_app_fuel_pump_reset_count();
+    } else if (!strcmp(c, "pump_calibrate")) {
+        ok = at_app_fuel_pump_calibrate((float)jnum(j, "litres", -1));
+    } else if (!strcmp(c, "ml_per_pulse")) {
+        ok = at_app_fuel_set_ml_per_pulse((float)jnum(j, "value", -1));
     } else if (!strcmp(c, "tank_capacity")) {
         ok = at_app_fuel_set_tank_capacity((float)jnum(j, "value", -1));
     } else if (!strcmp(c, "tank_level")) {
@@ -400,7 +388,6 @@ static esp_err_t h_wifi_set(httpd_req_t *req)
 static esp_err_t h_mode(httpd_req_t *req)
 {
     REQUIRE_AUTH(req);
-#if CONFIG_AUTOTERM_VARIANT_ALL
     cJSON *j = read_json(req);
     if (!j) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad json");
     const char *m = jstr(j, "mode");
@@ -410,9 +397,6 @@ static esp_err_t h_mode(httpd_req_t *req)
     }
     cJSON_Delete(j);
     return send_ok(req, ok);
-#else
-    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "this firmware has a fixed mode");
-#endif
 }
 
 static esp_err_t h_log(httpd_req_t *req)

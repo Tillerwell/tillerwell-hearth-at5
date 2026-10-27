@@ -478,6 +478,20 @@ static void test_standalone(void)
     sim_run(&s, &c, 2000);
     CHECK(c.own_polls > hushed && c.last_poll_ms >= sent_at + AT_DIRECT_HUSH_MS);
 
+    /* PUBR0 experiments only reshape the same 15-byte frame */
+    {
+        uint8_t plain[AT_PUBR0_LEN];
+        at_build_pubr0(plain);
+        CHECK(at_cmd_send_pubr0_variant(&c, 1, s.now) && c.q_count == 1);
+        const at_queue_item_t *qi = &c.q[c.q_head];
+        CHECK(qi->len == AT_PUBR0_LEN && qi->frame[13] == plain[14] && qi->frame[14] == plain[13] && !memcmp(qi->frame, plain, 13));
+        while (c.q_count) sim_run(&s, &c, 10);
+        CHECK(at_cmd_send_pubr0_variant(&c, 3, s.now) && c.q_count == 5);
+        while (c.q_count) sim_run(&s, &c, 10);
+        CHECK(at_cmd_send_pubr0_variant(&c, 4, s.now) && c.q[c.q_head].hush_set && c.q[c.q_head].hush_ms == 0);
+        while (c.q_count) sim_run(&s, &c, 10);
+    }
+
     /* controller comes back: the box stops polling within a poll interval */
     s.panel_polling = true;
     s.panel_next_poll = s.now;
@@ -1324,6 +1338,52 @@ static void test_fuel(void)
     CHECK(at_fuel_log_at(&log, 0)->day == day + AT_FUEL_DAYS + 9);
     CHECK(at_fuel_log_at(&log, AT_FUEL_DAYS - 1)->day == day + 10);
     CHECK(at_fuel_log_at(&log, AT_FUEL_DAYS) == NULL);
+
+    /* the pump's own pulses: counted always, litres only once calibrated */
+    {
+        at_fuel_totals_t pt;
+        at_fuel_totals_init(&pt);
+        at_fuel_log_t plog;
+        at_fuel_log_init(&plog);
+        at_fuel_run_t prun = {0};
+        at_fuel_cfg_t pcfg;
+        at_fuel_cfg_defaults(&pcfg);
+        at_fuel_pump_t pump;
+        at_fuel_pump_init(&pump);
+        CHECK(at_fuel_pump_valid(&pump));
+        for (int i = 0; i < 100; i++) at_fuel_tick_pump(&pt, &plog, &prun, &pcfg, &pump, 3.8f, 3, 2, true, 3, day);
+        CHECK(fabs(pump.pulses - 1140.0) < 1e-3);
+        CHECK(fabs(pt.litres - 0.62 * 300 / 3600.0) < 1e-6); /* uncalibrated: the table rate */
+        CHECK(!at_fuel_pump_calibrate(&pump, 0.0f));
+
+        /* a refill says the 1140 pulses burned 0.0342 l -> 0.03 ml a pulse */
+        CHECK(at_fuel_pump_calibrate(&pump, 0.0342f) && fabs(pump.ml_per_pulse - 0.03f) < 1e-6);
+        CHECK(fabs(at_fuel_pump_rate_lph(&pump, 3.8f) - 0.4104f) < 1e-4);
+        double l0 = pt.litres;
+        at_fuel_tick_pump(&pt, &plog, &prun, &pcfg, &pump, 3.8f, 3, 2, true, 10, day);
+        CHECK(fabs(pt.litres - l0 - 3.8 * 10 * 0.03 / 1000.0) < 1e-9);
+
+        /* pump stopped while a level is named: nothing; ignition with the pump still: the starting rate;
+           priming outside a burn: the pulses */
+        l0 = pt.litres;
+        at_fuel_tick_pump(&pt, &plog, &prun, &pcfg, &pump, 0.0f, 3, 2, true, 10, day);
+        CHECK(pt.litres == l0);
+        at_fuel_tick_pump(&pt, &plog, &prun, &pcfg, &pump, 0.0f, 2, 3, true, 3600, day);
+        CHECK(fabs(pt.litres - l0 - 0.15) < 1e-6);
+        l0 = pt.litres;
+        at_fuel_tick_pump(&pt, &plog, &prun, &pcfg, &pump, 5.0f, 0, 4, false, 10, day);
+        CHECK(fabs(pt.litres - l0 - 50 * 0.03 / 1000.0) < 1e-9);
+
+        /* extended frames not streaming (< 0): back to the estimate */
+        l0 = pt.litres;
+        double p0 = pump.pulses;
+        at_fuel_tick_pump(&pt, &plog, &prun, &pcfg, &pump, -1.0f, 3, 2, true, 3600, day);
+        CHECK(fabs(pt.litres - l0 - 0.62) < 1e-6 && pump.pulses == p0);
+
+        CHECK(!at_fuel_pump_set_ml(&pump, 0.5f) && !at_fuel_pump_set_ml(&pump, -1.0f));
+        at_fuel_pump_reset_count(&pump);
+        CHECK(pump.pulses == 0 && !at_fuel_pump_calibrate(&pump, 1.0f)); /* too few pulses to say */
+    }
 
     /* the tank: level set by the owner, less the estimate since */
     at_fuel_tank_t tank;

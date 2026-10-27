@@ -42,15 +42,9 @@ void at_led_setup_link(bool connected) { s_setup_link = connected; }
 
 static bool in_matter_mode(void)
 {
-#if CONFIG_AUTOTERM_VARIANT_ALL
     at_settings_t cfg;
     at_settings_get(&cfg);
     return cfg.mode == AT_MODE_MATTER;
-#else
-    at_matter_info_t m;
-    at_matter_get_info(&m);
-    return m.transport && m.transport[0];
-#endif
 }
 
 /* level 0..100 on top of the brightness setting; bright picks the setup/button brightness, full ignores the
@@ -94,13 +88,9 @@ static void show_status(uint32_t t)
         else show(MATTER, flash(t, OFFLINE_HALF_PERIOD_MS), false);
         return;
     }
-#if CONFIG_AUTOTERM_HAS_NET_SERVICES
     if (at_net_connected()) show_pct(PAIRED, 100, PAIRED_BRIGHTNESS_PCT);
     else if (at_net_has_saved_network()) show_at(DROPPED, flash(t, FAST_HALF_PERIOD_MS), true, true);
     else show(UNCONFIGURED, flash(t, s_setup_link ? FAST_HALF_PERIOD_MS : SLOW_HALF_PERIOD_MS), setup_bright);
-#else
-    show(UNCONFIGURED, flash(t, s_setup_link ? FAST_HALF_PERIOD_MS : SLOW_HALF_PERIOD_MS), setup_bright);
-#endif
 }
 
 static void led_task(void *arg)

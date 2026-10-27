@@ -2,7 +2,6 @@
 # sdkconfig.defaults and sdkconfig.defaults.c6_wifi_thread. The controller picks
 # the network while commissioning (secondary network interface endpoint). In Matter mode the box also keeps
 # its own saved Wi-Fi up (see at_matter.cpp), so the Tillerwell app can use the HTTP API whichever was picked.
-CONFIG_AUTOTERM_VARIANT_ALL=y
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
 
 # esp-matter's light example switches off every cluster a light doesn't use

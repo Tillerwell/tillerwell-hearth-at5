@@ -344,7 +344,7 @@ static void try_start_injection(at_core_t *c, uint32_t now)
         log_add(c, now, 'I', it->frame, it->len, true);
         set_last_cmd(c, now, it->note);
         c->last_cmd_replied = true; /* fire-and-forget: nothing to wait for */
-        c->hush_until_ms = now + AT_DIRECT_HUSH_MS;
+        c->hush_until_ms = now + (it->hush_set ? it->hush_ms : AT_DIRECT_HUSH_MS);
         q_pop(c, now);
         return;
     }
@@ -601,4 +601,41 @@ int at_core_log_copy(const at_core_t *c, at_log_entry_t *out, int max)
         out[i] = c->log[(first + i) % AT_LOG_ENTRIES];
     }
     return (int)count;
+}
+
+static bool enqueue_pubr0(at_core_t *c, const uint8_t *f, uint32_t delay_ms, bool hush_set, uint32_t hush_ms, uint32_t now)
+{
+    if (!at_core_enqueue(c, f, AT_PUBR0_LEN, delay_ms, true, "PUBR0", now)) {
+        return false;
+    }
+    at_queue_item_t *it = &c->q[(c->q_head + c->q_count - 1) % AT_QUEUE_LEN];
+    it->hush_set = hush_set;
+    it->hush_ms = hush_ms;
+    return true;
+}
+
+bool at_cmd_send_pubr0_variant(at_core_t *c, int variant, uint32_t now)
+{
+    uint8_t f[AT_PUBR0_LEN];
+    at_build_pubr0(f);
+    switch (variant) {
+    case 1: {
+        uint8_t t = f[13];
+        f[13] = f[14];
+        f[14] = t;
+        return enqueue_pubr0(c, f, 0, false, 0, now);
+    }
+    case 2:
+        c->hush_until_ms = now + 12000u; /* own polls stop now; the handshake follows into a silent bus */
+        return enqueue_pubr0(c, f, 10000u, true, 20000u, now);
+    case 3:
+        for (int i = 0; i < 5; i++) {
+            if (!enqueue_pubr0(c, f, i ? 150u : 0u, false, 0, now)) return i > 0;
+        }
+        return true;
+    case 4:
+        return enqueue_pubr0(c, f, 0, true, 0, now);
+    default:
+        return enqueue_pubr0(c, f, 0, false, 0, now);
+    }
 }

@@ -70,6 +70,8 @@ typedef struct {
     uint32_t not_before_ms;
     uint32_t queued_ms;
     bool direct;            /* PUBR0-style: no divert */
+    bool hush_set;          /* direct only: hush_ms replaces AT_DIRECT_HUSH_MS (PUBR0 experiments) */
+    uint32_t hush_ms;
     bool armed;             /* not_before_ms computed */
     char note[16];
 } at_queue_item_t;
@@ -171,6 +173,10 @@ bool at_cmd_start_thermostat(at_core_t *c, uint32_t now_ms);
 bool at_cmd_stop(at_core_t *c, uint32_t now_ms);
 bool at_cmd_start_pump(at_core_t *c, uint32_t now_ms);
 bool at_cmd_send_pubr0(at_core_t *c, uint32_t now_ms);
+/* Experiments for a heater that does not start streaming after the plain handshake. Each only varies the PUBR0
+ * frame or the bus around it, nothing else is ever sent. 1: CRC most-significant byte first. 2: bus silent for
+ * 10 s before, 20 s after. 3: five sends 150 ms apart. 4: no pause in our own polls after. Else: plain. */
+bool at_cmd_send_pubr0_variant(at_core_t *c, int variant, uint32_t now_ms);
 
 /* Plain-data snapshot for the UI / MQTT / Matter layers. */
 typedef struct {

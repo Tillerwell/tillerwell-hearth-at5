@@ -1,18 +1,12 @@
-# Matter (Wi-Fi; Thread only in its own image)
+# Matter (Wi-Fi or Thread)
 
-**Status: the Matter images compile and link; none has run on hardware.** Built against esp-matter `release/v1.5` with ESP-IDF v5.5.5 (esp-matter's README names that pair). What is untested is everything at runtime: pairing, attribute updates, the Thread join (Thread image only). Expect surprises on first power-up.
+**Status: the firmware compiles and links with Matter.** Built against esp-matter `release/v1.5` with ESP-IDF v5.5.5 (esp-matter's README names that pair). What is untested is everything at runtime: pairing, attribute updates, the Thread join. Expect surprises on first power-up.
 
-## Images
+## One image
 
-| Image | Network | Notes |
-|---|---|---|
-| `all` | Wi-Fi only, Matter over Wi-Fi, or Matter over Thread, chosen on the device | The recommended image. Default is Wi-Fi only with Matter switched off; the Tillerwell app (`POST /api/mode {"mode":"matter"}`), the web page's Connection mode card or the console `mode matter` restarts into Matter, and the Home app picks Wi-Fi or Thread while pairing (not the user's choice). In Matter mode the box keeps the home Wi-Fi up either way, see below. |
-| `matter-wifi` | Matter over Wi-Fi | Smaller, Matter always on. |
-| `matter-thread` | Matter over Thread | Smaller. No Wi-Fi at all, so no web page, MQTT or over-the-air upload. |
+There is a single firmware image. It does Wi-Fi only, Matter over Wi-Fi, or Matter over Thread, chosen on the device. The default is Wi-Fi only with Matter switched off; the Tillerwell app (`POST /api/mode {"mode":"matter"}`), the web page's Connection mode card or the console `mode matter` restarts into Matter, and the Home app picks Wi-Fi or Thread while pairing (not the user's choice). In Matter mode the box keeps the home Wi-Fi up either way, see below. It is built on esp-matter's `sdkconfig.defaults.c6_wifi_thread`.
 
-(An earlier version of this document said one image could not do both Wi-Fi and Thread. That was wrong for esp-matter 1.5, which ships `sdkconfig.defaults.c6_wifi_thread`; `all` uses it.)
-
-In `all`, Wi-Fi mode and Matter mode never run at the same time: the unified firmware decides at boot (a saved setting) which of "our Wi-Fi manager and setup network" or "Matter" owns the radio. Matter's code is linked in but not started in Wi-Fi mode.
+Wi-Fi mode and Matter mode never run at the same time: the unified firmware decides at boot (a saved setting) which of "our Wi-Fi manager and setup network" or "Matter" owns the radio. Matter's code is linked in but not started in Wi-Fi mode.
 
 ### Matter mode keeps the web API (Tillerwell app)
 
@@ -31,16 +25,16 @@ cd ~/esp/esp-matter && git submodule update --init --depth 1
 cd connectedhomeip/connectedhomeip && ./scripts/checkout_submodules.py --shallow --platform esp32 linux
 cd ~/esp/esp-matter && ./install.sh --no-host-tool       # see the two Apple-silicon notes below
 . ~/esp/esp-idf/export.sh && . ~/esp/esp-matter/export.sh  # IDF must be v5.5.5
-./build.sh all build           # or matter-wifi / matter-thread
+./build.sh build
 ```
 
-Roughly 5 GB for the checkouts and 1 GB per variant build directory.
+Roughly 5 GB for the checkouts and 1 GB for the build directory.
 
 Notes from doing this on an Apple-silicon Mac:
 - `./install.sh` without `--no-host-tool` also builds chip-tool, which needs a ZAP generator binary that is x86-only here and fails ("Bad CPU type"). The firmware does not need it.
 - If the bootstrap's pip step fails building `cffi` with "Bad CPU type in executable: pkg-config", an x86-only `/usr/local/bin/pkg-config` is in the way. Putting a dummy `pkg-config` that exits 1 first on `PATH` for that step worked.
 
-`build.sh` starts from esp-matter's own `examples/light/sdkconfig.defaults` (plus `sdkconfig.defaults.c6_thread` for the Thread image only) so the Bluetooth, mDNS, OpenThread settings are Espressif's; our overlay is applied after. Our overlay turns the clusters we use back on (the light example switches off everything a light does not use, which makes the link fail with undefined `Thermostat` symbols), puts the Wi-Fi soft-AP support back (the light example removes it; the Wi-Fi-only mode's setup network needs it), raises the dynamic endpoint limit (the light example's limit of 2 or 3 is too small for four endpoints) and turns off the CHIP shell so our USB console can have the port.
+`build.sh` starts from esp-matter's own `examples/light/sdkconfig.defaults` (plus `sdkconfig.defaults.c6_wifi_thread`) so the Bluetooth, mDNS, OpenThread settings are Espressif's; our overlay is applied after. Our overlay turns the clusters we use back on (the light example switches off everything a light does not use, which makes the link fail with undefined `Thermostat` symbols), puts the Wi-Fi soft-AP support back (the light example removes it; the Wi-Fi-only mode's setup network needs it), raises the dynamic endpoint limit (the light example's limit of 2 or 3 is too small for four endpoints) and turns off the CHIP shell so our USB console can have the port.
 
 ## What appears in your Matter app
 
@@ -51,11 +45,11 @@ Notes from doing this on an Apple-silicon Mac:
 | 3 | On/off plug "Preheat" | On = preheat for the saved duration, Off = Stop; shows On while the heater runs |
 | 4 | Contact sensor "Fault" | Closed = healthy, open = a fault is active |
 
-Matter has no diesel-heater device type, so these are the closest fits. Pump-only, bypass, frost protection and extended telemetry are not exposed over Matter; use the web page (Wi-Fi variants) or the USB console.
+Matter has no diesel-heater device type, so these are the closest fits. Pump-only, bypass, frost protection and extended telemetry are not exposed over Matter; use the web page (Wi-Fi mode) or the USB console.
 
 ## Pairing
 
-Pairing is over Bluetooth; Wi-Fi credentials (or, in the Thread image, the Thread dataset) are handed over by your Matter app. Stay near the box.
+Pairing is over Bluetooth; Wi-Fi credentials (or, over Thread, the Thread dataset) are handed over by your Matter app. Stay near the box.
 
 The firmware uses esp-matter's **built-in test credentials** (passcode 20202021, discriminator 3840, manual code `3497-011-2332`, vendor ID 0xFFF1). That is normal for hobby devices and works with Home Assistant, Apple Home and Google Home developer pairing, but:
 
@@ -66,9 +60,8 @@ The firmware uses esp-matter's **built-in test credentials** (passcode 20202021,
 ## Thread notes
 
 - Needs a Thread border router on the network.
-- The `matter-thread` image has no Wi-Fi, so no web page, MQTT or over-the-air upload. Updates are by USB, or by switching back to a Wi-Fi image the same way.
 - Writing down how you flash it before switching is not optional on a boat.
 
 ## Home Assistant
 
-HA's Matter integration (Matter Server add-on) can pair either variant. For richer entities (fault names, pump, frost protection, bypass), prefer the `wifi` image with MQTT; HA can also run both: pair Matter for Apple/Google and use `matter-wifi` with MQTT enabled for HA.
+HA's Matter integration (Matter Server add-on) can pair the box. For richer entities (fault names, pump, frost protection, bypass), use Wi-Fi mode with MQTT; HA can also run both: pair Matter for Apple/Google and keep MQTT enabled for HA.

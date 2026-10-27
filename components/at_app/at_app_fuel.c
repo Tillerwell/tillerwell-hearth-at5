@@ -14,6 +14,7 @@ static const char *TAG = "fuel";
 #define KEY_TOT  "fuel_tot"
 #define KEY_LOG  "fuel_log"
 #define KEY_TANK "fuel_tank"
+#define KEY_PUMP "fuel_pump"
 #define SAVE_EVERY_MS (5u * 60u * 1000u) /* while burning; also at the end of every burn and before any restart */
 #define MAX_TICK_S    10.0                /* a longer gap (no status, a stall) is not counted */
 
@@ -23,6 +24,9 @@ static at_fuel_totals_t s_tot;
 static at_fuel_log_t s_log;
 static at_fuel_run_t s_run;
 static at_fuel_tank_t s_tank;
+static at_fuel_pump_t s_pump;
+static float s_pump_hz;
+static bool s_from_pump;
 static at_fuel_level_t s_level;
 static bool s_have_tick, s_dirty;
 static uint32_t s_last_tick_ms, s_last_save_ms;
@@ -44,6 +48,9 @@ void at_app_fuel_init(void)
     if (!at_settings_blob_load(KEY_TANK, &s_tank, sizeof(s_tank)) || s_tank.version != AT_FUEL_TANK_VERSION) {
         at_fuel_tank_init(&s_tank);
     }
+    if (!at_settings_blob_load(KEY_PUMP, &s_pump, sizeof(s_pump)) || !at_fuel_pump_valid(&s_pump)) {
+        at_fuel_pump_init(&s_pump);
+    }
     esp_register_shutdown_handler(save_on_restart);
     ESP_LOGI(TAG, "%.2f l estimated so far, %u days logged", s_tot.litres, s_log.count);
 }
@@ -52,6 +59,7 @@ static void save_locked(void)
 {
     at_settings_blob_save(KEY_TOT, &s_tot, sizeof(s_tot));
     at_settings_blob_save(KEY_LOG, &s_log, sizeof(s_log));
+    at_settings_blob_save(KEY_PUMP, &s_pump, sizeof(s_pump));
     s_dirty = false;
 }
 
@@ -77,9 +85,13 @@ void at_app_fuel_tick(const at_snapshot_t *snap, uint32_t now_ms)
     if (!at_app_local_day(&day)) day = -1;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     at_fuel_level_t was = s_level;
-    s_level = at_fuel_tick(&s_tot, &s_log, &s_run, &s_cfg, snap->status.state_raw, snap->status.substate,
-                           snap->status.burner_active, dt, day);
-    if (s_level != AT_FUEL_OFF) s_dirty = true;
+    /* the pump's frequency counts only while the extended frames are arriving; otherwise it is the estimate */
+    float hz = snap->have_ext && snap->ext_active ? snap->ext.fuel_pump_hz : -1.0f;
+    s_pump_hz = hz > 0 ? hz : 0;
+    s_from_pump = hz >= 0 && s_pump.ml_per_pulse > 0;
+    s_level = at_fuel_tick_pump(&s_tot, &s_log, &s_run, &s_cfg, &s_pump, hz, snap->status.state_raw,
+                                snap->status.substate, snap->status.burner_active, dt, day);
+    if (s_level != AT_FUEL_OFF || hz > 0) s_dirty = true;
     bool burn_ended = was != AT_FUEL_OFF && s_level == AT_FUEL_OFF;
     if (s_dirty && (burn_ended || now_ms - s_last_save_ms >= SAVE_EVERY_MS)) {
         save_locked();
@@ -102,7 +114,10 @@ void at_app_fuel_view(at_fuel_view_t *out)
     out->cfg = s_cfg;
     out->totals = s_tot;
     out->level = s_level;
-    out->rate_lph = at_fuel_rate_now(&s_cfg, s_level);
+    out->pump = s_pump;
+    out->from_pump = s_from_pump;
+    out->pump_hz = s_pump_hz;
+    out->rate_lph = s_from_pump ? at_fuel_pump_rate_lph(&s_pump, s_pump_hz) : at_fuel_rate_now(&s_cfg, s_level);
     out->tank = s_tank;
     out->have_tank_left = at_fuel_tank_remaining(&s_tank, s_tot.litres, &out->tank_left_l);
     const at_fuel_day_t *t = clock ? at_fuel_log_find(&s_log, day) : NULL;
@@ -172,6 +187,40 @@ bool at_app_fuel_set_rates(float starting, float low, float middle, float high)
 static bool save_tank_locked(bool ok)
 {
     if (ok) at_settings_blob_save(KEY_TANK, &s_tank, sizeof(s_tank));
+    return ok;
+}
+
+bool at_app_fuel_pump_reset_count(void)
+{
+    if (!s_lock) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    at_fuel_pump_reset_count(&s_pump);
+    at_settings_blob_save(KEY_PUMP, &s_pump, sizeof(s_pump));
+    xSemaphoreGive(s_lock);
+    return true;
+}
+
+static bool save_pump_locked(bool ok)
+{
+    if (ok) at_settings_blob_save(KEY_PUMP, &s_pump, sizeof(s_pump));
+    return ok;
+}
+
+bool at_app_fuel_pump_calibrate(float litres)
+{
+    if (!s_lock) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool ok = save_pump_locked(at_fuel_pump_calibrate(&s_pump, litres));
+    xSemaphoreGive(s_lock);
+    return ok;
+}
+
+bool at_app_fuel_set_ml_per_pulse(float ml)
+{
+    if (!s_lock) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool ok = save_pump_locked(at_fuel_pump_set_ml(&s_pump, ml));
+    xSemaphoreGive(s_lock);
     return ok;
 }
 

@@ -11,7 +11,7 @@
  *      duration, Off stops the heater. Reports On while the heater runs.
  *   4  Contact sensor "Fault": closed = healthy, open = fault active.
  *
- * Transport (Wi-Fi or Thread) is fixed by the build variant. Commissioning is
+ * Transport (Wi-Fi or Thread) is chosen at run time (the mode setting). Commissioning is
  * over Bluetooth LE in both.
  */
 #pragma once

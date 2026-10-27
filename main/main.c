@@ -1,17 +1,11 @@
 #include "at_app.h"
 #include "at_led.h"
 #include "sdkconfig.h"
-#if CONFIG_AUTOTERM_HAS_MATTER
+#include "at_ble.h"
 #include "at_matter.h"
-#endif
-#if CONFIG_AUTOTERM_HAS_NET_SERVICES
 #include "at_mqtt.h"
 #include "at_net.h"
 #include "at_web.h"
-#endif
-#if CONFIG_AUTOTERM_HAS_BLE_SETUP
-#include "at_ble.h"
-#endif
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -22,7 +16,6 @@ static const char *TAG = "main";
 
 void at_console_start(void);
 
-#if CONFIG_AUTOTERM_HAS_NET_SERVICES
 static void on_ip(bool connected)
 {
     if (connected) {
@@ -31,7 +24,6 @@ static void on_ip(bool connected)
         at_mqtt_start();
     }
 }
-#endif
 
 #if CONFIG_AUTOTERM_FACTORY_RESET_GPIO >= 0
 /* What happens is decided when the button is released:
@@ -79,34 +71,22 @@ void app_main(void)
 
     at_settings_t cfg;
     at_settings_get(&cfg);
-#if CONFIG_AUTOTERM_VARIANT_ALL
     const bool use_matter = cfg.mode == AT_MODE_MATTER; /* chosen on the web page / console, default Wi-Fi */
-#elif CONFIG_AUTOTERM_HAS_MATTER
-    const bool use_matter = true;
-#else
-    const bool use_matter = false;
-#endif
     ESP_LOGI(TAG, "connection mode: %s", use_matter ? "Matter" : "Wi-Fi (web UI + MQTT)");
 
-#if CONFIG_AUTOTERM_HAS_NET_SERVICES
     ESP_ERROR_CHECK(at_net_init());
     /* Wi-Fi mode: we run Wi-Fi (and the setup access point). Matter mode: Matter owns
      * Wi-Fi and the web page / MQTT start once it has an address. */
     ESP_ERROR_CHECK(at_net_start(on_ip, !use_matter));
     if (!use_matter) {
         at_web_start(); /* also serves the setup page on the setup access point */
-#if CONFIG_AUTOTERM_HAS_BLE_SETUP
         if (at_ble_start() != ESP_OK) {
             ESP_LOGE(TAG, "Bluetooth setup failed to start");
         }
-#endif
     }
-#endif
-#if CONFIG_AUTOTERM_HAS_MATTER
     if (use_matter) {
         ESP_ERROR_CHECK(at_matter_start());
     }
-#endif
 
 #if CONFIG_AUTOTERM_CONSOLE
     at_console_start();
