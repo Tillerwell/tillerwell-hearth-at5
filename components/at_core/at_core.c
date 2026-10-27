@@ -314,12 +314,12 @@ static void heater_reply_cb(at_ev_kind_t kind, const uint8_t *data, size_t len, 
     log_add(c, x->now, 'R', data, len, crc_ok);
     if (crc_ok && !x->got_reply) {
         x->got_reply = true;
-        /* Experimental: the Comfort Controller only knows about starts and
-         * stops it sent itself (it shows preheat for ours, and its armed
-         * thermostat restarts the heater after our stop), so let it see the
-         * heater's echo, as it would after its own. */
+        /* The Comfort Controller only knows about stops it sent itself, so
+         * let it see the heater's echo of ours, as it would after its own.
+         * Not for starts: seeing the echo of a start it did not send, it
+         * stopped the heater a second later (and showed preheat without). */
         uint8_t sent = c->q_count ? c->q[c->q_head].frame[4] : 0;
-        if (len > 4 && data[4] == sent && (sent == AT_TYPE_START || sent == AT_TYPE_STOP)) {
+        if (len > 4 && data[4] == sent && sent == AT_TYPE_STOP) {
             c->panel.write(c->panel.ctx, data, len);
             log_add(c, x->now, 'E', data, len, true);
         }

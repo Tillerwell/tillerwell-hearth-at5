@@ -27,7 +27,7 @@ set(EXTRA_COMPONENT_DIRS
 # the version is set: PROJECT_VER is what the web page, the API and Matter's
 # version string show, and PROJECT_VER_NUMBER (0.1234 -> 1234, 1.0002 -> 10002)
 # is Matter's software version, which its OTA update check compares.
-set(ROAMOS_VERSION "1.0021")
+set(ROAMOS_VERSION "1.0022")
 include(roamos_version.cmake)
 roamos_version_number("${ROAMOS_VERSION}" PROJECT_VER_NUMBER)
 set(PROJECT_VER "${ROAMOS_VERSION}")

@@ -221,8 +221,6 @@ typedef struct {
     bool panel_polling;
     int panel_ext_seen;
     int panel_start_echoes, panel_stop_echoes;
-    uint8_t panel_last_echo[AT_MAX_FRAME];
-    size_t panel_last_echo_len;
     uint8_t panel_last_status[AT_MAX_FRAME];
     size_t panel_last_status_len;
     uint32_t now;
@@ -284,11 +282,7 @@ static void panel_cb(at_ev_kind_t k, const uint8_t *d, size_t n, bool ok, void *
     }
     if (d[1] == 0x00 && d[4] == 0x11) s->panel_acks++;
     if (d[1] == 0x04 && d[4] == 0x03) s->panel_stop_echoes++;
-    if (d[1] == 0x04 && d[4] == 0x01) {
-        s->panel_start_echoes++;
-        memcpy(s->panel_last_echo, d, n);
-        s->panel_last_echo_len = n;
-    }
+    if (d[1] == 0x04 && d[4] == 0x01) s->panel_start_echoes++;
 }
 
 static void sim_init(sim_t *s)
@@ -420,15 +414,14 @@ static void test_injection(void)
     CHECK(sn.inject_ok == 1 && sn.inject_fail == 0 && sn.queue_len == 0);
     CHECK(s.panel_status_replies > base_status_replies); /* panel kept being served */
     (void)before;
-    /* the controller sees the heater's echo, exactly as after its own start */
-    static const uint8_t heater_echo[] = {0xaa, 0x04, 0x02, 0x00, 0x01, 0x00, 0x22, 0x97, 0xb8};
-    CHECK(s.panel_start_echoes == 1 && EQV(s.panel_last_echo, s.panel_last_echo_len, heater_echo));
+    /* never the echo of our start: the controller stops a start it did not send */
+    CHECK(s.panel_start_echoes == 0);
 
     /* stop */
     CHECK(at_cmd_stop(&c, s.now));
     sim_run(&s, &c, 3000);
     CHECK(count_type(&s, 0x03) == 1 && s.heater_state == 0);
-    CHECK(s.panel_start_echoes == 1 && s.panel_stop_echoes == 1);
+    CHECK(s.panel_start_echoes == 0 && s.panel_stop_echoes == 1);
 
     /* preheat sends marker then duration, 1.5 s apart */
     CHECK(at_cmd_start_preheat(&c, 90, s.now));

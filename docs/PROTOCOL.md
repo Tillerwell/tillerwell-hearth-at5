@@ -273,6 +273,20 @@ stop/~50 s/start cycle explains the earlier "laggy" silences (followed by
 `00 03` starts). From RoamOS 1.0021 the controller's stop is still relayed
 but no longer releases the hold; only a real selection does.
 
+Tested on 1.0021: after an app stop (whose heater reply arrived missing
+its first 3 bytes, so no `E`) the controller tried to restart the heater
+15 times, `00 02` then `00 01` in bursts of three about every 15 s. All
+were blocked, the heater stayed off, and the controller showed standby.
+
+**Start echo, tested and removed (1.0022):** with the controller in
+standby, an app thermostat start with the heater's echo passed on (`E`)
+was followed by two quick status polls and, 1.3 s later, the controller's
+own stop: it stops a start it did not send rather than adopting it.
+Without the echo the heater runs but the controller shows preheat. So the
+controller only shows thermostat for its own start, and nothing relayed to
+it changes that. RoamOS 1.0022 passes on stop echoes only. The remaining
+lead is the settings it reads at power-up (type `0x20`).
+
 ## Extended diagnostic-mode telemetry (dev `0x02`, type `0x01`, 58-byte payload)
 
 The vendor's own Windows diagnostic tool ("Autoterm Test") talks to the

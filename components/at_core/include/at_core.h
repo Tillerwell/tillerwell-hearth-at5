@@ -54,7 +54,7 @@ typedef struct {
                            C cached replay to panel, F filtered (not forwarded), S stray
                            (forwarded to the heater only),
                            O own poll sent while the controller is silent,
-                           E heater's echo of our start or stop, passed on to the
+                           E heater's echo of our stop, passed on to the
                            controller, B controller restart blocked after our stop */
     bool crc_ok;
     uint8_t len;        /* bytes stored in data (truncated to AT_LOG_BYTES) */
