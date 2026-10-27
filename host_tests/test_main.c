@@ -360,6 +360,25 @@ static void test_passthrough(void)
     CHECK(!sn.standalone && sn.own_polls == 0); /* controller talking: the box never polls */
 }
 
+/* The web log endpoint takes a fixed-size snapshot before formatting it.  Keep
+ * that copy contract exercised without relying on a heap allocation. */
+static void test_log_snapshot(void)
+{
+    printf("log snapshot\n");
+    static sim_t s;
+    static at_core_t c;
+    bus_setup(&s, &c);
+    sim_run(&s, &c, 40000); /* more events than the ring retains */
+
+    at_log_entry_t all[AT_LOG_ENTRIES];
+    at_log_entry_t latest[3];
+    int n = at_core_log_copy(&c, all, AT_LOG_ENTRIES);
+    int m = at_core_log_copy(&c, latest, (int)(sizeof(latest) / sizeof(latest[0])));
+    CHECK(n == AT_LOG_ENTRIES);
+    CHECK(m == (int)(sizeof(latest) / sizeof(latest[0])));
+    CHECK(memcmp(latest, all + n - m, sizeof(latest)) == 0);
+}
+
 static int count_type(sim_t *s, uint8_t t)
 {
     int n = 0;
@@ -1461,6 +1480,7 @@ int main(void)
     test_framer();
     test_decode();
     test_passthrough();
+    test_log_snapshot();
     test_injection();
     test_injection_no_reply();
     test_manual_stop_panel_handoff();

@@ -428,8 +428,12 @@ static esp_err_t h_mode(httpd_req_t *req)
 static esp_err_t h_log(httpd_req_t *req)
 {
     REQUIRE_AUTH(req);
-    at_log_entry_t *e = malloc(sizeof(*e) * AT_LOG_ENTRIES);
-    if (!e) return httpd_resp_send_500(req);
+    /* /api/log is polled every few seconds by the capture tool.  Keeping the
+     * snapshot on the HTTP worker's already-reserved stack avoids a transient
+     * heap allocation (about 3 KiB) for every poll.  Under a busy update this
+     * allocation was the only part of the request that could fail, returning
+     * 500 while /api/status still worked and making the device look offline. */
+    at_log_entry_t e[AT_LOG_ENTRIES];
     int n = at_app_log_copy(e, AT_LOG_ENTRIES);
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -442,7 +446,6 @@ static esp_err_t h_log(httpd_req_t *req)
         line[p++] = '\n';
         httpd_resp_send_chunk(req, line, p);
     }
-    free(e);
     return httpd_resp_send_chunk(req, NULL, 0);
 }
 
