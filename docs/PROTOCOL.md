@@ -253,6 +253,18 @@ experiment. On power-up the controller also queried types `0x06`, `0x04`
 and `0x20` (reply `58 00 55 01 28 00 00 00 00`, likely stored settings),
 which is the next lead if the echo is not enough.
 
+**Controller restarts after an app stop (2026-10-27):** with the heater
+started from the controller in thermostat mode, each Hearth stop was
+followed 4-8 s later by the controller's own start, `type01, ff fd`
+(heater reply `04 41`), three times, then `ff fc` (reply `04 40`), and
+then the controller sent its own stop and gave up. The stop hold only
+blocked `00 01`. From RoamOS 1.0020, after a manual Hearth stop the box
+blocks every controller start with a payload of `ff xx` or `00 01`-`00 03`
+(`B` in the bus log) until the controller sends its own stop or a real
+selection (`00 22`, a preheat time), and passes the heater's echo of the
+stop (`aa 04 00 00 03 29 7d`) on to the controller as well, in case that
+lets the controller disarm its own thermostat.
+
 ## Extended diagnostic-mode telemetry (dev `0x02`, type `0x01`, 58-byte payload)
 
 The vendor's own Windows diagnostic tool ("Autoterm Test") talks to the

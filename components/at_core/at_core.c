@@ -116,6 +116,14 @@ typedef struct {
     bool from_heater;
 } relay_ctx_t;
 
+/* Start values the controller's own thermostat uses to restart the heater
+ * after a stop it did not send, as captured: 00 01, 00 03, ff fd, ff fc.
+ * Nothing chosen on its screen looks like these. */
+static bool is_panel_restart(uint8_t hi, uint8_t lo)
+{
+    return hi == 0xFF || (hi == 0 && lo <= 3);
+}
+
 static void relay_cb(at_ev_kind_t kind, const uint8_t *data, size_t len, bool crc_ok, void *vctx)
 {
     relay_ctx_t *r = vctx;
@@ -138,10 +146,11 @@ static void relay_cb(at_ev_kind_t kind, const uint8_t *data, size_t len, bool cr
         (data[4] == AT_TYPE_START || data[4] == AT_TYPE_STOP)) {
         size_t plen = len - AT_HEADER_LEN - AT_CRC_LEN;
         if (data[4] == AT_TYPE_START && c->panel_stop_hold && plen == 2 &&
-            data[AT_HEADER_LEN] == 0 && data[AT_HEADER_LEN + 1] == 1) {
-            /* An already-armed Comfort Controller thermostat retries with
-             * 00 01 after an external stop.  Do not let that undo a manual
-             * Hearth stop; a newly selected controller mode clears the hold. */
+            is_panel_restart(data[AT_HEADER_LEN], data[AT_HEADER_LEN + 1])) {
+            /* An already-armed Comfort Controller thermostat restarts the
+             * heater after an external stop.  Do not let that undo a manual
+             * Hearth stop; a newly selected controller mode (00 22, a preheat
+             * time) or its own stop clears the hold. */
             log_add(c, r->now, 'B', data, len, true);
             return;
         }
@@ -301,10 +310,12 @@ static void heater_reply_cb(at_ev_kind_t kind, const uint8_t *data, size_t len, 
     log_add(c, x->now, 'R', data, len, crc_ok);
     if (crc_ok && !x->got_reply) {
         x->got_reply = true;
-        /* Experimental: the Comfort Controller only shows thermostat for a
-         * start it sent itself, so let it see the heater's echo of ours
-         * (00 22 is byte for byte its own thermostat start). */
-        if (len > 4 && data[4] == AT_TYPE_START && c->q_count && c->q[c->q_head].frame[4] == AT_TYPE_START) {
+        /* Experimental: the Comfort Controller only knows about starts and
+         * stops it sent itself (it shows preheat for ours, and its armed
+         * thermostat restarts the heater after our stop), so let it see the
+         * heater's echo, as it would after its own. */
+        uint8_t sent = c->q_count ? c->q[c->q_head].frame[4] : 0;
+        if (len > 4 && data[4] == sent && (sent == AT_TYPE_START || sent == AT_TYPE_STOP)) {
             c->panel.write(c->panel.ctx, data, len);
             log_add(c, x->now, 'E', data, len, true);
         }
