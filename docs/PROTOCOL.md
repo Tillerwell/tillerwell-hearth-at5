@@ -265,6 +265,14 @@ selection (`00 22`, a preheat time), and passes the heater's echo of the
 stop (`aa 04 00 00 03 29 7d`) on to the controller as well, in case that
 lets the controller disarm its own thermostat.
 
+Tested on 1.0020: after the app stop the controller made no restart
+attempts while the heater cooled down, but ~60 s after reaching idle it
+sent a stop of its own, went quiet ~53 s, then restarted with `ff ff`
+(reply `04 43`). Its own stop had released the hold. The same
+stop/~50 s/start cycle explains the earlier "laggy" silences (followed by
+`00 03` starts). From RoamOS 1.0021 the controller's stop is still relayed
+but no longer releases the hold; only a real selection does.
+
 ## Extended diagnostic-mode telemetry (dev `0x02`, type `0x01`, 58-byte payload)
 
 The vendor's own Windows diagnostic tool ("Autoterm Test") talks to the

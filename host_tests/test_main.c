@@ -497,13 +497,25 @@ static void test_manual_stop_panel_handoff(void)
         CHECK(s.heater_state == 0 && count_type(&s, AT_TYPE_START) == starts && sn.panel_stop_hold);
     }
 
+    /* Its restart cycle includes a stop of its own, then ff ff ~50 s later:
+     * the stop goes to the heater but the hold stays. */
+    panel_control(&s, AT_TYPE_STOP, NULL, 0);
+    sim_run(&s, &c, 1000);
+    at_core_snapshot(&c, s.now, &sn);
+    CHECK(count_type(&s, AT_TYPE_STOP) == 2 && sn.panel_stop_hold);
+    static const uint8_t cycle_restart[] = {0xff, 0xff};
+    panel_control(&s, AT_TYPE_START, cycle_restart, 2);
+    sim_run(&s, &c, 1000);
+    at_core_snapshot(&c, s.now, &sn);
+    CHECK(s.heater_state == 0 && count_type(&s, AT_TYPE_START) == starts && sn.panel_stop_hold);
+
     /* Selecting thermostat again on the physical controller takes ownership
      * back and starts the heater normally. */
     panel_control(&s, AT_TYPE_START, thermostat, sizeof(thermostat));
     sim_run(&s, &c, 1000);
     at_core_snapshot(&c, s.now, &sn);
     CHECK(s.heater_state == 2 && count_type(&s, AT_TYPE_START) == starts + 1);
-    CHECK(!sn.panel_stop_hold && sn.panel_last_control_type == AT_TYPE_START && sn.panel_control_seq == 2);
+    CHECK(!sn.panel_stop_hold && sn.panel_last_control_type == AT_TYPE_START && sn.panel_control_seq == 3);
 }
 
 static void test_bypass(void)

@@ -117,7 +117,7 @@ typedef struct {
 } relay_ctx_t;
 
 /* Start values the controller's own thermostat uses to restart the heater
- * after a stop it did not send, as captured: 00 01, 00 03, ff fd, ff fc.
+ * after a stop it did not send, as captured: 00 01, 00 03, ff ff, ff fd, ff fc.
  * Nothing chosen on its screen looks like these. */
 static bool is_panel_restart(uint8_t hi, uint8_t lo)
 {
@@ -150,11 +150,15 @@ static void relay_cb(at_ev_kind_t kind, const uint8_t *data, size_t len, bool cr
             /* An already-armed Comfort Controller thermostat restarts the
              * heater after an external stop.  Do not let that undo a manual
              * Hearth stop; a newly selected controller mode (00 22, a preheat
-             * time) or its own stop clears the hold. */
+             * time) clears the hold. */
             log_add(c, r->now, 'B', data, len, true);
             return;
         }
-        c->panel_stop_hold = false;
+        /* Not its own stop: that is part of the same restart cycle (stop,
+         * ~50 s quiet, start again with ff ff), so the hold stays. */
+        if (data[4] == AT_TYPE_START) {
+            c->panel_stop_hold = false;
+        }
         c->panel_last_control_type = data[4];
         c->panel_control_seq++;
     }
