@@ -108,7 +108,7 @@ static void task(void *arg)
             int r = check(cmd, sizeof(cmd));
             have = r == 1;
             next_check = now_s() + (r < 0 ? RETRY_FAILED_S : CHECK_EVERY_S);
-            ESP_LOGI(TAG, r == 1 ? "a newer firmware is available" : r == 0 ? "firmware is up to date" : "update check failed");
+            ESP_LOGI(TAG, "%s", r == 1 ? "a newer firmware is available" : r == 0 ? "firmware is up to date" : "update check failed");
         }
         if (!have) continue;
         if (!idle_now()) { next_check = now_s() + WAIT_IDLE_S; continue; }
