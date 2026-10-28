@@ -230,17 +230,16 @@ static void claim_tick(void)
 
 int at_access_claim_start(const uint8_t pub[AT_AUTH_PUBKEY_LEN], const char *label)
 {
-    claim_tick();
     if (at_access_has_admin()) return 409;
-    if (s_claim.state == AT_CLAIM_WAITING && memcmp(s_claim.user.pub, pub, AT_AUTH_PUBKEY_LEN) != 0) return 423;
     memset(&s_claim.user, 0, sizeof(s_claim.user));
     memcpy(s_claim.user.pub, pub, AT_AUTH_PUBKEY_LEN);
     at_auth_key_id(pub, s_claim.user.kid);
     snprintf(s_claim.user.label, sizeof(s_claim.user.label), "%s", label ? label : "");
     s_claim.user.perm = AT_PERM_ADMIN;
     snprintf(s_claim.user.by, sizeof(s_claim.user.by), "%s", s_claim.user.kid);
-    s_claim.state = AT_CLAIM_WAITING;
     s_claim.started = s_io->uptime_s();
+    if (!at_access_user_add(&s_claim.user)) return 500;
+    s_claim.state = AT_CLAIM_CLAIMED;
     return 202;
 }
 

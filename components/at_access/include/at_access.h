@@ -73,7 +73,7 @@ const char *at_access_redeem(const char *token, const uint8_t guest_pub[AT_AUTH_
 
 // --- claiming the first admin (§7.1) -----------------------------------
 typedef enum { AT_CLAIM_IDLE, AT_CLAIM_WAITING, AT_CLAIM_CLAIMED, AT_CLAIM_TIMEOUT } at_claim_state_t;
-// 202 = started (button window open), 409 = already has an admin, 423 = another claim is waiting
+// 202 = claimed at once (no button), 409 = already has an admin, 500 = user table full
 int at_access_claim_start(const uint8_t pub[AT_AUTH_PUBKEY_LEN], const char *label);
 at_claim_state_t at_access_claim_state(void);
 bool at_access_claim_open(void);          // for the LED

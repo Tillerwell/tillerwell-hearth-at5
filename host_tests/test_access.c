@@ -84,7 +84,6 @@ static void claim_admin(void)
     uint8_t pub[AT_AUTH_PUBKEY_LEN];
     pub_of("admin", pub);
     CHECK(at_access_claim_start(pub, "Chris's iPhone") == 202, "claim starts");
-    at_access_button_pressed();
 }
 
 static void test_claim(void)
@@ -96,22 +95,10 @@ static void test_claim(void)
     pub_of("outsider", outsider);
     CHECK(!at_access_has_admin(), "fresh box has no admin");
     CHECK(at_access_claim_state() == AT_CLAIM_IDLE, "idle");
-    at_access_button_pressed();
-    CHECK(!at_access_has_admin(), "a press with no claim does nothing");
 
     CHECK(at_access_claim_start(admin, "me") == 202, "claim accepted");
-    CHECK(at_access_claim_open(), "window open");
-    CHECK(at_access_claim_start(outsider, "intruder") == 423, "a second key cannot take over the open window");
-    CHECK(at_access_claim_start(admin, "me") == 202, "the same key may repeat");
-    fake_uptime += AT_CLAIM_WINDOW_S + 1;
-    CHECK(at_access_claim_state() == AT_CLAIM_TIMEOUT, "times out");
+    CHECK(at_access_has_admin() && at_access_claim_state() == AT_CLAIM_CLAIMED, "the claim makes the admin at once");
     at_access_button_pressed();
-    CHECK(!at_access_has_admin(), "a press after the window does nothing");
-
-    CHECK(at_access_claim_start(admin, "me") == 202, "claim again");
-    fake_uptime += 5;
-    at_access_button_pressed();
-    CHECK(at_access_has_admin() && at_access_claim_state() == AT_CLAIM_CLAIMED, "the press makes the admin");
     CHECK(at_access_claim_start(outsider, "x") == 409, "no claim once there is an admin");
 
     boot();   // survives a restart

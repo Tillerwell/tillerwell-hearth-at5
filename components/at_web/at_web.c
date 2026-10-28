@@ -869,12 +869,10 @@ static esp_err_t h_claim_post(httpd_req_t *req)
     cJSON_Delete(j);
     int code = at_access_claim_start(pub, lab);
     if (code == 409) return send_auth_error(req, "409 Conflict", "already_claimed", NULL);
-    if (code == 423) return send_auth_error(req, "423 Locked", "claim_in_progress", NULL);
+    if (code != 202) return send_auth_error(req, "500 Internal Server Error", "claim_failed", NULL);
     httpd_resp_set_status(req, "202 Accepted");
-    char b[64];
-    snprintf(b, sizeof(b), "{\"state\":\"press_button\",\"window_s\":%d}", AT_CLAIM_WINDOW_S);
-    ESP_LOGW(TAG, "claim window open: press the button");
-    return send_json_str(req, b);
+    ESP_LOGW(TAG, "claimed by the first phone to ask");
+    return send_json_str(req, "{\"state\":\"claimed\"}");
 }
 
 static esp_err_t h_claim_get(httpd_req_t *req)

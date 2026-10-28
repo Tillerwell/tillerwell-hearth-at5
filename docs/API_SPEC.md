@@ -121,10 +121,9 @@ Levels are ordered: `view` < `control` < `manager` < `admin` (cloud plan Q8).
 Only possible while the box has **no admin**.
 
 1. The app makes a key (iOS: Keychain, synchronisable so it rides the iCloud backup; Android: encrypted backup; cloud plan §3.1).
-2. `POST /api/auth/claim` with body `{"pubkey":"<base64url 65 bytes>","label":"Chris's iPhone"}`, signed as in §5 with **that** key (proof that the app holds it). The box answers `202 {"state":"press_button","window_s":60}` and flashes the LED.
-3. The app polls `GET /api/auth/claim` → `{"state":"waiting"|"claimed"|"timeout"}`. A press of the box's button inside the window makes the key the admin. No press, no admin.
+2. `POST /api/auth/claim` with body `{"pubkey":"<base64url 65 bytes>","label":"Chris's iPhone"}`, signed as in §5 with **that** key (proof that the app holds it). From firmware 1.28 the box makes the key the admin at once and answers `202 {"state":"claimed"}`; no button is needed. (Firmware before 1.28 answered `202 {"state":"press_button","window_s":60}` and waited for a short press of the box's button; `GET /api/auth/claim` → `{"state":"waiting"|"claimed"|"timeout"}` reports that wait, and the app still handles it.)
 
-Only one key may wait at a time (`423 {"error":"claim_in_progress"}` to a different key, so nobody can swap theirs in just before the press); a box that already has an admin answers `409 already_claimed`. The button is the one on the box (GPIO9, the same one as the factory reset): a **short press, under 5 s**. The LED flashes **purple** while the window is open.
+The first key to ask while the box has no admin wins; a box that already has an admin answers `409 already_claimed`.
 
 The app records the fingerprint (§3) at this point.
 
