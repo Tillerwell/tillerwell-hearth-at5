@@ -98,13 +98,14 @@ The firmware is RoamOS, numbered for Hearth on its own (brand guidelines, Naming
 ```
 components/at_proto    CRC, framer, status decoding        (pure C, host-tested)
 components/at_core     relay + injector state machine, thermostat, timers, time zones  (pure C, host-tested)
+components/at_auth     signed requests, invites, cloud commands (docs/API_SPEC.md)  (pure C + mbedTLS, host-tested)
 components/at_app      settings (NVS), UART tasks, shared state
 components/at_net      Wi-Fi, setup AP, captive DNS
 components/at_web      web UI + API + OTA
 components/at_mqtt     MQTT client + Home Assistant discovery + built-in broker (managed component espressif/mosquitto)
 components/at_matter   Matter endpoints
 main/                  startup, USB console, factory-reset button
-host_tests/            make -C host_tests
+host_tests/            make -C host_tests; make -C host_tests auth
 ```
 
 Licence: MIT, as the base project (see LICENSE).

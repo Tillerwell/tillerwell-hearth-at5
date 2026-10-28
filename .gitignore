@@ -5,3 +5,4 @@ managed_components/
 dependencies.lock
 host_tests/test_main
 *.dSYM
+host_tests/test_auth
