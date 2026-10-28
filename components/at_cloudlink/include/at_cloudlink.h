@@ -29,6 +29,11 @@ typedef bool (*at_cloudlink_exec_t)(const char *cmd_json);
 // installed.
 esp_err_t at_cloudlink_start(at_cloudlink_exec_t exec);
 
+// Keeps the link down (true) or lets it reconnect (false). Used by the automatic update check, which needs a TLS
+// session of its own. at_cloudlink_held() turns true once the link is actually gone.
+void at_cloudlink_hold(bool hold);
+bool at_cloudlink_held(void);
+
 typedef struct {
     const char *state;      // "off" (no certificate), "waiting" (no network or time), "connecting", "online", "backoff"
     int endpoint;           // 0..3, the one in use or tried last

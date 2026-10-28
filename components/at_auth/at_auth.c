@@ -376,7 +376,7 @@ static const cmd_perm_t CMD_PERMS[] = {
     { "fuel_price", AT_PERM_MANAGER },    { "fuel_factor", AT_PERM_MANAGER },
     { "fuel_rates", AT_PERM_MANAGER },    { "tank_capacity", AT_PERM_MANAGER },
     { "factory_reset", AT_PERM_ADMIN },   { "reboot", AT_PERM_ADMIN },
-    { "ota", AT_PERM_ADMIN },
+    { "ota", AT_PERM_ADMIN },             { "auto_update", AT_PERM_ADMIN },
 };
 
 at_perm_t at_auth_cmd_perm(const char *cmd_name)

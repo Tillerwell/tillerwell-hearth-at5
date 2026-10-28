@@ -4,6 +4,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -40,6 +41,23 @@ bool at_fwupdate_busy(void);
 // Reason code of the last failed update since boot ("download_failed", "size_mismatch", "bad_hash", "bad_image",
 // "wrong_version"), or "" if none has failed.
 const char *at_fwupdate_last_error(void);
+
+// ---- automatic updates (at_autoupdate) ----------------------------------------------------------------------------
+// With the admin's switch on, the box looks for a newer release itself and installs it, but only while the heater is
+// off and no timer is running or due soon. These two are the pure parts, host-tested.
+
+// A timer starting within this many seconds counts as "about to run".
+#define AT_AUTOUPDATE_QUIET_S (30 * 60)
+
+// True when it is safe to start an install now: the clock is set (so a timer's start time means something), the heater
+// is off, no timer is running, and the next timer start is more than AT_AUTOUPDATE_QUIET_S away (or there is none).
+bool at_autoupdate_idle(bool clock_ok, bool heater_off, bool timer_active, bool have_next, int64_t next_start_epoch,
+                        int64_t now_epoch);
+
+// Reads GitHub's "latest release" JSON. 1 = a newer image than `running` exists and `cmd` now holds the `ota` command
+// body for it (the same JSON a signed cloud command carries, so it goes through at_fwupdate_request); 0 = up to date;
+// -1 = the JSON is unusable or lists no image with a checksum.
+int at_autoupdate_pick(const char *release_json, const char *running, char *cmd, size_t cmd_len);
 
 #ifdef __cplusplus
 }

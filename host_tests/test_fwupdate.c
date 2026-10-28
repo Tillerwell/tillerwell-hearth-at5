@@ -59,6 +59,36 @@ int main(void)
         snprintf(json, sizeof(json), "{\"version\":\"1.0032\",\"url\":\"%s\",\"sha256\":\"" SHA "\",\"size\":2400000}", urls[i]);
         expect(urls[i], json, "1.0031", 3600000, "bad_url");
     }
+
+    // ---- automatic updates: when it is safe to install
+    const int64_t now = 1000000;
+    CHECK(at_autoupdate_idle(true, true, false, false, 0, now), "off, no timers: idle");
+    CHECK(at_autoupdate_idle(true, true, false, true, now + AT_AUTOUPDATE_QUIET_S + 1, now), "next timer just beyond 30 min: idle");
+    CHECK(!at_autoupdate_idle(true, true, false, true, now + AT_AUTOUPDATE_QUIET_S, now), "next timer at exactly 30 min: not idle");
+    CHECK(!at_autoupdate_idle(true, true, false, true, now + 60, now), "timer in a minute: not idle");
+    CHECK(!at_autoupdate_idle(true, true, false, true, now - 5, now), "timer start just passed: not idle");
+    CHECK(!at_autoupdate_idle(true, true, true, false, 0, now), "a timer is running: not idle");
+    CHECK(!at_autoupdate_idle(true, false, false, false, 0, now), "heater on: not idle");
+    CHECK(!at_autoupdate_idle(false, true, false, false, 0, now), "clock not set: not idle");
+
+    // ---- automatic updates: reading GitHub's latest release
+    const char *rel =
+        "{\"tag_name\":\"1.0033\",\"body\":\"notes\",\"assets\":[{\"name\":\"notes.txt\",\"size\":5},"
+        "{\"name\":\"hearth-1.0033.bin\",\"size\":2400000,\"digest\":\"sha256:" SHA "\","
+        "\"browser_download_url\":\"https://github.com/Tillerwell/tillerwell-hearth-at5/releases/download/1.0033/hearth-1.0033.bin\"}]}";
+    char cmd[400];
+    CHECK(at_autoupdate_pick(rel, "1.0032", cmd, sizeof(cmd)) == 1, "newer release found");
+    at_fwupdate_req_t q;
+    CHECK(at_fwupdate_parse(cmd, "1.0032", 3600000, &q) == NULL && !strcmp(q.version, "1.0033") && !strcmp(q.sha256, SHA) && q.size == 2400000,
+          "the picked command passes the request check: %s", cmd);
+    CHECK(at_autoupdate_pick(rel, "1.0033", cmd, sizeof(cmd)) == 0, "already on it");
+    CHECK(at_autoupdate_pick(rel, "1.0034", cmd, sizeof(cmd)) == 0, "running newer than the release");
+    CHECK(at_autoupdate_pick(rel, "dev-build", cmd, sizeof(cmd)) == 1, "running version not RoamOS is offered it");
+    CHECK(at_autoupdate_pick(rel, "1.0032", cmd, 40) == -1, "buffer too small");
+    CHECK(at_autoupdate_pick("nope", "1.0032", cmd, sizeof(cmd)) == -1, "not json");
+    CHECK(at_autoupdate_pick("{\"assets\":[{\"name\":\"hearth-1.0033.bin\",\"size\":2400000,\"browser_download_url\":\"x\"}]}", "1.0032", cmd, sizeof(cmd)) == -1,
+          "no checksum listed");
+    CHECK(at_autoupdate_pick("{\"assets\":[]}", "1.0032", cmd, sizeof(cmd)) == -1, "no image");
     printf("%s: %d checks, %d failures\n", failures ? "FAILED" : "OK", checks, failures);
     return failures != 0;
 }

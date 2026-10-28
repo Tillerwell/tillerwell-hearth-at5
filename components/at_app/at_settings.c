@@ -281,3 +281,17 @@ esp_err_t at_settings_set_mode_and_restart(uint8_t mode)
     }
     return ESP_OK;
 }
+
+#define AUTO_UPDATE_KEY "autoupd"
+
+bool at_settings_auto_update(void)
+{
+    uint8_t v = 0;
+    return at_settings_blob_load(AUTO_UPDATE_KEY, &v, sizeof(v)) && v == 1;
+}
+
+esp_err_t at_settings_auto_update_set(bool on)
+{
+    uint8_t v = on ? 1 : 0;
+    return at_settings_blob_save(AUTO_UPDATE_KEY, &v, sizeof(v));
+}

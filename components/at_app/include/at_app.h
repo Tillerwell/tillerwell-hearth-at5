@@ -90,6 +90,10 @@ void at_settings_display_name(char *out, size_t len);
 esp_err_t at_settings_display_name_set(const char *name);
 void at_settings_hostname(char *out, size_t len);
 
+/* Automatic firmware updates (at_autoupdate): off until an admin turns them on. Own NVS entry, like the display name. */
+bool at_settings_auto_update(void);
+esp_err_t at_settings_auto_update_set(bool on);
+
 esp_err_t at_settings_init(void);
 void at_settings_get(at_settings_t *out);
 /* Replace and persist. */

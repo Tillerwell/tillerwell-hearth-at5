@@ -56,3 +56,38 @@ done:
     cJSON_Delete(j);
     return reason;
 }
+
+bool at_autoupdate_idle(bool clock_ok, bool heater_off, bool timer_active, bool have_next, int64_t next_start_epoch,
+                        int64_t now_epoch)
+{
+    if (!clock_ok || !heater_off || timer_active) return false;
+    return !have_next || next_start_epoch - now_epoch > AT_AUTOUPDATE_QUIET_S;
+}
+
+int at_autoupdate_pick(const char *release_json, const char *running, char *cmd, size_t cmd_len)
+{
+    cJSON *j = release_json ? cJSON_Parse(release_json) : NULL;
+    if (!j) return -1;
+    int result = -1;
+    const cJSON *assets = cJSON_GetObjectItemCaseSensitive(j, "assets"), *a;
+    cJSON_ArrayForEach(a, assets)
+    {
+        const char *name = str_of(a, "name"), *url = str_of(a, "browser_download_url"), *digest = str_of(a, "digest");
+        const cJSON *size = cJSON_GetObjectItemCaseSensitive(a, "size");
+        if (!name || !url || !digest || !cJSON_IsNumber(size)) continue;
+        size_t nl = strlen(name);
+        if (nl != strlen("hearth-") + 6 + strlen(".bin") || strncmp(name, "hearth-", 7) != 0 || strcmp(name + nl - 4, ".bin") != 0) continue;
+        char ver[8];
+        snprintf(ver, sizeof(ver), "%.6s", name + 7);
+        if (at_roamos_version_number(ver) < 0) continue;
+        if (strncmp(digest, "sha256:", 7) != 0) continue;
+        if (at_update_check(running, ver, false) != AT_UPDATE_OK) { result = 0; break; }
+        if (running && strcmp(running, ver) == 0) { result = 0; break; }
+        int n = snprintf(cmd, cmd_len, "{\"cmd\":\"ota\",\"version\":\"%s\",\"url\":\"%s\",\"sha256\":\"%s\",\"size\":%.0f}",
+                         ver, url, digest + 7, size->valuedouble);
+        result = n > 0 && (size_t)n < cmd_len ? 1 : -1;
+        break;
+    }
+    cJSON_Delete(j);
+    return result;
+}

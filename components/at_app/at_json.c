@@ -258,6 +258,7 @@ static char *build_state_json(void)
     cJSON_AddNumberToObject(o, "prevent_freezing_target", v.freeze_target);
     cJSON_AddStringToObject(o, "prevent_freezing_note", v.freeze_note);
     cJSON_AddNumberToObject(o, "preheat_minutes", v.preheat_minutes);
+    cJSON_AddBoolToObject(o, "auto_update", at_settings_auto_update());
 
     cJSON_AddBoolToObject(o, "bypass_mode", s->bypass);
     cJSON_AddBoolToObject(o, "debug_mode", v.debug_mode);

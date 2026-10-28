@@ -55,6 +55,8 @@ static bool s_fault_known;
 static int64_t s_state_s;
 static uint8_t s_state_key[4];
 static bool s_ota_go;          // an `ota` command was accepted: stop the link, then let at_fwupdate download
+static volatile bool s_hold;   // at_cloudlink_hold: keep the link down so another TLS session has the memory
+static volatile bool s_paused; // the supervisor has honoured the hold and the client is gone
 static bool s_ota_reported;    // the last failed update has been sent as an event
 
 static int64_t now_s(void) { return esp_timer_get_time() / 1000000; }
@@ -373,6 +375,13 @@ static void supervisor(void *arg)
             s_state = "updating";
             continue;
         }
+        if (s_hold) {
+            if (s_client) client_stop(true);
+            s_state = "paused";
+            s_paused = true;
+            continue;
+        }
+        s_paused = false;
         uint32_t gen = at_cloud_generation();
         if (gen != seen) {
             seen = gen;
@@ -420,6 +429,9 @@ static void supervisor(void *arg)
         }
     }
 }
+
+void at_cloudlink_hold(bool hold) { s_hold = hold; }
+bool at_cloudlink_held(void) { return s_hold && s_paused; }
 
 esp_err_t at_cloudlink_start(at_cloudlink_exec_t exec)
 {

@@ -454,6 +454,8 @@ static bool run_cmd(const cJSON *j)
     } else if (!strcmp(c, "display_name")) {
         const char *v = jstr(j, "value");
         ok = v && set_display_name(v);
+    } else if (!strcmp(c, "auto_update")) {
+        ok = at_settings_auto_update_set(jbool(j, "enabled", false)) == ESP_OK;
     } else if (!strcmp(c, "factory_reset")) {
         at_settings_factory_reset_soon(); /* wipes Wi-Fi and settings, restarts into setup mode */
     } else if (!strcmp(c, "reboot")) {
