@@ -7,3 +7,4 @@ host_tests/test_main
 *.dSYM
 host_tests/test_auth
 host_tests/test_access
+host_tests/test_cloudlink

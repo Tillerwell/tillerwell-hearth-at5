@@ -1,5 +1,6 @@
 #include "at_access.h"
 #include "at_cloud.h"
+#include "at_cloudlink.h"
 #include "at_app.h"
 #include "at_led.h"
 #include "sdkconfig.h"
@@ -93,6 +94,10 @@ void app_main(void)
     if (use_matter) {
         ESP_ERROR_CHECK(at_matter_start());
     }
+
+    /* The cloud link sleeps until an account is linked (a certificate is installed), then waits for Wi-Fi and network
+     * time on its own, in either mode. It runs below every heater task and the heater never waits on it. */
+    at_cloudlink_start(at_web_exec_cmd);
 
 #if CONFIG_AUTOTERM_CONSOLE
     at_console_start();

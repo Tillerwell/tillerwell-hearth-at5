@@ -36,6 +36,11 @@ int at_cloud_csr(const char *device_id, char *out, size_t cap);
 const char *at_cloud_install(const char *chain_pem, const char *device_id);
 
 bool at_cloud_has_cert(void);
+// Bumped whenever a certificate is installed or forgotten, so the cloud client can notice cheaply.
+uint32_t at_cloud_generation(void);
+// Loads the key (DER) and the chain (PEM, NUL included in *pem_len) for the TLS client. False if either is missing.
+// The caller owns the buffers: key_cap >= 160, pem_cap >= AT_CLOUD_CERT_MAX.
+bool at_cloud_identity(uint8_t *key, size_t key_cap, size_t *key_len, char *pem, size_t pem_cap, size_t *pem_len);
 // Forgets the certificate and the key (the next enrolment makes a new one).
 void at_cloud_forget(void);
 

@@ -1,6 +1,6 @@
 # Hearth API and signing spec, version 1
 
-> Status: **agreed 2026-10-28** (phase L1 of `Cloud Server/CLOUD-PLANNING.md` in the Tillerwell planning folder). Phase L2 (firmware 1.0027) enforces §4 to §7 on **plain HTTP port 80** (see §3 and §11 item 7); HTTPS and §8 to §9 (cloud) are still to come. Until an admin switches it off, the box also still serves the old unauthenticated API described in `Mobile Apps/ios/Tillerwell/DEVICE_API.md`.
+> Status: **agreed 2026-10-28** (phase L1 of `Cloud Server/CLOUD-PLANNING.md` in the Tillerwell planning folder). Phase L2 (firmware 1.0027) enforces §4 to §7 on **plain HTTP port 80** (see §3 and §11 item 7); HTTPS is still to come. Phase C4 (firmware 1.0030) adds the cloud client of §9. Until an admin switches it off, the box also still serves the old unauthenticated API described in `Mobile Apps/ios/Tillerwell/DEVICE_API.md`.
 >
 > This file is the single source of truth for the box, the iOS and Android apps, the website's `hearth` module and the Hearth worker. Every rule that produces bytes is pinned by `docs/auth-vectors.json`; `make -C host_tests auth` checks the firmware against them. If this text and the vectors disagree, the vectors are right and this text is the bug.
 
@@ -198,9 +198,9 @@ The box, in this order, and never trusting the payload before step 2:
 1. finds `kid` in its user table (else `unknown_signer`);
 2. verifies the signature (`bad_signature`);
 3. checks `dev` is itself (`wrong_device`);
-4. refuses without SNTP time (`no_clock`): a box that cannot tell the time cannot tell a stale command;
+4. refuses without SNTP time (`no_clock`): a box that cannot tell the time cannot tell a stale command. A clock set only by a phone (`set_time`) does **not** count here, because a phone can be wrong; the box needs network time from this boot;
 5. checks `iat − 60 ≤ now ≤ exp` and `exp − iat ≤ 300` (`expired`);
-6. checks `id` is not among the last 64 command ids it has seen (replay);
+6. checks `id` is not among the last 64 command ids it has seen (`replay`). The ids are kept in RAM, so a restart forgets them; the 300 s lifetime and the clock rule of step 4 are what then limit a repeat;
 7. checks the permission (`forbidden`);
 8. hands it to the safety layer, which can still refuse (`refused`, with its reason).
 
@@ -208,15 +208,28 @@ The box, in this order, and never trusting the payload before step 2:
 
 `{"id":"<command id>","result":"accepted"|"done"|"rejected","reason":"<code above, or the safety layer's>"}`
 
+The box answers every command it can name with exactly one ack: `done` once the safety layer has taken it, or `rejected` with one of the reason codes `malformed`, `unknown_signer`, `bad_signature`, `wrong_device`, `no_clock`, `expired`, `replay`, `forbidden` (steps 1 to 7 above) or `refused` (step 8: the safety layer said no, or the command name or value is not valid; the box also publishes an `event` `{"kind":"refused","id":…}`). The command is carried out inside the box before the ack, so `accepted` is not used. For a message whose signature did not check out the `id` is read from the payload **without trust**, only so the refusal can name it: nothing else in such a payload is used, and a message with no readable `id` gets no ack.
+
 ### 9.3 Status, state and events
 
-- `status`: the plain text `online`, retained; the broker publishes `offline` as the box's Last Will.
-- `state`: the same JSON as `GET /api/status`, plus `"firmware":"<version>"`, retained.
-- `event`: `{"kind":"fault"|"refused"|"local_start"|"local_stop"|…, …}`.
+- `status`: the plain text `online`, retained, QoS 1; the broker publishes `offline` as the box's Last Will. A deliberate stop (the link removed with `DELETE /api/cloud`) publishes `offline` itself first, since a clean disconnect does not fire the will.
+- `state`: the same JSON as `GET /api/status`, plus `"firmware":"<version>"` as its first field, retained, QoS 1. Sent on connect, whenever the run state, fault code, run mode, burner or Auto changes, and at least every 15 s.
+- `event`: `{"kind":"fault"|"refused"|"local_start"|"local_stop"|…, …}`. Firmware 1.0030 sends `fault` (`code`, `name`, once when a fault appears) and `refused` (`id`). `local_start` and `local_stop` are reserved and not sent yet.
 
 ### 9.4 Keys the cloud knows
 
 The website keeps each enrolled box's admin public keys and the invited keys the owner has registered (`hth_grants`), so it can drop commands from unknown signers before they reach the broker. It is a filter only; the box decides.
+
+### 9.5 The cloud client: connecting, retrying, endpoints
+
+- **Opt-in.** Nothing runs until a certificate is installed (§8). `DELETE /api/cloud`, or installing a new certificate, takes the connection down at once (saying `offline` first) and a new one is made if a certificate is still installed.
+- **Dials only with a certificate, a network and network time.** TLS dates cannot be checked without the clock, so the client waits for SNTP (not a phone-set clock) before the first attempt.
+- **TLS.** Mutual: the box presents its enrolled certificate chain and checks the broker against the pinned Tillerwell Hearth Root CA, with the host name check on. The name checked is the host dialled, so the broker certificate must carry every entry of the list: both domains today, and the reserved IP as an IP subject alternative name before that entry is filled in. MQTT 3.1.1, clean session, keep-alive 60 s, QoS 1.
+- **Endpoint list** (cloud plan §9), tried in this order: `mqtt.tillerwell.com`, `mqtt.tillerwell.co.uk`, then the standby's reserved IP, port 8883. The third entry is empty in 1.0030 (the address does not exist yet) and is skipped; the list is `AT_CLOUDLINK_HOST_*` in `components/at_cloudlink/include/at_cloudlink.h`.
+- **N = 3.** After 3 failed attempts in a row on one endpoint the client moves to the next, and after the last it goes round again. An attempt fails if TLS or the MQTT connect is refused, or if no session is up 30 s after dialling.
+- **Backoff.** After the f-th failure in a row the next attempt waits 5 s × 2^(f−1), capped at 300 s, plus up to 25 % random spread. A connection that stayed up 60 s or more counts as a success, so the next drop starts again at 5 s on the endpoint then in use; a shorter one counts as one more failure.
+- **Never in the way.** The client runs in its own tasks, below the thermostat and the heater bridge. Commands are verified and carried out one at a time in the client's supervisor task, not in the MQTT task; at most 4 wait, and a fifth is dropped. A heater with no account, no internet or a dead broker behaves exactly as before.
+- **Diagnostics.** `GET /api/info` carries a `cloud` object: `state` (`off`, `waiting`, `connecting`, `online`, `backoff`), `endpoint`, `failures`, `connects`, `commands_ok`, `commands_refused`, `heap_at_connect` and `heap_min` (lowest free heap since boot, sampled while the client runs).
 
 ## 10. Test vectors
 
@@ -227,7 +240,7 @@ The website keeps each enrolled box's admin public keys and the invited keys the
 - grants: valid, permission raised after signing, signed by a non-admin; each with its QR text;
 - cloud commands: valid, changed after signing, expired, for another box.
 
-Every implementation should reproduce the valid signatures byte for byte (deterministic signing) and give the stated result for each case. The firmware does so in `host_tests/test_auth.c` (`make -C host_tests auth`, 100 checks, using ESP-IDF's own mbedTLS 3.6.6 and cJSON).
+Every implementation should reproduce the valid signatures byte for byte (deterministic signing) and give the stated result for each case. The firmware does so in `host_tests/test_auth.c` (`make -C host_tests auth`, 100 checks, using ESP-IDF's own mbedTLS 3.6.6 and cJSON). `host_tests/test_access.c` (`make -C host_tests access`) runs the whole §9.1 check order on the cloud-command vectors, plus the lifetime edges, replay and permissions; `make -C host_tests cloudlink` checks the §9.5 backoff and endpoint walk.
 
 ## 11. Decisions made with this spec
 
@@ -240,3 +253,4 @@ Not settled in the planning docs before; all agreed by Chris on 2026-10-28, incl
 5. **Who may do what:** filling the tank and setting the tank level are *control*; changing the tank size, fuel prices and rates, time zone and the box's name are *manager*; firmware updates are *admin*.
 6. **Cloud commands live at most 300 seconds** (normally 30, cloud plan Q4), with 60 seconds of clock slack.
 7. **L2 serves the signed API on port 80** (§3) and adds `POST /api/auth/legacy` (§3); the claim button is a short press of the existing button (§7.1); an unsigned request to any `/api/auth/` route that needs a user is `401 auth_required` even while the old API is on.
+8. **Cloud client (C4, firmware 1.0030; chosen while building it, not yet reviewed by Chris):** N = 3 attempts per endpoint; backoff 5 s doubling to 300 s; a phone-set clock does not satisfy §9.1 step 4; `done` or `rejected` acks only (no `accepted`); the replay ids are RAM only (§9.1 step 6); the reserved-IP entry stays empty until that address exists (§9.5).

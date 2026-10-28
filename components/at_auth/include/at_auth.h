@@ -110,9 +110,16 @@ at_auth_result_t at_auth_cloud_cmd_verify(const char *message, const uint8_t pub
                                           const char *device_id, int64_t now, bool clock_ok,
                                           at_cloud_cmd_t *out);
 
+// The command id inside a cloud command message, read WITHOUT verifying anything, only so a refusal can name the
+// command it refuses. Never act on it. False if the message has no readable id.
+bool at_auth_cloud_cmd_untrusted_id(const char *message, char *out, size_t cap);
+
 // --- Permissions (spec §6) ---------------------------------------------------
 // The level a POST /api/cmd body (or a cloud command's "cmd") needs. Unknown
 // commands need admin: fail closed.
 at_perm_t at_auth_cmd_perm(const char *cmd_name);
+// The level a POST /api/cmd body (or a cloud command's "cmd" object, as JSON text) needs: at_auth_cmd_perm of its
+// "cmd" name, never below control. Unparseable or no name: admin (fail closed).
+at_perm_t at_auth_cmd_json_perm(const char *cmd_json);
 // The level a route needs. NONE means public; for POST /api/cmd use at_auth_cmd_perm.
 at_perm_t at_auth_route_perm(const char *method, const char *path);

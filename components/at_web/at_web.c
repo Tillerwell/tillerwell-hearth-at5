@@ -5,6 +5,7 @@
 
 #include "at_access.h"
 #include "at_cloud.h"
+#include "at_cloudlink.h"
 #include "at_app.h"
 #include "at_auth.h"
 #include "at_version.h"
@@ -143,14 +144,7 @@ static bool signed_header(httpd_req_t *req, char *hdr, size_t n, bool *present)
 }
 
 /* The command a signed POST /api/cmd asks for needs its own level; the route alone is only control. */
-static at_perm_t cmd_perm_of_body(const char *body)
-{
-    cJSON *j = body ? cJSON_Parse(body) : NULL;
-    const cJSON *c = j ? cJSON_GetObjectItemCaseSensitive(j, "cmd") : NULL;
-    at_perm_t p = cJSON_IsString(c) ? at_auth_cmd_perm(c->valuestring) : AT_PERM_ADMIN;
-    cJSON_Delete(j);
-    return p < AT_PERM_CONTROL ? AT_PERM_CONTROL : p;
-}
+static at_perm_t cmd_perm_of_body(const char *body) { return at_auth_cmd_json_perm(body); }
 
 /* Every protected route starts here. True: carry on (the reply is the handler's). False: the reply has gone. */
 static bool gate(httpd_req_t *req)
@@ -385,6 +379,18 @@ static esp_err_t h_info(httpd_req_t *req)
     cJSON_AddNumberToObject(hp, "free", heap_caps_get_free_size(MALLOC_CAP_8BIT));
     cJSON_AddNumberToObject(hp, "min_free", heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
     cJSON_AddNumberToObject(hp, "largest", heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    /* the cloud link (docs/API_SPEC.md §9.5): state, and the heap seen while a TLS session was up */
+    at_cloudlink_status_t cl;
+    at_cloudlink_status(&cl);
+    cJSON *cj = cJSON_AddObjectToObject(o, "cloud");
+    cJSON_AddStringToObject(cj, "state", cl.state);
+    cJSON_AddNumberToObject(cj, "endpoint", cl.endpoint);
+    cJSON_AddNumberToObject(cj, "failures", cl.failures);
+    cJSON_AddNumberToObject(cj, "connects", cl.connects);
+    cJSON_AddNumberToObject(cj, "commands_ok", cl.commands_ok);
+    cJSON_AddNumberToObject(cj, "commands_refused", cl.commands_refused);
+    cJSON_AddNumberToObject(cj, "heap_at_connect", cl.heap_at_connect);
+    cJSON_AddNumberToObject(cj, "heap_min", cl.heap_min_online);
     at_matter_info_t mi;
     at_matter_get_info(&mi);
     if (mi.transport && mi.transport[0]) {
@@ -413,11 +419,10 @@ static bool set_display_name(const char *name)
     return true;
 }
 
-static esp_err_t h_cmd(httpd_req_t *req)
+/* The safety layer's front door, shared by POST /api/cmd and the cloud link: the caller has already checked who may
+ * ask. False means nothing was done (unknown command, bad value, or the box said no: bypass on, queue full). */
+static bool run_cmd(const cJSON *j)
 {
-    REQUIRE_AUTH(req);
-    cJSON *j = read_json(req);
-    if (!j) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad json");
     const char *c = jstr(j, "cmd");
     bool ok = true;
     if (!c) {
@@ -492,6 +497,23 @@ static esp_err_t h_cmd(httpd_req_t *req)
     } else {
         ok = false;
     }
+    return ok;
+}
+
+bool at_web_exec_cmd(const char *json)
+{
+    cJSON *j = json ? cJSON_Parse(json) : NULL;
+    bool ok = j && run_cmd(j);
+    cJSON_Delete(j);
+    return ok;
+}
+
+static esp_err_t h_cmd(httpd_req_t *req)
+{
+    REQUIRE_AUTH(req);
+    cJSON *j = read_json(req);
+    if (!j) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad json");
+    bool ok = run_cmd(j);
     cJSON_Delete(j);
     return send_ok(req, ok);
 }

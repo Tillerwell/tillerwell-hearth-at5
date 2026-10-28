@@ -163,6 +163,8 @@ void at_app_clock_sntp_start(void)
     esp_sntp_init();
 }
 
+bool at_app_clock_synced(void) { return s_sntp_synced; }
+
 bool at_app_set_time(int64_t epoch_s)
 {
     if (s_sntp_synced || epoch_s < MIN_EPOCH || epoch_s > MAX_EPOCH) return false;

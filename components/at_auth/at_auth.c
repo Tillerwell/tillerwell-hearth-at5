@@ -344,6 +344,19 @@ at_auth_result_t at_auth_cloud_cmd_verify(const char *message, const uint8_t pub
     return AT_AUTH_OK;
 }
 
+bool at_auth_cloud_cmd_untrusted_id(const char *message, char *out, size_t cap)
+{
+    char kid[AT_AUTH_KID_LEN + 1], p[768], s[96], payload[600];
+    if (cmd_message(message, kid, p, sizeof(p), s, sizeof(s)) != AT_AUTH_OK) return false;
+    int n = at_b64url_decode(p, strlen(p), (uint8_t *)payload, sizeof(payload) - 1);
+    if (n < 0) return false;
+    payload[n] = 0;
+    cJSON *root = cJSON_Parse(payload);
+    bool ok = root && json_str(root, "id", out, cap);
+    cJSON_Delete(root);
+    return ok;
+}
+
 // ---------------------------------------------------------------------------
 // Permissions (spec §6, CLOUD-PLANNING.md Q8)
 
@@ -370,6 +383,15 @@ at_perm_t at_auth_cmd_perm(const char *cmd_name)
     for (size_t i = 0; cmd_name && i < sizeof(CMD_PERMS) / sizeof(CMD_PERMS[0]); i++)
         if (strcmp(cmd_name, CMD_PERMS[i].name) == 0) return CMD_PERMS[i].perm;
     return AT_PERM_ADMIN;
+}
+
+at_perm_t at_auth_cmd_json_perm(const char *cmd_json)
+{
+    cJSON *j = cmd_json ? cJSON_Parse(cmd_json) : NULL;
+    const cJSON *c = j ? cJSON_GetObjectItemCaseSensitive(j, "cmd") : NULL;
+    at_perm_t p = cJSON_IsString(c) ? at_auth_cmd_perm(c->valuestring) : AT_PERM_ADMIN;
+    cJSON_Delete(j);
+    return p < AT_PERM_CONTROL ? AT_PERM_CONTROL : p;
 }
 
 typedef struct {

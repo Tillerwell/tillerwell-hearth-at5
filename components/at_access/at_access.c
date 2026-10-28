@@ -38,6 +38,11 @@ static struct {
     at_user_t user;
 } s_claim;
 
+static struct {
+    char id[40];
+} s_cmd_ids[AT_CMD_IDS_MAX];
+static uint8_t s_cmd_next;
+
 static void save_users(void) { s_io->save(KEY_USERS, &s_users, sizeof(s_users)); }
 static void save_gids(void) { s_io->save(KEY_GIDS, &s_gids, sizeof(s_gids)); }
 
@@ -49,6 +54,8 @@ void at_access_init(const at_access_io_t *io, const char *device_id)
     memset(&s_gids, 0, sizeof(s_gids));
     memset(s_nonces, 0, sizeof(s_nonces));
     memset(&s_claim, 0, sizeof(s_claim));
+    memset(s_cmd_ids, 0, sizeof(s_cmd_ids));
+    s_cmd_next = 0;
     s_nonce_next = 0;
     s_legacy = true;
     if (!io->load(KEY_USERS, &s_users, sizeof(s_users)) || s_users.n > AT_USERS_MAX) memset(&s_users, 0, sizeof(s_users));
@@ -267,4 +274,28 @@ int at_access_legacy_set(bool enabled)
     s_legacy = enabled;
     uint8_t l = enabled ? 1 : 0;
     return s_io->save(KEY_LEGACY, &l, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Cloud commands (§9.1)
+
+const char *at_access_cloud_cmd(const char *message, int64_t now, bool clock_ok, at_cloud_cmd_t *out, char *id,
+                                size_t id_cap)
+{
+    if (id_cap) id[0] = 0;
+    if (!message) return "malformed";
+    // Nothing is acted on before the signature has checked out; the id is only for the refusal's acknowledgement.
+    if (id_cap) at_auth_cloud_cmd_untrusted_id(message, id, id_cap);
+    at_auth_result_t r = at_auth_cloud_cmd_peek(message, out);
+    if (r != AT_AUTH_OK) return at_auth_result_name(r);
+    at_user_t u;
+    if (!at_access_user_find(out->kid, &u)) return "unknown_signer";
+    r = at_auth_cloud_cmd_verify(message, u.pub, s_device_id, now, clock_ok, out);
+    if (r != AT_AUTH_OK) return at_auth_result_name(r);
+    for (int i = 0; i < AT_CMD_IDS_MAX; i++)
+        if (s_cmd_ids[i].id[0] && strcmp(s_cmd_ids[i].id, out->id) == 0) return "replay";
+    snprintf(s_cmd_ids[s_cmd_next].id, sizeof(s_cmd_ids[0].id), "%s", out->id);
+    s_cmd_next = (uint8_t)((s_cmd_next + 1) % AT_CMD_IDS_MAX);
+    if (u.perm < at_auth_cmd_json_perm(out->cmd_json)) return "forbidden";
+    return NULL;
 }

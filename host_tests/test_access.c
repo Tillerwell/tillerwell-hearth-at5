@@ -253,6 +253,102 @@ static void test_users_and_legacy(void)
     CHECK(at_access_has_admin(), "last admin kept");
 }
 
+static void add_user(const char *name, at_perm_t perm)
+{
+    at_user_t u = { 0 };
+    pub_of(name, u.pub);
+    at_auth_key_id(u.pub, u.kid);
+    u.perm = (uint8_t)perm;
+    CHECK(at_access_user_add(&u), "add %s", name);
+}
+
+static const char *cloud(const av_command_t *c, int64_t now, bool clock, char *id)
+{
+    at_cloud_cmd_t out;
+    return at_access_cloud_cmd(c->message, now, clock, &out, id, 40);
+}
+
+static void test_cloud_cmds(void)
+{
+    char id[40];
+    const av_command_t *valid = &AV_COMMANDS[0], *tampered = &AV_COMMANDS[1], *expired = &AV_COMMANDS[2], *other = &AV_COMMANDS[3];
+    const char *r;
+
+    memset(store, 0, sizeof(store));
+    boot();
+    claim_admin();
+    add_user("guest", AT_PERM_CONTROL);
+    r = cloud(valid, AV_NOW, true, id);
+    CHECK(!r, "valid command accepted: %s", r ? r : "");
+    CHECK(!strcmp(id, "cmd-dab7893a271a"), "ack id is the command's: %s", id);
+    r = cloud(valid, AV_NOW, true, id);
+    CHECK(r && !strcmp(r, "replay"), "same id twice is a replay: %s", r ? r : "ok");
+    CHECK(!strcmp(id, "cmd-dab7893a271a"), "a replay still names its id");
+    boot();
+    r = cloud(valid, AV_NOW, true, id);
+    CHECK(!r, "the replay list is RAM only: gone after a restart (the window and the clock are what then protect)");
+
+    r = cloud(tampered, AV_NOW, true, id);
+    CHECK(r && !strcmp(r, "bad_signature"), "changed after signing: %s", r ? r : "ok");
+    CHECK(id[0], "a refusal still names the id it read (untrusted)");
+    r = cloud(expired, AV_NOW, true, id);
+    CHECK(r && !strcmp(r, "expired"), "expired: %s", r ? r : "ok");
+    r = cloud(other, AV_NOW, true, id);
+    CHECK(r && !strcmp(r, "wrong_device"), "another box: %s", r ? r : "ok");
+    r = cloud(&AV_COMMANDS[0], AV_NOW, false, id);
+    CHECK(r && !strcmp(r, "no_clock") , "no network time: %s", r ? r : "ok");
+    r = at_access_cloud_cmd("{\"kid\":1}", AV_NOW, true, &(at_cloud_cmd_t){ 0 }, id, sizeof(id));
+    CHECK(r && !strcmp(r, "malformed") && !id[0], "malformed: %s", r ? r : "ok");
+    r = at_access_cloud_cmd(NULL, AV_NOW, true, &(at_cloud_cmd_t){ 0 }, id, sizeof(id));
+    CHECK(r && !strcmp(r, "malformed"), "no message at all");
+
+    // The lifetime edges: iat = AV_NOW, exp = AV_NOW + 30, 60 s of slack before iat.
+    memset(store, 0, sizeof(store));
+    boot();
+    claim_admin();
+    add_user("guest", AT_PERM_CONTROL);
+    CHECK(!cloud(valid, AV_NOW + 30, true, id), "good at exp");
+    boot();
+    r = cloud(valid, AV_NOW + 31, true, id);
+    CHECK(r && !strcmp(r, "expired"), "refused one second after exp");
+    CHECK(!cloud(valid, AV_NOW - 60, true, id), "good 60 s before iat");
+    boot();
+    r = cloud(valid, AV_NOW - 61, true, id);
+    CHECK(r && !strcmp(r, "expired"), "refused 61 s before iat");
+
+    // Who may do it.
+    memset(store, 0, sizeof(store));
+    boot();
+    claim_admin();
+    r = cloud(valid, AV_NOW, true, id);
+    CHECK(r && !strcmp(r, "unknown_signer"), "a key that is not in the table: %s", r ? r : "ok");
+    add_user("guest", AT_PERM_VIEW);
+    r = cloud(valid, AV_NOW, true, id);
+    CHECK(r && !strcmp(r, "forbidden"), "a viewer cannot start the heater: %s", r ? r : "ok");
+    CHECK(at_auth_cmd_json_perm("{\"cmd\":\"stop\"}") == AT_PERM_CONTROL, "stop needs control");
+    CHECK(at_auth_cmd_json_perm("{\"cmd\":\"fuel_price\",\"value\":1}") == AT_PERM_MANAGER, "fuel_price needs manager");
+    CHECK(at_auth_cmd_json_perm("{\"cmd\":\"factory_reset\"}") == AT_PERM_ADMIN, "factory_reset needs admin");
+    CHECK(at_auth_cmd_json_perm("{\"cmd\":\"never_heard_of_it\"}") == AT_PERM_ADMIN, "unknown command needs admin");
+    CHECK(at_auth_cmd_json_perm("{\"cmd\":\"preheat_duration\"}") == AT_PERM_ADMIN, "unlisted commands fail closed");
+    CHECK(at_auth_cmd_json_perm("nonsense") == AT_PERM_ADMIN && at_auth_cmd_json_perm(NULL) == AT_PERM_ADMIN, "unparseable: admin");
+
+    // An expired user is not found, so its commands stop with the grant.
+    memset(store, 0, sizeof(store));
+    boot();
+    claim_admin();
+    fake_clock_ok = true;
+    fake_now = AV_NOW;
+    at_user_t g = { 0 };
+    pub_of("guest", g.pub);
+    at_auth_key_id(g.pub, g.kid);
+    g.perm = AT_PERM_CONTROL;
+    g.exp = AV_NOW - 1;
+    CHECK(at_access_user_add(&g), "add expiring guest");
+    r = cloud(valid, AV_NOW, true, id);
+    CHECK(r && !strcmp(r, "unknown_signer"), "expired grant: %s", r ? r : "ok");
+    fake_clock_ok = false;
+}
+
 int main(void)
 {
     test_claim();
@@ -260,6 +356,7 @@ int main(void)
     test_requests();
     test_redeem();
     test_users_and_legacy();
+    test_cloud_cmds();
     printf("%s: %d checks, %d failures\n", failures ? "FAILED" : "OK", checks, failures);
     return failures ? 1 : 0;
 }

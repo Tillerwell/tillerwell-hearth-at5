@@ -43,9 +43,15 @@ access: test_access
 test_access: test_access.c ../components/at_access/at_access.c ../components/at_auth/at_auth.c auth_vectors.h $(MBEDTLS)/library/libmbedcrypto.a
 	$(CC) $(ACCESS_CFLAGS) test_access.c ../components/at_access/at_access.c ../components/at_auth/at_auth.c $(CJSON)/cJSON.c $(MBEDTLS)/library/libmbedcrypto.a -o $@
 
+cloudlink: test_cloudlink
+	./test_cloudlink
+
+test_cloudlink: test_cloudlink.c ../components/at_cloudlink/at_cloudlink_policy.c
+	$(CC) $(CFLAGS) -I../components/at_cloudlink/include test_cloudlink.c ../components/at_cloudlink/at_cloudlink_policy.c -o $@
+
 auth-vectors:
 	cd .. && python3 host_tests/gen_auth_vectors.py
 
 clean:
-	rm -f test_main test_auth test_access
+	rm -f test_main test_auth test_access test_cloudlink
 	rm -rf build

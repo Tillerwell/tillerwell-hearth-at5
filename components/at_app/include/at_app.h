@@ -251,6 +251,9 @@ bool at_app_set_timezone(const char *zone);
 /* Set the clock from the phone. Refused (false) once the box has had network time this boot, or if epoch is
  * not plausible. */
 bool at_app_set_time(int64_t epoch_s);
+/* True once network time (SNTP) has arrived this boot. Unlike time_set it is false when only the phone set the clock:
+ * the cloud link trusts nothing else, since a phone can be wrong. */
+bool at_app_clock_synced(void);
 /* Ask for network time (called when an IP address is obtained). Idempotent. */
 void at_app_clock_sntp_start(void);
 

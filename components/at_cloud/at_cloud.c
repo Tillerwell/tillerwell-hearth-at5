@@ -15,6 +15,7 @@
 #define KEY_DER_MAX 160   // SEC1 ECPrivateKey for P-256 is 121 bytes
 
 static const at_cloud_io_t *s_io;
+static volatile uint32_t s_generation;
 
 void at_cloud_init(const at_cloud_io_t *io) { s_io = io; }
 
@@ -128,6 +129,7 @@ const char *at_cloud_install(const char *chain_pem, const char *device_id)
     uint8_t stored[AT_CLOUD_CERT_MAX] = {0};
     memcpy(stored, chain_pem, len);
     if (s_io->save(CERT_NAME, stored, sizeof(stored)) != 0) err = "storage";
+    else s_generation++;
 done:
     mbedtls_x509_crt_free(&root);
     mbedtls_x509_crt_free(&chain);
@@ -141,8 +143,24 @@ bool at_cloud_has_cert(void)
     return s_io->load(CERT_NAME, buf, sizeof(buf)) && buf[0] != 0;
 }
 
+uint32_t at_cloud_generation(void) { return s_generation; }
+
+bool at_cloud_identity(uint8_t *key, size_t key_cap, size_t *key_len, char *pem, size_t pem_cap, size_t *pem_len)
+{
+    if (key_cap < KEY_DER_MAX || pem_cap < AT_CLOUD_CERT_MAX) return false;
+    if (!s_io->load(KEY_NAME, key, KEY_DER_MAX) || !s_io->load(CERT_NAME, pem, AT_CLOUD_CERT_MAX) || pem[0] == 0) return false;
+    size_t n = KEY_DER_MAX;
+    while (n > 0 && key[n - 1] == 0) n--;
+    size_t p = strnlen(pem, AT_CLOUD_CERT_MAX);
+    if (n == 0 || p == AT_CLOUD_CERT_MAX) return false;
+    *key_len = n;
+    *pem_len = p + 1;   // mbedTLS wants the NUL counted for PEM
+    return true;
+}
+
 void at_cloud_forget(void)
 {
     s_io->erase(CERT_NAME);
     s_io->erase(KEY_NAME);
+    s_generation++;
 }

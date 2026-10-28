@@ -79,6 +79,19 @@ at_claim_state_t at_access_claim_state(void);
 bool at_access_claim_open(void);          // for the LED
 void at_access_button_pressed(void);      // a short press: confirms an open claim
 
+// --- cloud commands (§9.1) -------------------------------------------------
+#define AT_CMD_IDS_MAX 64   // command ids remembered against replay
+
+// Runs steps 1 to 7 of §9.1 on an MQTT `cmd` message: signer in the user table, signature, device, clock, lifetime,
+// replay, permission. now/clock_ok must come from network time (the caller decides what counts). NULL = accepted
+// (out->cmd_json is then a POST /api/cmd body, handed on to the safety layer), else the reason code:
+// "malformed", "unknown_signer", "bad_signature", "wrong_device", "no_clock", "expired", "replay", "forbidden".
+// id receives the command id for the acknowledgement (read without trust when the signature did not check out;
+// empty if unreadable). The remembered ids live in RAM only: a command is good for at most 300 s and needs the
+// clock, so only a box that restarts inside that window could be made to repeat one.
+const char *at_access_cloud_cmd(const char *message, int64_t now, bool clock_ok, at_cloud_cmd_t *out, char *id,
+                                size_t id_cap);
+
 // --- the old unauthenticated API (§3) -----------------------------------
 bool at_access_legacy_enabled(void);
 int at_access_legacy_set(bool enabled);   // 0 = ok
