@@ -3,7 +3,7 @@
 uint32_t at_cloudlink_retry_delay_s(uint32_t failures)
 {
     uint32_t d = AT_CLOUDLINK_RETRY_FIRST_S;
-    for (uint32_t i = 1; i < failures && d < AT_CLOUDLINK_RETRY_MAX_S; i++) d *= 2;
+    for (uint32_t i = AT_CLOUDLINK_QUICK_TRIES; i < failures && d < AT_CLOUDLINK_RETRY_MAX_S; i++) d *= 2;
     return d > AT_CLOUDLINK_RETRY_MAX_S ? AT_CLOUDLINK_RETRY_MAX_S : d;
 }
 

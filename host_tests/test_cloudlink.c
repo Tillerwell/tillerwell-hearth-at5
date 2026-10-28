@@ -8,10 +8,11 @@ static int failures, checks;
 
 int main(void)
 {
-    uint32_t want[] = { 5, 10, 20, 40, 80, 160, 300, 300, 300, 300 };
+    uint32_t want[] = { 5, 5, 5, 5, 5, 5, 10, 20, 40, 80 };
     for (uint32_t f = 1; f <= 10; f++)
         CHECK(at_cloudlink_retry_delay_s(f) == want[f - 1], "delay after %u failures: %u", f, at_cloudlink_retry_delay_s(f));
     CHECK(at_cloudlink_retry_delay_s(0) == 5, "zero failures");
+    CHECK(at_cloudlink_retry_delay_s(12) == 300 && at_cloudlink_retry_delay_s(11) == 160, "reaches the cap after the quick tries");
     CHECK(at_cloudlink_retry_delay_s(1000000) == 300, "never past the cap, and no overflow");
 
     // N = 3 on each endpoint, in order, then round again.
