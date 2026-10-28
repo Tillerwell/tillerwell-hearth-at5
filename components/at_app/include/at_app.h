@@ -79,6 +79,8 @@ esp_err_t at_settings_preheat_temp_save(float celsius);
 /* A small blob in the settings namespace. False if missing or not exactly `len` bytes. */
 bool at_settings_blob_load(const char *key, void *out, size_t len);
 esp_err_t at_settings_blob_save(const char *key, const void *in, size_t len);
+/* Removes a blob; fine if it was never there. */
+esp_err_t at_settings_blob_erase(const char *key);
 
 #define AT_DISPLAY_NAME_MAX 32
 #define AT_HOSTNAME_MAX 31

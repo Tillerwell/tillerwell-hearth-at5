@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "at_access.h"
+#include "at_cloud.h"
 #include "at_app.h"
 #include "at_auth.h"
 #include "at_version.h"
@@ -990,9 +991,51 @@ static esp_err_t h_legacy(httpd_req_t *req)
     return send_ok(req, true);
 }
 
+/* ---- /api/cloud (docs/API_SPEC.md §8), admin only ------------------------------------------------------- */
+
+static esp_err_t h_cloud_csr(httpd_req_t *req)
+{
+    REQUIRE_SIGNED(req);
+    char *pem = malloc(1024);
+    if (!pem) return httpd_resp_send_500(req);
+    if (at_cloud_csr(at_access_device_id(), pem, 1024) != 0) {
+        free(pem);
+        return send_auth_error(req, "500 Internal Server Error", "csr_failed", NULL);
+    }
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "device_id", at_access_device_id());
+    cJSON_AddStringToObject(o, "csr_pem", pem);
+    free(pem);
+    return send_json(req, o);
+}
+
+static esp_err_t h_cloud_cert(httpd_req_t *req)
+{
+    REQUIRE_SIGNED(req);
+    char *raw = read_body(req, 4096); /* two PEM certificates, JSON-escaped: more than read_json's 2 KB */
+    cJSON *j = raw ? cJSON_Parse(raw) : NULL;
+    free(raw);
+    const char *chain = j ? jstr(j, "cert_chain_pem") : NULL;
+    const char *err = chain ? at_cloud_install(chain, at_access_device_id()) : "bad_body";
+    cJSON_Delete(j);
+    if (!err) return send_ok(req, true);
+    const char *status = !strcmp(err, "storage") ? "500 Internal Server Error" : "400 Bad Request";
+    return send_auth_error(req, status, err, NULL);
+}
+
+static esp_err_t h_cloud_delete(httpd_req_t *req)
+{
+    REQUIRE_SIGNED(req);
+    at_cloud_forget();
+    return send_ok(req, true);
+}
+
 /* Captive portal: while the setup AP is up, send unknown URLs to the UI. */
 static esp_err_t h_404(httpd_req_t *req, httpd_err_code_t err)
 {
+    /* Only browsers on the setup hotspot want the redirect; an app asking for an API route that isn't there (an older
+     * firmware, say) must get a plain 404 rather than a redirect to an address it can't reach. */
+    if (!strncmp(req->uri, "/api/", 5)) return send_auth_error(req, "404 Not Found", "not_found", NULL);
     httpd_resp_set_status(req, "302 Found");
     httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
     return httpd_resp_send(req, "", 0);
@@ -1037,6 +1080,9 @@ esp_err_t at_web_start(void)
         {.uri = "/api/auth/users/*", .method = HTTP_DELETE, .handler = h_user_delete},
         {.uri = "/api/auth/grant-revoke", .method = HTTP_POST, .handler = h_grant_revoke},
         {.uri = "/api/auth/legacy", .method = HTTP_POST, .handler = h_legacy},
+        {.uri = "/api/cloud/csr", .method = HTTP_POST, .handler = h_cloud_csr},
+        {.uri = "/api/cloud/cert", .method = HTTP_POST, .handler = h_cloud_cert},
+        {.uri = "/api/cloud", .method = HTTP_DELETE, .handler = h_cloud_delete},
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &uris[i]));

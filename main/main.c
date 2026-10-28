@@ -1,4 +1,5 @@
 #include "at_access.h"
+#include "at_cloud.h"
 #include "at_app.h"
 #include "at_led.h"
 #include "sdkconfig.h"
@@ -67,6 +68,7 @@ void app_main(void)
 {
     ESP_ERROR_CHECK(at_settings_init());
     at_access_start(); /* who may use the box: the user table in NVS */
+    at_cloud_start();  /* its cloud key and certificate, if the owner links an account */
     at_led_start(); /* status LED; not fatal if it fails */
 
     /* The relay comes first: the controller must keep working whatever the

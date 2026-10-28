@@ -89,6 +89,18 @@ esp_err_t at_settings_blob_save(const char *key, const void *in, size_t len)
     return err;
 }
 
+esp_err_t at_settings_blob_erase(const char *key)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_erase_key(h, key);
+    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
 /* The name the user gave the box in the app ("Autoterm 5D"). Kept in its own blob, not in at_settings_t, so adding it
  * doesn't invalidate saved settings on update; a factory reset erases it with the rest of NVS. */
 #define DISPLAY_NAME_KEY "dispname"
