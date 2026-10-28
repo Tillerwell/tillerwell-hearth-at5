@@ -23,3 +23,21 @@ CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
 # coolant sensor 2, plug 3, fault sensor 4, secondary network interface 5; the driver must sit on 5 or Home
 # finds no network cluster there and abandons pairing.
 CONFIG_THREAD_NETWORK_ENDPOINT_ID=5
+
+# Free memory for the cloud link's TLS session (spec 9.5). Measured on a bench heater: free heap 12-17 KB before, 56-110 KB after,
+# largest block 3 KB before, 44 KB after. The Wi-Fi and system code moves from fast RAM to flash (a little slower, 48 KB of RAM back);
+# TLS buffers are only held while a session needs them.
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_EXTRA_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+CONFIG_ESP_WIFI_SLP_IRAM_OPT=n
+CONFIG_ESP32_WIFI_IRAM_OPT=n
+CONFIG_ESP32_WIFI_RX_IRAM_OPT=n
+CONFIG_ESP_PHY_IRAM_OPT=n
+CONFIG_FREERTOS_IN_IRAM=n
+CONFIG_LOG_IN_IRAM=n
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CA_CERT=y
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=12
+CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=12
