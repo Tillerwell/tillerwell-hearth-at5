@@ -35,9 +35,17 @@ $(MBEDTLS)/library/libmbedcrypto.a:
 	rm -rf $(MBEDTLS) && mkdir -p build && cp -R $(IDF_PATH)/components/mbedtls/mbedtls $(MBEDTLS)
 	$(MAKE) -C $(MBEDTLS) -j8 lib >/dev/null
 
+ACCESS_CFLAGS = $(AUTH_CFLAGS) -I../components/at_access/include
+
+access: test_access
+	./test_access
+
+test_access: test_access.c ../components/at_access/at_access.c ../components/at_auth/at_auth.c auth_vectors.h $(MBEDTLS)/library/libmbedcrypto.a
+	$(CC) $(ACCESS_CFLAGS) test_access.c ../components/at_access/at_access.c ../components/at_auth/at_auth.c $(CJSON)/cJSON.c $(MBEDTLS)/library/libmbedcrypto.a -o $@
+
 auth-vectors:
 	cd .. && python3 host_tests/gen_auth_vectors.py
 
 clean:
-	rm -f test_main test_auth
+	rm -f test_main test_auth test_access
 	rm -rf build

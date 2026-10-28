@@ -137,15 +137,26 @@ bool at_auth_verify(const uint8_t pub[AT_AUTH_PUBKEY_LEN], const uint8_t *msg, s
 // ---------------------------------------------------------------------------
 // Local requests
 
+void at_auth_sha256_hex(const uint8_t *data, size_t len, char out[65])
+{
+    uint8_t hash[32];
+    mbedtls_sha256(data ? data : (const uint8_t *)"", len, hash, 0);
+    for (int i = 0; i < 32; i++) snprintf(out + i * 2, 3, "%02x", hash[i]);
+}
+
+size_t at_auth_string_to_sign_hash(char *out, size_t cap, const char *device_id, const char *method,
+                                   const char *path, const char *nonce, const char *body_sha256_hex)
+{
+    int n = snprintf(out, cap, "HEARTH-REQ-1\n%s\n%s\n%s\n%s\n%s", device_id, method, path, nonce, body_sha256_hex);
+    return (n < 0 || (size_t)n >= cap) ? 0 : (size_t)n;
+}
+
 size_t at_auth_string_to_sign(char *out, size_t cap, const char *device_id, const char *method,
                               const char *path, const char *nonce, const uint8_t *body, size_t body_len)
 {
-    uint8_t hash[32];
     char hex[65];
-    mbedtls_sha256(body ? body : (const uint8_t *)"", body_len, hash, 0);
-    for (int i = 0; i < 32; i++) snprintf(hex + i * 2, 3, "%02x", hash[i]);
-    int n = snprintf(out, cap, "HEARTH-REQ-1\n%s\n%s\n%s\n%s\n%s", device_id, method, path, nonce, hex);
-    return (n < 0 || (size_t)n >= cap) ? 0 : (size_t)n;
+    at_auth_sha256_hex(body, body_len, hex);
+    return at_auth_string_to_sign_hash(out, cap, device_id, method, path, nonce, hex);
 }
 
 // Copies the value of "<key>=" from a space-separated field list.

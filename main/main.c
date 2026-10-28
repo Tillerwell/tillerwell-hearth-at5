@@ -1,3 +1,4 @@
+#include "at_access.h"
 #include "at_app.h"
 #include "at_led.h"
 #include "sdkconfig.h"
@@ -47,7 +48,9 @@ static void button_task(void *arg)
             const unsigned ms = held * 100;
             held = 0;
             at_led_button_held(0);
-            if (ms >= AT_BUTTON_CANCEL_MS) {
+            if (ms < AT_BUTTON_WARN_MS) {
+                at_access_button_pressed(); /* confirms a phone's request to become the admin, if one is waiting */
+            } else if (ms >= AT_BUTTON_CANCEL_MS) {
                 ESP_LOGI(TAG, "button released after %u s: held past %d s, cancelled", ms / 1000,
                          AT_BUTTON_CANCEL_MS / 1000);
             } else if (ms >= AT_BUTTON_RESET_MS) {
@@ -63,6 +66,7 @@ static void button_task(void *arg)
 void app_main(void)
 {
     ESP_ERROR_CHECK(at_settings_init());
+    at_access_start(); /* who may use the box: the user table in NVS */
     at_led_start(); /* status LED; not fatal if it fails */
 
     /* The relay comes first: the controller must keep working whatever the

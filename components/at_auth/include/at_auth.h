@@ -54,6 +54,11 @@ bool at_auth_verify(const uint8_t pub[AT_AUTH_PUBKEY_LEN], const uint8_t *msg, s
 size_t at_auth_string_to_sign(char *out, size_t cap, const char *device_id, const char *method,
                               const char *path, const char *nonce, const uint8_t *body, size_t body_len);
 
+// The same, when the body's SHA-256 is already known (a body too big to hold, hashed as it arrives).
+size_t at_auth_string_to_sign_hash(char *out, size_t cap, const char *device_id, const char *method,
+                                   const char *path, const char *nonce, const char *body_sha256_hex);
+void at_auth_sha256_hex(const uint8_t *data, size_t len, char out[65]);   // lowercase hex, NUL-terminated
+
 typedef struct {
     char kid[AT_AUTH_KID_LEN + 1];
     char nonce[32];

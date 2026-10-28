@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 
+#include "at_access.h"
 #include "at_app.h"
 #include "at_net.h"
 #include "esp_log.h"
@@ -23,6 +24,7 @@ static const colour_t PAIRED = {0, 255, 0};       /* green: on the network */
 static const colour_t DROPPED = {255, 150, 0};    /* yellow: Wi-Fi dropped (the WS2812's green is strong, so less of it) */
 static const colour_t MATTER = {255, 150, 0}; /* yellow: Matter mode (the WS2812's green is strong, so less of it) */
 static const colour_t WARN = {255, 150, 0};    /* yellow: button held 5 s, keep going to reset */
+static const colour_t CLAIM = {200, 0, 255};  /* purple: press the button to make the phone that is asking the admin */
 static const colour_t RESET = {255, 0, 0};    /* red: releasing resets */
 
 #define PAIRED_BRIGHTNESS_PCT 10 /* solid green in normal working */
@@ -78,6 +80,10 @@ static unsigned pulse(uint32_t t)
 
 static void show_status(uint32_t t)
 {
+    if (at_access_claim_open()) { /* a phone has asked to become the admin: waiting for a press of the button */
+        show_at(CLAIM, flash(t, FAST_HALF_PERIOD_MS), true, true);
+        return;
+    }
     /* waiting to be set up is bright at first, then drops to normal so an unused box is not a beacon */
     const bool setup_bright = esp_timer_get_time() < SETUP_BRIGHT_US;
     if (in_matter_mode()) {

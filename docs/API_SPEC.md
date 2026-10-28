@@ -1,6 +1,6 @@
 # Hearth API and signing spec, version 1
 
-> Status: **agreed 2026-10-28** (phase L1 of `Cloud Server/CLOUD-PLANNING.md` in the Tillerwell planning folder). Nothing here is enforced by the firmware yet: phase L2 wires it in. Until then the box serves the old unauthenticated API described in `Mobile Apps/ios/Tillerwell/DEVICE_API.md`.
+> Status: **agreed 2026-10-28** (phase L1 of `Cloud Server/CLOUD-PLANNING.md` in the Tillerwell planning folder). Phase L2 (firmware 1.0027) enforces §4 to §7 on **plain HTTP port 80** (see §3 and §11 item 7); HTTPS and §8 to §9 (cloud) are still to come. Until an admin switches it off, the box also still serves the old unauthenticated API described in `Mobile Apps/ios/Tillerwell/DEVICE_API.md`.
 >
 > This file is the single source of truth for the box, the iOS and Android apps, the website's `hearth` module and the Hearth worker. Every rule that produces bytes is pinned by `docs/auth-vectors.json`; `make -C host_tests auth` checks the firmware against them. If this text and the vectors disagree, the vectors are right and this text is the bug.
 
@@ -28,8 +28,9 @@ Every signed message starts with a fixed domain string (`HEARTH-REQ-1`, `HEARTH-
 
 - The signed API is **HTTPS on port 443**. At first setup the box makes its own P-256 key and a self-signed certificate (10 years, CN = device id) and never changes it short of a factory reset.
 - **Pinning:** the box's *fingerprint* is the base64url SHA-256 of its certificate's DER `SubjectPublicKeyInfo`. The phone records it at claim time; invited users get it in the invite (§7). Apps must refuse a box whose fingerprint differs, whatever the certificate says.
+- **Decided for 1.0027:** the heap test has not been run on a bench box, so the signed API is served on **plain HTTP port 80**, the fallback below, and `fingerprint` in `GET /api/hello` is `""` (`"transport":"http"`). HTTPS moves to a later release once the test passes; signed requests do not change when it does.
 - **To be proved on hardware first** (cloud plan Q10): a TLS server's heap use beside Matter, Wi-Fi and Bluetooth on the ESP32-C6. If it does not fit, the fallback is the same signed API over plain HTTP on port 80. The signatures already stop forgery and replay; what is lost is privacy of the readings on the local network. That decision gets recorded here.
-- The old web page and its plain-HTTP API on port 80 stay as a **separate** trust path with their own optional password, which the admin can switch off (cloud plan §3.1). They never accept a signed-API key, and the signed API never accepts that password.
+- The old web page and its plain-HTTP API on port 80 stay as a **separate** trust path with their own optional password, which the admin can switch off (cloud plan §3.1). They never accept a signed-API key, and the signed API never accepts that password. On the shared port a request is signed if it carries a `Hearth-Auth` header (then it is checked, and a bad one is refused, never retried as the old API) and old otherwise. `POST /api/auth/legacy` `{"enabled":false}` (admin, signed) switches the old API off: unsigned requests then get `401 {"error":"auth_required"}`; the page itself is still served. It cannot be switched off while the box has no admin, and it switches itself back on if the last admin is ever removed.
 
 ## 4. Users
 
@@ -77,6 +78,8 @@ Hearth-Auth: v1 kid=<kid> nonce=<nonce> sig=<base64url signature>
 
 The device id is in the signed string so a request signed for one box cannot be replayed on another.
 
+For `POST /api/ota` the body is the whole firmware image, too big to hold, so the box hashes it as it arrives and checks the signature **after the last byte, before it boots the new image**; a bad signature leaves the running firmware alone.
+
 ### 5.3 What the box does
 
 1. Parse `Hearth-Auth`. Missing or malformed: `401 {"error":"auth_required"}`.
@@ -121,6 +124,8 @@ Only possible while the box has **no admin**.
 2. `POST /api/auth/claim` with body `{"pubkey":"<base64url 65 bytes>","label":"Chris's iPhone"}`, signed as in §5 with **that** key (proof that the app holds it). The box answers `202 {"state":"press_button","window_s":60}` and flashes the LED.
 3. The app polls `GET /api/auth/claim` → `{"state":"waiting"|"claimed"|"timeout"}`. A press of the box's button inside the window makes the key the admin. No press, no admin.
 
+Only one key may wait at a time (`423 {"error":"claim_in_progress"}` to a different key, so nobody can swap theirs in just before the press); a box that already has an admin answers `409 already_claimed`. The button is the one on the box (GPIO9, the same one as the factory reset): a **short press, under 5 s**. The LED flashes **purple** while the window is open.
+
 The app records the fingerprint (§3) at this point.
 
 ### 7.2 Invitations (grants)
@@ -146,13 +151,17 @@ The guest's app stores the private key from the QR, then sends `POST /api/auth/r
 
 1. reads `by` from the payload and finds that admin (not an admin in its table: `401 {"error":"unknown_signer"}`);
 2. verifies the grant signature with the admin's key (`bad_signature`);
-3. checks `dev` is itself, `key` is the key that signed this request, and `gid` has not been redeemed;
+3. checks `dev` is itself, `key` is the key that signed this request (`wrong_key`), and `gid` has not been redeemed (`already_used`);
 4. checks `redeem_by` if it has trustworthy time (best effort, as `exp`; the one-time `gid` is what really stops re-use);
 5. adds the user and records `gid`.
 
 ### 7.4 Removing users
 
-`GET /api/auth/users` (admin) lists the table. `DELETE /api/auth/users/<kid>` (admin) removes one; the box refuses to remove the last admin. `POST /api/auth/grant-revoke` `{"gid":"…"}` (admin) burns an invite that has not been used yet. The cloud is told separately (§9.4), so it can drop that key's traffic early.
+`GET /api/auth/users` (admin) lists the table as `{"users":[{"kid","pub","perm","label","exp","by"}]}`. `DELETE /api/auth/users/<kid>` (admin) removes one; the box refuses to remove the last admin. `POST /api/auth/grant-revoke` `{"gid":"…"}` (admin) burns an invite that has not been used yet. The cloud is told separately (§9.4), so it can drop that key's traffic early.
+
+`GET /api/auth/me` (any signed user) answers `{"kid","label","perm","exp"}`. A user whose `exp` has passed is refused as `unknown_key`, but only while the box has trustworthy time (it has had network time, or the phone set the clock).
+
+Redeem errors: `unknown_signer`/`bad_signature` 401, `wrong_device`/`wrong_key` 403, `already_used`/`table_full` 409, `expired` 410, `malformed` 400.
 
 ## 8. Cloud enrolment (opt-in)
 
@@ -231,3 +240,4 @@ Not settled in the planning docs before; all agreed by Chris on 2026-10-28, incl
 4. **16 users**, **16 outstanding nonces**, **32 remembered invites**, **64 remembered command ids**.
 5. **Who may do what:** filling the tank and setting the tank level are *control*; changing the tank size, fuel prices and rates, time zone and the box's name are *manager*; firmware updates are *admin*.
 6. **Cloud commands live at most 300 seconds** (normally 30, cloud plan Q4), with 60 seconds of clock slack.
+7. **L2 serves the signed API on port 80** (§3) and adds `POST /api/auth/legacy` (§3); the claim button is a short press of the existing button (§7.1); an unsigned request to any `/api/auth/` route that needs a user is `401 auth_required` even while the old API is on.

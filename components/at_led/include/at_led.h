@@ -12,6 +12,10 @@
  *   solid yellow          paired and online
  *   slow blinking yellow  paired but offline
  *
+ * Any mode:
+ *   fast flashing purple  a phone has asked to become the box's admin (docs/API_SPEC.md §7.1): press the button
+ *                         (a short press, under 5 s) within 60 seconds to confirm, or wait and nothing changes
+ *
  * While the button is held (main.c does what releasing does):
  *   under 5 s             no change; releasing does nothing
  *   5 s to 10 s           slow flashing yellow; releasing does nothing, back to the status

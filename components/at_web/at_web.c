@@ -3,7 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "at_access.h"
 #include "at_app.h"
+#include "at_auth.h"
 #include "at_version.h"
 #include "at_mqtt.h"
 #include "at_net.h"
@@ -19,6 +21,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mbedtls/base64.h"
+#include "mbedtls/sha256.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "web";
@@ -38,8 +41,8 @@ static bool ct_equal(const char *a, const char *b)
     return d == 0;
 }
 
-/* HTTP Basic, user "admin", only if a web password is set. */
-static bool authorised(httpd_req_t *req)
+/* The old password, for the old API (docs/API_SPEC.md §3): HTTP Basic, user "admin", only if a web password is set. */
+static bool legacy_authorised(httpd_req_t *req)
 {
     at_settings_t cfg;
     at_settings_get(&cfg);
@@ -65,7 +68,181 @@ static bool authorised(httpd_req_t *req)
     return false;
 }
 
-#define REQUIRE_AUTH(req) do { if (!authorised(req)) return ESP_OK; } while (0)
+/* ---- signed requests (docs/API_SPEC.md §5, §6) ------------------------------------------------------------
+ * The signed API rides on this same server (the spec's plain-HTTP fallback until the TLS heap test is done on
+ * the bench): a request carrying a Hearth-Auth header is checked against the user table and the route's
+ * permission level. A request without one is the old API, which stays until an admin switches it off.
+ * esp_http_server runs one request at a time, so one set of statics is enough. */
+
+#define BODY_MAX 10240
+#define OTA_PATH "/api/ota"
+
+static struct {
+    bool signed_req;     /* this request was signed by a user in the table */
+    bool pending;        /* signature not yet checked: the body is too big to hold (OTA), the handler finishes it */
+    at_user_t user;
+    at_auth_header_t hdr;
+    char method[8];
+    char path[64];
+} s_who;
+static char *s_body;     /* a signed request's body, already read and hashed by the gate */
+static size_t s_body_len;
+static char s_next_nonce[AT_NONCE_LEN + 1];
+
+static void drop_stash(void)
+{
+    free(s_body);
+    s_body = NULL;
+    s_body_len = 0;
+}
+
+static esp_err_t send_auth_error(httpd_req_t *req, const char *status, const char *code, const char *need)
+{
+    char b[96];
+    if (need) snprintf(b, sizeof(b), "{\"error\":\"%s\",\"need\":\"%s\"}", code, need);
+    else snprintf(b, sizeof(b), "{\"error\":\"%s\"}", code);
+    httpd_resp_set_status(req, status);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, b, HTTPD_RESP_USE_STRLEN);
+}
+
+/* Read the whole request body (NUL-terminated, malloc'd) or NULL. */
+static char *recv_all(httpd_req_t *req, size_t max, size_t *out_len)
+{
+    size_t len = req->content_len;
+    if (len == 0 || len > max) return NULL;
+    char *b = malloc(len + 1);
+    if (!b) return NULL;
+    size_t got = 0;
+    while (got < len) {
+        int r = httpd_req_recv(req, b + got, len - got);
+        if (r <= 0) {
+            free(b);
+            return NULL;
+        }
+        got += (size_t)r;
+    }
+    b[len] = 0;
+    if (out_len) *out_len = len;
+    return b;
+}
+
+static void issue_nonce(httpd_req_t *req)
+{
+    at_access_nonce_new(s_next_nonce);
+    httpd_resp_set_hdr(req, "Hearth-Nonce", s_next_nonce);
+}
+
+static bool signed_header(httpd_req_t *req, char *hdr, size_t n, bool *present)
+{
+    esp_err_t e = httpd_req_get_hdr_value_str(req, "Hearth-Auth", hdr, n);
+    *present = e != ESP_ERR_NOT_FOUND;
+    return e == ESP_OK;
+}
+
+/* The command a signed POST /api/cmd asks for needs its own level; the route alone is only control. */
+static at_perm_t cmd_perm_of_body(const char *body)
+{
+    cJSON *j = body ? cJSON_Parse(body) : NULL;
+    const cJSON *c = j ? cJSON_GetObjectItemCaseSensitive(j, "cmd") : NULL;
+    at_perm_t p = cJSON_IsString(c) ? at_auth_cmd_perm(c->valuestring) : AT_PERM_ADMIN;
+    cJSON_Delete(j);
+    return p < AT_PERM_CONTROL ? AT_PERM_CONTROL : p;
+}
+
+/* Every protected route starts here. True: carry on (the reply is the handler's). False: the reply has gone. */
+static bool gate(httpd_req_t *req)
+{
+    drop_stash();
+    memset(&s_who, 0, sizeof(s_who));
+    char hv[256];
+    bool present;
+    bool ok = signed_header(req, hv, sizeof(hv), &present);
+    if (!present) {
+        if (at_access_legacy_enabled()) return legacy_authorised(req);
+        send_auth_error(req, "401 Unauthorized", "auth_required", NULL);
+        return false;
+    }
+    if (!ok) {
+        send_auth_error(req, "401 Unauthorized", "auth_required", NULL);
+        return false;
+    }
+    const char *method = http_method_str(req->method);
+    at_perm_t need = at_auth_route_perm(method, req->uri);
+    at_auth_header_t h;
+    const char *err = at_access_open(hv, &h);
+    if (err) {
+        send_auth_error(req, "401 Unauthorized", err, NULL);
+        return false;
+    }
+    at_user_t u;
+    if (!at_access_user_find(h.kid, &u)) {
+        send_auth_error(req, "401 Unauthorized", "unknown_key", NULL);
+        return false;
+    }
+    char hex[65];
+    bool is_ota = req->method == HTTP_POST && strncmp(req->uri, OTA_PATH, strlen(OTA_PATH)) == 0 &&
+                  (req->uri[strlen(OTA_PATH)] == 0 || req->uri[strlen(OTA_PATH)] == '?');
+    if (is_ota) {
+        if (strlen(req->uri) >= sizeof(s_who.path)) {
+            send_auth_error(req, "401 Unauthorized", "bad_signature", NULL);
+            return false;
+        }
+        if (u.perm < AT_PERM_ADMIN) {
+            send_auth_error(req, "403 Forbidden", "forbidden", "admin");
+            return false;
+        }
+        s_who.pending = true;   /* h_ota hashes the image as it arrives and checks before it boots it */
+        strlcpy(s_who.method, method, sizeof(s_who.method));
+        strlcpy(s_who.path, req->uri, sizeof(s_who.path)); /* length checked above */
+        s_who.hdr = h;
+    } else {
+        if (req->content_len > BODY_MAX) {
+            send_auth_error(req, "413 Payload Too Large", "too_large", NULL);
+            return false;
+        }
+        if (req->content_len > 0) {
+            s_body = recv_all(req, BODY_MAX, &s_body_len);
+            if (!s_body) {
+                send_auth_error(req, "400 Bad Request", "bad_body", NULL);
+                return false;
+            }
+        }
+        at_auth_sha256_hex((const uint8_t *)(s_body ? s_body : ""), s_body_len, hex);
+        err = at_access_verify(&h, u.pub, method, req->uri, hex);
+        if (err) {
+            drop_stash();
+            send_auth_error(req, "401 Unauthorized", err, NULL);
+            return false;
+        }
+        if (req->method == HTTP_POST && !strcmp(req->uri, "/api/cmd")) need = cmd_perm_of_body(s_body);
+        if (u.perm < need) {
+            drop_stash();
+            send_auth_error(req, "403 Forbidden", "forbidden", at_perm_name(need));
+            return false;
+        }
+    }
+    s_who.signed_req = true;
+    s_who.user = u;
+    issue_nonce(req);
+    return true;
+}
+
+/* For the /api/auth/ routes that only make sense for a signed-in user. */
+static bool gate_signed(httpd_req_t *req)
+{
+    if (!gate(req)) return false;
+    if (!s_who.signed_req) {
+        drop_stash();
+        send_auth_error(req, "401 Unauthorized", "auth_required", NULL);
+        return false;
+    }
+    return true;
+}
+
+#define REQUIRE_AUTH(req) do { if (!gate(req)) return ESP_OK; } while (0)
+#define REQUIRE_SIGNED(req) do { if (!gate_signed(req)) return ESP_OK; } while (0)
 
 static esp_err_t send_json_str(httpd_req_t *req, const char *s)
 {
@@ -92,6 +269,17 @@ static esp_err_t send_ok(httpd_req_t *req, bool ok)
 /* Read a small request body into a malloc'd, NUL-terminated buffer. */
 static char *read_body(httpd_req_t *req, size_t max)
 {
+    if (s_body) { /* a signed request: the gate has read it */
+        char *b = s_body;
+        size_t n = s_body_len;
+        s_body = NULL;
+        s_body_len = 0;
+        if (n == 0 || n > max) {
+            free(b);
+            return NULL;
+        }
+        return b;
+    }
     size_t len = req->content_len;
     if (len == 0 || len > max) return NULL;
     char *b = malloc(len + 1);
@@ -142,7 +330,8 @@ static const char *jstr(const cJSON *o, const char *k)
 
 static esp_err_t h_index(httpd_req_t *req)
 {
-    REQUIRE_AUTH(req);
+    /* the page itself holds no data; with the old API switched off it is served freely and its calls fail */
+    if (at_access_legacy_enabled() && !legacy_authorised(req)) return ESP_OK;
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
     return httpd_resp_send(req, index_html_start, index_html_end - index_html_start - 1);
@@ -495,6 +684,9 @@ static esp_err_t h_ota(httpd_req_t *req)
     }
     char *buf = malloc(OTA_CHUNK);
     if (!buf) return httpd_resp_send_500(req);
+    mbedtls_sha256_context sha; /* a signed update is hashed as it arrives (the image is too big to hold) */
+    mbedtls_sha256_init(&sha);
+    mbedtls_sha256_starts(&sha, 0);
 
     size_t have = 0;
     while (have < OTA_DESC_END) {
@@ -502,14 +694,17 @@ static esp_err_t h_ota(httpd_req_t *req)
         if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
         if (r <= 0) {
             free(buf);
+            mbedtls_sha256_free(&sha);
             return ESP_FAIL;
         }
         have += (size_t)r;
     }
+    mbedtls_sha256_update(&sha, (unsigned char *)buf, have);
     esp_app_desc_t desc;
     memcpy(&desc, buf + OTA_DESC_OFFSET, sizeof(desc));
     if (desc.magic_word != ESP_APP_DESC_MAGIC_WORD) {
         free(buf);
+        mbedtls_sha256_free(&sha);
         return send_error(req, "400 Bad Request", "That file isn't a Hearth firmware image.");
     }
     char incoming[sizeof(desc.version) + 1];
@@ -523,11 +718,13 @@ static esp_err_t h_ota(httpd_req_t *req)
         snprintf(msg, sizeof(msg), "RoamOS %s is older than the %s running now. Tick \"Allow an older version\" to roll back.",
                  incoming, running);
         free(buf);
+        mbedtls_sha256_free(&sha);
         return send_error(req, "409 Conflict", msg);
     case AT_UPDATE_NOT_ROAMOS:
         snprintf(msg, sizeof(msg), "Version \"%s\" isn't a RoamOS version, so it can't be checked. Tick \"Allow an older version\" to install it anyway.",
                  incoming);
         free(buf);
+        mbedtls_sha256_free(&sha);
         return send_error(req, "409 Conflict", msg);
     case AT_UPDATE_OK:
         break;
@@ -539,6 +736,7 @@ static esp_err_t h_ota(httpd_req_t *req)
     esp_ota_handle_t h;
     if (esp_ota_begin(part, req->content_len, &h) != ESP_OK) {
         free(buf);
+        mbedtls_sha256_free(&sha);
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "ota begin failed");
     }
     bool ok = esp_ota_write(h, buf, have) == ESP_OK;
@@ -550,11 +748,29 @@ static esp_err_t h_ota(httpd_req_t *req)
             ok = false;
             break;
         }
+        mbedtls_sha256_update(&sha, (unsigned char *)buf, (size_t)r);
         left -= (size_t)r;
     }
     free(buf);
-    if (!ok || esp_ota_end(h) != ESP_OK || esp_ota_set_boot_partition(part) != ESP_OK) {
+    uint8_t digest[32];
+    mbedtls_sha256_finish(&sha, digest);
+    mbedtls_sha256_free(&sha);
+    if (!ok || esp_ota_end(h) != ESP_OK) {
         if (!ok) esp_ota_abort(h);
+        ESP_LOGE(TAG, "OTA failed");
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "firmware rejected");
+    }
+    if (s_who.pending) { /* the signature covers the whole image, so it can only be checked now: before booting it */
+        char hex[65];
+        for (int i = 0; i < 32; i++) snprintf(hex + i * 2, 3, "%02x", digest[i]);
+        const char *serr = at_access_verify(&s_who.hdr, s_who.user.pub, s_who.method, s_who.path, hex);
+        s_who.pending = false;
+        if (serr) {
+            ESP_LOGE(TAG, "OTA signature check failed (%s), not booting the new image", serr);
+            return send_auth_error(req, "401 Unauthorized", serr, NULL);
+        }
+    }
+    if (esp_ota_set_boot_partition(part) != ESP_OK) {
         ESP_LOGE(TAG, "OTA failed");
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "firmware rejected");
     }
@@ -562,6 +778,218 @@ static esp_err_t h_ota(httpd_req_t *req)
     send_ok(req, true);
     schedule_restart(1000);
     return ESP_OK;
+}
+
+/* ---- /api/auth/... (docs/API_SPEC.md §5.1, §6, §7) -------------------------------------------------------- */
+
+static esp_err_t h_hello(httpd_req_t *req)
+{
+    cJSON *o = cJSON_CreateObject();
+    char name[40];
+    at_settings_display_name(name, sizeof(name));
+    if (!name[0]) at_settings_hostname(name, sizeof(name));
+    cJSON_AddStringToObject(o, "device_id", at_access_device_id());
+    cJSON_AddStringToObject(o, "name", name);
+    cJSON_AddStringToObject(o, "version", esp_app_get_description()->version);
+    cJSON_AddBoolToObject(o, "claimed", at_access_has_admin());
+    cJSON_AddStringToObject(o, "fingerprint", ""); /* no TLS yet: the signed API is on plain HTTP for now */
+    cJSON_AddStringToObject(o, "transport", "http");
+    cJSON_AddBoolToObject(o, "legacy", at_access_legacy_enabled());
+    return send_json(req, o);
+}
+
+static esp_err_t h_nonce(httpd_req_t *req)
+{
+    char n[AT_NONCE_LEN + 1];
+    at_access_nonce_new(n);
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "nonce", n);
+    cJSON_AddNumberToObject(o, "ttl", AT_NONCE_TTL_S);
+    return send_json(req, o);
+}
+
+/* A request that is signed but not by a user in the table yet (claim, redeem): read its body, and check the
+ * signature with `pub_from` (which gets the parsed body and fills in the key). 0 = ok, else the status was sent. */
+typedef const char *(*key_from_body_t)(cJSON *body, uint8_t pub[AT_AUTH_PUBKEY_LEN]);
+
+static cJSON *open_unregistered(httpd_req_t *req, key_from_body_t pub_from, uint8_t pub[AT_AUTH_PUBKEY_LEN])
+{
+    char hv[256];
+    bool present;
+    if (!signed_header(req, hv, sizeof(hv), &present)) {
+        send_auth_error(req, "401 Unauthorized", "auth_required", NULL);
+        return NULL;
+    }
+    at_auth_header_t h;
+    const char *err = at_access_open(hv, &h);
+    if (err) {
+        send_auth_error(req, "401 Unauthorized", err, NULL);
+        return NULL;
+    }
+    size_t n = 0;
+    char *body = recv_all(req, 2048, &n);
+    if (!body) {
+        send_auth_error(req, "400 Bad Request", "bad_body", NULL);
+        return NULL;
+    }
+    char hex[65];
+    at_auth_sha256_hex((const uint8_t *)body, n, hex);
+    cJSON *j = cJSON_Parse(body);
+    free(body);
+    if (!j || (err = pub_from(j, pub)) != NULL) {
+        cJSON_Delete(j);
+        send_auth_error(req, "400 Bad Request", err ? err : "bad_body", NULL);
+        return NULL;
+    }
+    char kid[AT_AUTH_KID_LEN + 1];
+    at_auth_key_id(pub, kid);
+    if (strcmp(kid, h.kid) != 0 || (err = at_access_verify(&h, pub, http_method_str(req->method), req->uri, hex)) != NULL) {
+        cJSON_Delete(j);
+        send_auth_error(req, "401 Unauthorized", err ? err : "bad_signature", NULL);
+        return NULL;
+    }
+    return j;
+}
+
+static const char *key_from_pubkey_field(cJSON *body, uint8_t pub[AT_AUTH_PUBKEY_LEN])
+{
+    const char *k = jstr(body, "pubkey");
+    if (!k || at_b64url_decode(k, strlen(k), pub, AT_AUTH_PUBKEY_LEN) != AT_AUTH_PUBKEY_LEN || pub[0] != 0x04) return "bad_body";
+    return NULL;
+}
+
+static esp_err_t h_claim_post(httpd_req_t *req)
+{
+    uint8_t pub[AT_AUTH_PUBKEY_LEN];
+    cJSON *j = open_unregistered(req, key_from_pubkey_field, pub);
+    if (!j) return ESP_OK;
+    const char *label = jstr(j, "label");
+    char lab[AT_LABEL_MAX + 1];
+    snprintf(lab, sizeof(lab), "%s", label ? label : "");
+    cJSON_Delete(j);
+    int code = at_access_claim_start(pub, lab);
+    if (code == 409) return send_auth_error(req, "409 Conflict", "already_claimed", NULL);
+    if (code == 423) return send_auth_error(req, "423 Locked", "claim_in_progress", NULL);
+    httpd_resp_set_status(req, "202 Accepted");
+    char b[64];
+    snprintf(b, sizeof(b), "{\"state\":\"press_button\",\"window_s\":%d}", AT_CLAIM_WINDOW_S);
+    ESP_LOGW(TAG, "claim window open: press the button");
+    return send_json_str(req, b);
+}
+
+static esp_err_t h_claim_get(httpd_req_t *req)
+{
+    static const char *const names[] = {"idle", "waiting", "claimed", "timeout"};
+    char b[40];
+    snprintf(b, sizeof(b), "{\"state\":\"%s\"}", names[at_access_claim_state()]);
+    return send_json_str(req, b);
+}
+
+static const char *key_from_grant(cJSON *body, uint8_t pub[AT_AUTH_PUBKEY_LEN])
+{
+    const char *tok = jstr(body, "grant");
+    at_grant_t g;
+    if (!tok || at_auth_grant_peek(tok, &g) != AT_AUTH_OK) return "malformed";
+    memcpy(pub, g.key, AT_AUTH_PUBKEY_LEN);
+    return NULL;
+}
+
+static esp_err_t h_redeem(httpd_req_t *req)
+{
+    uint8_t pub[AT_AUTH_PUBKEY_LEN];
+    cJSON *j = open_unregistered(req, key_from_grant, pub);
+    if (!j) return ESP_OK;
+    char tok[640];
+    const char *t = jstr(j, "grant");
+    snprintf(tok, sizeof(tok), "%s", t ? t : "");
+    cJSON_Delete(j);
+    const char *err = at_access_redeem(tok, pub);
+    if (err) {
+        const char *st = "400 Bad Request";
+        if (!strcmp(err, "unknown_signer") || !strcmp(err, "bad_signature")) st = "401 Unauthorized";
+        else if (!strcmp(err, "wrong_device") || !strcmp(err, "wrong_key")) st = "403 Forbidden";
+        else if (!strcmp(err, "already_used") || !strcmp(err, "table_full")) st = "409 Conflict";
+        else if (!strcmp(err, "expired")) st = "410 Gone";
+        return send_auth_error(req, st, err, NULL);
+    }
+    at_user_t u;
+    char kid[AT_AUTH_KID_LEN + 1];
+    at_auth_key_id(pub, kid);
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddStringToObject(o, "kid", kid);
+    if (at_access_user_find(kid, &u)) cJSON_AddStringToObject(o, "perm", at_perm_name((at_perm_t)u.perm));
+    return send_json(req, o);
+}
+
+static esp_err_t h_me(httpd_req_t *req)
+{
+    REQUIRE_SIGNED(req);
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "kid", s_who.user.kid);
+    cJSON_AddStringToObject(o, "label", s_who.user.label);
+    cJSON_AddStringToObject(o, "perm", at_perm_name((at_perm_t)s_who.user.perm));
+    cJSON_AddNumberToObject(o, "exp", (double)s_who.user.exp);
+    return send_json(req, o);
+}
+
+static esp_err_t h_users_list(httpd_req_t *req)
+{
+    REQUIRE_SIGNED(req);
+    cJSON *arr = cJSON_CreateArray();
+    for (int i = 0; i < at_access_user_count(); i++) {
+        at_user_t u;
+        if (!at_access_user_at(i, &u)) continue;
+        char pub[100];
+        at_b64url_encode(u.pub, AT_AUTH_PUBKEY_LEN, pub, sizeof(pub));
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "kid", u.kid);
+        cJSON_AddStringToObject(o, "pub", pub);
+        cJSON_AddStringToObject(o, "perm", at_perm_name((at_perm_t)u.perm));
+        cJSON_AddStringToObject(o, "label", u.label);
+        cJSON_AddNumberToObject(o, "exp", (double)u.exp);
+        cJSON_AddStringToObject(o, "by", u.by);
+        cJSON_AddItemToArray(arr, o);
+    }
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddItemToObject(o, "users", arr);
+    return send_json(req, o);
+}
+
+static esp_err_t h_user_delete(httpd_req_t *req)
+{
+    REQUIRE_SIGNED(req);
+    const char *kid = req->uri + strlen("/api/auth/users/");
+    if (strlen(kid) != AT_AUTH_KID_LEN) return send_auth_error(req, "400 Bad Request", "bad_kid", NULL);
+    switch (at_access_user_remove(kid)) {
+    case 0: return send_ok(req, true);
+    case 1: return send_auth_error(req, "404 Not Found", "unknown_key", NULL);
+    default: return send_auth_error(req, "409 Conflict", "last_admin", NULL);
+    }
+}
+
+static esp_err_t h_grant_revoke(httpd_req_t *req)
+{
+    REQUIRE_SIGNED(req);
+    cJSON *j = read_json(req);
+    const char *gid = j ? jstr(j, "gid") : NULL;
+    bool ok = gid && gid[0] && strlen(gid) < 24;
+    if (ok) at_access_gid_burn(gid);
+    cJSON_Delete(j);
+    return ok ? send_ok(req, true) : send_auth_error(req, "400 Bad Request", "bad_body", NULL);
+}
+
+/* POST /api/auth/legacy {"enabled":false} switches the old unauthenticated API off (§3). Needs an admin to exist. */
+static esp_err_t h_legacy(httpd_req_t *req)
+{
+    REQUIRE_SIGNED(req);
+    cJSON *j = read_json(req);
+    bool have = j && cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(j, "enabled"));
+    bool en = have && jbool(j, "enabled", true);
+    cJSON_Delete(j);
+    if (!have) return send_auth_error(req, "400 Bad Request", "bad_body", NULL);
+    if (at_access_legacy_set(en) != 0) return send_auth_error(req, "409 Conflict", "no_admin", NULL);
+    return send_ok(req, true);
 }
 
 /* Captive portal: while the setup AP is up, send unknown URLs to the UI. */
@@ -578,7 +1006,8 @@ esp_err_t at_web_start(void)
         return ESP_OK;
     }
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 20;
+    cfg.max_uri_handlers = 32;
+    cfg.uri_match_fn = httpd_uri_match_wildcard; /* one route (DELETE users/<kid>) uses a wildcard */
     cfg.stack_size = 8192;
     cfg.lru_purge_enable = true;
     cfg.recv_wait_timeout = 20;
@@ -600,6 +1029,16 @@ esp_err_t at_web_start(void)
         {.uri = "/api/reboot", .method = HTTP_POST, .handler = h_reboot},
         {.uri = "/api/factory_reset", .method = HTTP_POST, .handler = h_factory},
         {.uri = "/api/ota", .method = HTTP_POST, .handler = h_ota},
+        {.uri = "/api/hello", .method = HTTP_GET, .handler = h_hello},
+        {.uri = "/api/auth/nonce", .method = HTTP_GET, .handler = h_nonce},
+        {.uri = "/api/auth/claim", .method = HTTP_POST, .handler = h_claim_post},
+        {.uri = "/api/auth/claim", .method = HTTP_GET, .handler = h_claim_get},
+        {.uri = "/api/auth/redeem", .method = HTTP_POST, .handler = h_redeem},
+        {.uri = "/api/auth/me", .method = HTTP_GET, .handler = h_me},
+        {.uri = "/api/auth/users", .method = HTTP_GET, .handler = h_users_list},
+        {.uri = "/api/auth/users/*", .method = HTTP_DELETE, .handler = h_user_delete},
+        {.uri = "/api/auth/grant-revoke", .method = HTTP_POST, .handler = h_grant_revoke},
+        {.uri = "/api/auth/legacy", .method = HTTP_POST, .handler = h_legacy},
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &uris[i]));
