@@ -49,9 +49,15 @@ cloudlink: test_cloudlink
 test_cloudlink: test_cloudlink.c ../components/at_cloudlink/at_cloudlink_policy.c
 	$(CC) $(CFLAGS) -I../components/at_cloudlink/include test_cloudlink.c ../components/at_cloudlink/at_cloudlink_policy.c -o $@
 
+fwupdate: test_fwupdate
+	./test_fwupdate
+
+test_fwupdate: test_fwupdate.c ../components/at_fwupdate/at_fwupdate_policy.c ../components/at_core/at_version.c
+	$(CC) $(AUTH_CFLAGS) -I../components/at_fwupdate/include test_fwupdate.c ../components/at_fwupdate/at_fwupdate_policy.c ../components/at_core/at_version.c $(CJSON)/cJSON.c -o $@
+
 auth-vectors:
 	cd .. && python3 host_tests/gen_auth_vectors.py
 
 clean:
-	rm -f test_main test_auth test_access test_cloudlink
+	rm -f test_main test_auth test_access test_cloudlink test_fwupdate
 	rm -rf build

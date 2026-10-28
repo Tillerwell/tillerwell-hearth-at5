@@ -456,6 +456,8 @@ static bool run_cmd(const cJSON *j)
         ok = v && set_display_name(v);
     } else if (!strcmp(c, "factory_reset")) {
         at_settings_factory_reset_soon(); /* wipes Wi-Fi and settings, restarts into setup mode */
+    } else if (!strcmp(c, "reboot")) {
+        schedule_restart(1500); /* long enough for the cloud ack to leave first */
     } else if (!strcmp(c, "freeze")) {
         at_app_set_freeze(jbool(j, "enabled", false));
     } else if (!strcmp(c, "freeze_target")) {

@@ -110,7 +110,7 @@ Levels are ordered: `view` < `control` < `manager` < `admin` (cloud plan Q8).
 |---|---|
 | control | `start_preheat`, `stop`, `auto`, `auto_target`, `set_time`, `tank_level`, `tank_filled` |
 | manager | `auto_range`, `hysteresis`, `preheat_temp`, `preheat_minutes`, `timezone`, `display_name`, `fuel_price`, `fuel_factor`, `fuel_rates`, `tank_capacity` |
-| admin | `factory_reset`, and **any command not listed** (fail closed) |
+| admin | `factory_reset`, `reboot`, `ota` (cloud only, §9.7), and **any command not listed** (fail closed) |
 
 `GET /api/hello` (public) tells a phone what it is talking to before it holds a key: `{"device_id","name","version","claimed":true|false,"fingerprint"}`.
 
@@ -213,7 +213,7 @@ The box answers every command it can name with exactly one ack: `done` once the 
 ### 9.3 Status, state and events
 
 - `status`: the plain text `online`, retained, QoS 1; the broker publishes `offline` as the box's Last Will. A deliberate stop (the link removed with `DELETE /api/cloud`) publishes `offline` itself first, since a clean disconnect does not fire the will.
-- `state`: the same JSON as `GET /api/status`, plus `"firmware":"<version>"` as its first field, retained, QoS 1. Sent on connect, whenever the run state, fault code, run mode, burner or Auto changes, and at least every 15 s.
+- `state`: the same JSON as `GET /api/status`, plus `"firmware":"<version>"` as its first field (and `"ota_error":"<code>"` after it when the last remote update failed, §9.7), retained, QoS 1. Sent on connect, whenever the run state, fault code, run mode, burner or Auto changes, and at least every 15 s.
 - `event`: `{"kind":"fault"|"refused"|"local_start"|"local_stop"|…, …}`. Firmware 1.0030 sends `fault` (`code`, `name`, once when a fault appears) and `refused` (`id`). `local_start` and `local_stop` are reserved and not sent yet.
 
 ### 9.4 Keys the cloud knows
@@ -230,6 +230,40 @@ The website keeps each enrolled box's admin public keys and the invited keys the
 - **Backoff.** After the f-th failure in a row the next attempt waits 5 s × 2^(f−1), capped at 300 s, plus up to 25 % random spread. A connection that stayed up 60 s or more counts as a success, so the next drop starts again at 5 s on the endpoint then in use; a shorter one counts as one more failure.
 - **Never in the way.** The client runs in its own tasks, below the thermostat and the heater bridge. Commands are verified and carried out one at a time in the client's supervisor task, not in the MQTT task; at most 4 wait, and a fifth is dropped. A heater with no account, no internet or a dead broker behaves exactly as before.
 - **Diagnostics.** `GET /api/info` carries a `cloud` object: `state` (`off`, `waiting`, `connecting`, `online`, `backoff`), `endpoint`, `failures`, `connects`, `commands_ok`, `commands_refused`, `heap_at_connect` and `heap_min` (lowest free heap since boot, sampled while the client runs).
+
+### 9.6 Signed requests to the website (apps away from home)
+
+The apps hold no website login. When a phone cannot reach its box on the local network it reads the box's last state and manages cloud grants with requests signed by the **same user key** the box knows (an admin key from enrolment, §8, or an invited key the website has registered, §9.4). There is no nonce round trip; a timestamp limits replay instead.
+
+String to sign, five lines joined with `\n`, no trailing newline:
+
+```
+HEARTH-READ-1
+<device id>
+<method, upper case>
+<path: /api/m/hearth/public/devices/<device id>/…, no query string>
+<ts: Unix seconds, the phone's clock>
+```
+
+Header: `Hearth-Auth: v1 kid=<kid> ts=<ts> sig=<base64url signature>`. The website accepts it when `|now − ts| ≤ 120` and the signature verifies with a key it knows for that device (refusals: `auth_required`, `expired`, `unknown_signer`, `bad_signature`, all 401).
+
+| Route | Needs | Answer |
+|---|---|---|
+| `GET …/devices/<id>/state` | any known key | `{"online","last_seen_at","state","state_at","firmware_version","perm"}`; `state` is the box's last `state` message (§9.3) |
+| `DELETE …/devices/<id>/grants/<kid>` | an admin key | `{"revoked":"<kid>"}`; the key's cloud commands are refused from then on |
+
+Commands still go as §9.1 messages to `POST …/devices/<id>/commands`; `GET …/commands/<command id>` gives the outcome. The website decides nothing about the heater: a refused read only stops the phone seeing state through the cloud.
+
+### 9.7 Reboot and firmware update from away (firmware 1.0032)
+
+Both are admin commands in the §9.1 envelope. A phone away from the box's network can read the running version (the `firmware` field of `state`, also `firmware_version` in the website's state reply), restart the box, and install a release.
+
+- `{"cmd":"reboot"}` (also accepted by `POST /api/cmd`): the box acks `done` and restarts 1.5 s later. It is back on the cloud once Wi-Fi and the broker reconnect (about a minute).
+- `{"cmd":"ota","version":"1.0032","url":"https://github.com/Tillerwell/tillerwell-hearth-at5/releases/download/<tag>/hearth-1.0032.bin","sha256":"<64 lower-case hex>","size":2400000}`. The box fetches the image itself over HTTPS (certificates checked against the standard root bundle). **The admin's signature on the command is what authorises the image, not the URL**: the box installs the image only if its SHA-256 and size equal the signed values, and the app takes both from the release asset's `digest` and `size` in GitHub's API.
+  - Checked before acking, in this order, with `rejected` and the reason: `malformed` (fields missing or the wrong shape), `bad_url` (anything but `https://github.com/Tillerwell/tillerwell-hearth-at5/releases/download/<tag>/hearth-<version>.bin`, with the same version), `older` (no remote rollback; a re-install of the same version is allowed; use `POST /api/ota?allow_older=1` on the local network to roll back), `too_big` (larger than the update partition), `busy` (one update at a time).
+  - Otherwise the box acks `done` (meaning accepted), says `offline` and drops the cloud link to free the memory for the download's own TLS session, downloads, checks the image's version string against the command, its size and its SHA-256 (read back from flash before the image can be chosen to boot), then boots it. There is no ack at the end: the app sees `state.firmware` change when the box reconnects.
+  - If the update fails the box stays on the old image, reconnects, includes `"ota_error":"<code>"` in `state` until the next restart and sends the `event` `{"kind":"ota_failed","name":"<code>"}`. Codes: `download_failed`, `wrong_version`, `size_mismatch`, `bad_hash`, `bad_image`, `no_memory`.
+  - The local route `POST /api/ota` (§5.2) is unchanged and is still how a phone on the same network sends an image.
 
 ## 10. Test vectors
 

@@ -9,6 +9,7 @@
 #include "at_app.h"
 #include "at_cloud.h"
 #include "at_cloudlink_policy.h"
+#include "at_fwupdate.h"
 #include "at_net.h"
 #include "cJSON.h"
 #include "esp_heap_caps.h"
@@ -53,6 +54,8 @@ static uint32_t s_last_fault;
 static bool s_fault_known;
 static int64_t s_state_s;
 static uint8_t s_state_key[4];
+static bool s_ota_go;          // an `ota` command was accepted: stop the link, then let at_fwupdate download
+static bool s_ota_reported;    // the last failed update has been sent as an event
 
 static int64_t now_s(void) { return esp_timer_get_time() / 1000000; }
 
@@ -123,10 +126,12 @@ static void publish_state(void)
     if (!js) return;
     if (js[0] == '{') {
         const char *ver = esp_app_get_description()->version;
-        size_t n = strlen(js) + strlen(ver) + 20;
+        const char *oe = at_fwupdate_last_error();
+        size_t n = strlen(js) + strlen(ver) + strlen(oe) + 40;
         char *out = malloc(n);
         if (out) {
-            snprintf(out, n, "{\"firmware\":\"%s\",%s", ver, js + 1);
+            if (oe[0]) snprintf(out, n, "{\"firmware\":\"%s\",\"ota_error\":\"%s\",%s", ver, oe, js + 1);
+            else snprintf(out, n, "{\"firmware\":\"%s\",%s", ver, js + 1);
             publish(s_t_state, out, true);
             free(out);
         }
@@ -158,6 +163,15 @@ static void watch_state(void)
 
 // ---- commands (spec §9.1) --------------------------------------------------------------------------------
 
+static bool cmd_is(const char *cmd_json, const char *name)
+{
+    cJSON *j = cmd_json ? cJSON_Parse(cmd_json) : NULL;
+    const cJSON *c = j ? cJSON_GetObjectItemCaseSensitive(j, "cmd") : NULL;
+    bool is = cJSON_IsString(c) && strcmp(c->valuestring, name) == 0;
+    cJSON_Delete(j);
+    return is;
+}
+
 static void handle_command(const char *msg)
 {
     at_cloud_cmd_t cmd;
@@ -168,6 +182,23 @@ static void handle_command(const char *msg)
         ESP_LOGW(TAG, "command %s refused: %s", id[0] ? id : "?", why);
         s_cmds_refused++;
         publish_ack(id, "rejected", why);
+        return;
+    }
+    // `ota` is the one command that is not a setting: the box fetches a release image itself (spec §9.7). It is
+    // acked once the request is accepted; the download follows with the link down, to leave room for its own TLS session.
+    if (cmd_is(cmd.cmd_json, "ota")) {
+        const char *no = at_fwupdate_request(cmd.cmd_json);
+        if (no) {
+            ESP_LOGW(TAG, "command %s (ota) refused: %s", id, no);
+            s_cmds_refused++;
+            publish_ack(id, "rejected", no);
+            publish_event("refused", 0, NULL, id);
+        } else {
+            ESP_LOGW(TAG, "command %s: firmware update accepted", id);
+            s_cmds_ok++;
+            s_ota_go = true;
+            publish_ack(id, "done", NULL);
+        }
         return;
     }
     // Step 8: the same door the web UI uses, and it can still say no.
@@ -338,6 +369,10 @@ static void supervisor(void *arg)
     bool has_cert = false;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(s_client ? 250 : TICK_MS));
+        if (at_fwupdate_busy()) {   // downloading: the link stays down until the box restarts or the update fails
+            s_state = "updating";
+            continue;
+        }
         uint32_t gen = at_cloud_generation();
         if (gen != seen) {
             seen = gen;
@@ -370,6 +405,17 @@ static void supervisor(void *arg)
         if (s_up) {
             s_state = "online";
             drain_commands();
+            if (s_ota_go) {
+                s_ota_go = false;
+                client_stop(true);   // says "offline", then frees the TLS session for the download
+                s_ota_reported = false;
+                if (!at_fwupdate_start()) s_next_try_s = 0;
+                continue;
+            }
+            if (!s_ota_reported && at_fwupdate_last_error()[0]) {
+                s_ota_reported = true;
+                publish_event("ota_failed", 0, at_fwupdate_last_error(), NULL);
+            }
             watch_state();
         }
     }
