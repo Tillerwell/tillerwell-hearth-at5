@@ -255,6 +255,8 @@ void at_app_clock_sntp_start(void);
 /* The state document shared by the web UI (/api/status) and the MQTT state
  * topic. Returns a malloc'd JSON string; the caller frees it. */
 char *at_app_state_json(void);
+/* Called once by at_app_start, before anything asks for the state. */
+void at_app_state_json_init(void);
 /* GET /api/fuel: the daily fuel log, newest first. Caller frees. */
 char *at_app_fuel_json(void);
 

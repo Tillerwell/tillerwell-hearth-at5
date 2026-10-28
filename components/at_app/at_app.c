@@ -274,6 +274,7 @@ esp_err_t at_app_start(void)
     s_ctl.freeze.enabled = cfg.freeze_enabled;
 
     at_app_fuel_init();
+    at_app_state_json_init();
     xTaskCreate(bridge_task, "bridge", 6144, NULL, configMAX_PRIORITIES - 4, NULL);
     xTaskCreate(ctl_task, "thermostat", 4096, NULL, 5, NULL);
     xTaskCreate(probe_task, "probe", 3072, NULL, 2, NULL);
