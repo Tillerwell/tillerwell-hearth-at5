@@ -79,7 +79,7 @@ static void update_task(void *arg)
         .crt_bundle_attach = esp_crt_bundle_attach,   // github.com and its CDN, checked against the standard roots
         .timeout_ms = 20000,
         .buffer_size = 2048,                          // the CDN redirect carries a long signed URL
-        .buffer_size_tx = 1024,
+        .buffer_size_tx = 3072,                       // the GET line alone is ~930 bytes of signed CDN URL; 1024 failed it
     };
     esp_https_ota_config_t oc = {.http_config = &hc};
     esp_https_ota_handle_t h = NULL;
