@@ -556,6 +556,64 @@ static void test_run_mode(void)
     CHECK(sn.run_mode == AT_RUN_THERMOSTAT);
 }
 
+static void test_controller_stop_during_hearth_run(void)
+{
+    printf("controller stop held back during a Hearth run\n");
+    static sim_t s;
+    static at_core_t c;
+    bus_setup(&s, &c);
+    sim_run(&s, &c, 3000);
+
+    /* App temperature mode: the Hearth starts the heater, the controller
+     * shows preheat and stops it later.  The heater keeps running and the
+     * stop does not count as the controller taking control. */
+    CHECK(at_cmd_start_thermostat(&c, s.now));
+    sim_run(&s, &c, 3000);
+    at_snapshot_t sn;
+    at_core_snapshot(&c, s.now, &sn);
+    uint32_t seq = sn.panel_control_seq;
+    CHECK(s.heater_state == 2 && sn.hearth_run);
+    panel_control(&s, AT_TYPE_STOP, NULL, 0);
+    sim_run(&s, &c, 1000);
+    at_core_snapshot(&c, s.now, &sn);
+    CHECK(s.heater_state == 2 && count_type(&s, AT_TYPE_STOP) == 0);
+    CHECK(sn.hearth_run && sn.panel_control_seq == seq);
+
+    /* a Hearth stop ends the run; the controller's stops pass again */
+    CHECK(at_cmd_stop(&c, s.now));
+    sim_run(&s, &c, 3000);
+    at_core_snapshot(&c, s.now, &sn);
+    CHECK(s.heater_state == 0 && !sn.hearth_run);
+    panel_control(&s, AT_TYPE_STOP, NULL, 0);
+    sim_run(&s, &c, 1000);
+    CHECK(count_type(&s, AT_TYPE_STOP) == 2);
+
+    /* a Hearth preheat is held the same way */
+    CHECK(at_cmd_start_preheat(&c, 60, s.now));
+    sim_run(&s, &c, 4000);
+    panel_control(&s, AT_TYPE_STOP, NULL, 0);
+    sim_run(&s, &c, 1000);
+    CHECK(s.heater_state == 2 && count_type(&s, AT_TYPE_STOP) == 2);
+
+    /* a selection on the controller takes the run over, and its stop then works */
+    static const uint8_t thermostat[] = {0x00, 0x22};
+    panel_control(&s, AT_TYPE_START, thermostat, 2);
+    sim_run(&s, &c, 1000);
+    at_core_snapshot(&c, s.now, &sn);
+    CHECK(!sn.hearth_run);
+    panel_control(&s, AT_TYPE_STOP, NULL, 0);
+    sim_run(&s, &c, 1000);
+    CHECK(s.heater_state == 0 && count_type(&s, AT_TYPE_STOP) == 3);
+
+    /* Bypass gives the controller its stop back */
+    CHECK(at_cmd_start_thermostat(&c, s.now));
+    sim_run(&s, &c, 3000);
+    at_core_set_bypass(&c, true);
+    panel_control(&s, AT_TYPE_STOP, NULL, 0);
+    sim_run(&s, &c, 1000);
+    CHECK(s.heater_state == 0 && count_type(&s, AT_TYPE_STOP) == 4);
+}
+
 static void test_bypass(void)
 {
     printf("bypass\n");
@@ -1574,6 +1632,7 @@ int main(void)
     test_injection_no_reply();
     test_manual_stop_panel_handoff();
     test_run_mode();
+    test_controller_stop_during_hearth_run();
     test_bypass();
     test_standalone();
     test_ext_filter_and_pubr0();

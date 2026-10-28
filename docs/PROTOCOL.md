@@ -301,6 +301,19 @@ one of its restarts (`ff xx`, `00 01`-`00 03`), counts as thermostat; any
 other start is a preheat time. A controller stop leaves it unchanged,
 since its thermostat stops and restarts the heater by itself.
 
+**Controller stops a Hearth run later (2026-10-28, no capture):** with
+app temperature mode (Hearth Auto) on, the controller shows preheat and
+later shuts the heater down, presumably when its own preheat time runs
+out. Its stop was relayed to the heater and, counting as the controller
+taking control, also disarmed Auto, so nothing restarted the heater. From
+the next release, while a run the Hearth started is in progress
+(`hearth_run` in `/api/status`), controller stops are not relayed (`B` in
+the bus log) and do not disarm Auto. The run ends with a Hearth stop, or
+passes to the controller when it starts the heater itself (`00 22`, a
+preheat time, or a restart). Bypass relays its stops as before. The cost:
+the controller's own off button does nothing during a Hearth run. Untested
+on the heater; a capture should show `B` stops where the shutdowns were.
+
 ## Extended diagnostic-mode telemetry (dev `0x02`, type `0x01`, 58-byte payload)
 
 The vendor's own Windows diagnostic tool ("Autoterm Test") talks to the

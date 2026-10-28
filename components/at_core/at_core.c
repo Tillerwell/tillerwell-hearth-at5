@@ -154,10 +154,19 @@ static void relay_cb(at_ev_kind_t kind, const uint8_t *data, size_t len, bool cr
             log_add(c, r->now, 'B', data, len, true);
             return;
         }
+        if (data[4] == AT_TYPE_STOP && c->hearth_run && !c->bypass) {
+            /* The controller treats a Hearth start as a preheat of its own
+             * and stops it later (its preheat time), which also disarmed
+             * Auto.  A run the Hearth started is the Hearth's to stop;
+             * Bypass gives the controller its stop back. */
+            log_add(c, r->now, 'B', data, len, true);
+            return;
+        }
         /* Not its own stop: that is part of the same restart cycle (stop,
          * ~50 s quiet, start again with ff ff), so the hold stays. */
         if (data[4] == AT_TYPE_START) {
             c->panel_stop_hold = false;
+            c->hearth_run = false;
             /* 00 22 is its thermostat; its restarts only come from its armed
              * thermostat; anything else is a preheat time */
             bool thermo = plen == 2 && ((data[AT_HEADER_LEN] == 0 && data[AT_HEADER_LEN + 1] == 0x22) ||
@@ -548,6 +557,7 @@ bool at_cmd_start_preheat(at_core_t *c, int minutes, uint32_t now)
         return false;
     }
     c->run_mode = AT_RUN_PREHEAT;
+    c->hearth_run = true;
     uint8_t dur[2] = {(uint8_t)(minutes >> 8), (uint8_t)(minutes & 0xFF)};
     send_panel_frame(c, AT_TYPE_PREHEAT_DUR, dur, 2, 1500, "preheat-time", false, now);
     return true;
@@ -573,17 +583,26 @@ bool at_cmd_start_thermostat(at_core_t *c, uint32_t now)
         return false;
     }
     c->run_mode = AT_RUN_THERMOSTAT;
+    c->hearth_run = true;
     return true;
 }
 
 bool at_cmd_stop(at_core_t *c, uint32_t now)
 {
-    return send_panel_frame(c, AT_TYPE_STOP, NULL, 0, 0, "stop", false, now);
+    if (!send_panel_frame(c, AT_TYPE_STOP, NULL, 0, 0, "stop", false, now)) {
+        return false;
+    }
+    c->hearth_run = false;
+    return true;
 }
 
 bool at_cmd_stop_manual(at_core_t *c, uint32_t now)
 {
-    return send_panel_frame(c, AT_TYPE_STOP, NULL, 0, 0, "stop", true, now);
+    if (!send_panel_frame(c, AT_TYPE_STOP, NULL, 0, 0, "stop", true, now)) {
+        return false;
+    }
+    c->hearth_run = false;
+    return true;
 }
 
 bool at_cmd_start_pump(at_core_t *c, uint32_t now)
@@ -618,6 +637,7 @@ void at_core_snapshot(const at_core_t *c, uint32_t now, at_snapshot_t *s)
     }
     s->standalone = panel_silent(c, now);
     s->panel_stop_hold = c->panel_stop_hold;
+    s->hearth_run = c->hearth_run;
     s->panel_control_seq = c->panel_control_seq;
     s->panel_last_control_type = c->panel_last_control_type;
     s->run_mode = c->run_mode;

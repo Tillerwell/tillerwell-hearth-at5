@@ -59,7 +59,8 @@ typedef struct {
                            (forwarded to the heater only),
                            O own poll sent while the controller is silent,
                            E heater's echo of our stop, passed on to the
-                           controller, B controller restart blocked after our stop */
+                           controller, B controller restart blocked after our stop,
+                           or its stop blocked during a run we started */
     bool crc_ok;
     uint8_t len;        /* bytes stored in data (truncated to AT_LOG_BYTES) */
     uint16_t full_len;
@@ -134,6 +135,10 @@ typedef struct {
     /* A manual Hearth stop owns the heater until the physical controller is
      * deliberately started again. */
     bool panel_stop_hold;
+    /* The current run was started by the Hearth: the controller's stops are
+     * held back until the Hearth stops it or the controller starts the
+     * heater itself. */
+    bool hearth_run;
     uint32_t panel_control_seq;
     uint8_t panel_last_control_type;
     at_run_mode_t run_mode;
@@ -224,6 +229,7 @@ typedef struct {
 
     bool bypass;
     bool panel_stop_hold;
+    bool hearth_run;
     uint32_t panel_control_seq;
     uint8_t panel_last_control_type;
     at_run_mode_t run_mode;
