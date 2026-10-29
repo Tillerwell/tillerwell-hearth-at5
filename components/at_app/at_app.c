@@ -256,6 +256,7 @@ esp_err_t at_app_start(void)
     at_port_t panel = {uart_port_read, uart_port_write, (void *)(intptr_t)PANEL_UART};
     at_core_init(&s_core, heater, panel);
     at_core_set_bypass(&s_core, cfg.bypass);
+    at_core_set_use_room_temp(&s_core, cfg.use_external_temp);
 
     at_ctl_init(&s_ctl, cfg.auto_target, cfg.freeze_target);
     at_band_t band;
@@ -577,6 +578,9 @@ void at_app_set_use_external_temp(bool on)
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
     s_ctl.use_external = on;
     xSemaphoreGive(s_ctl_lock);
+    xSemaphoreTake(s_core_lock, portMAX_DELAY);
+    at_core_set_use_room_temp(&s_core, on);
+    xSemaphoreGive(s_core_lock);
     persist(m_ext, &on);
 }
 

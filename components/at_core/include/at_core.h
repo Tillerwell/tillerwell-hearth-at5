@@ -60,7 +60,9 @@ typedef struct {
                            O own poll sent while the controller is silent,
                            E heater's echo of our stop, passed on to the
                            controller, B controller restart blocked after our stop,
-                           or its stop blocked during a run we started */
+                           or its stop blocked during a run we started,
+                           T controller's cabin temperature as rewritten for the
+                           heater (the P entry before it is what the controller sent) */
     bool crc_ok;
     uint8_t len;        /* bytes stored in data (truncated to AT_LOG_BYTES) */
     uint16_t full_len;
@@ -105,6 +107,7 @@ typedef struct {
 
     /* standalone polling */
     bool have_room;    int room_temp;       uint32_t room_ms;
+    bool use_room;     /* the room temperature replaces the controller's on the bus */
     bool polled;       uint32_t last_poll_ms;
     uint32_t hush_until_ms; /* no own polls before this: a PUBR0 handshake was just sent */
     bool cabin_sent;   uint32_t last_cabin_sent_ms;
@@ -178,10 +181,14 @@ bool at_core_enqueue(at_core_t *c, const uint8_t *frame, size_t len, uint32_t de
                      bool direct, const char *note, uint32_t now_ms);
 void at_core_set_bypass(at_core_t *c, bool on);
 
-/* Room temperature from another sensor, reported to the heater as the cabin
- * temperature while the controller is silent. Used while fresher than
- * AT_ROOM_FRESH_MS; otherwise the controller's last reading is used, if any. */
+/* Room temperature from another sensor, given to the heater as the cabin
+ * temperature: the controller's own cabin temperature reports are rewritten
+ * with it on their way through, and it is reported directly while the
+ * controller is silent. Used while fresher than AT_ROOM_FRESH_MS and while
+ * use is on (the default); otherwise the heater hears the controller's
+ * reading. Bypass passes the controller's reports through untouched. */
 void at_core_set_room_temp(at_core_t *c, float celsius, uint32_t now_ms);
+void at_core_set_use_room_temp(at_core_t *c, bool on);
 
 /* Commands (panel impersonation, sender byte 0x03). All return false if
  * nothing was queued. */
@@ -209,6 +216,9 @@ typedef struct {
     bool have_cabin;
     int cabin_temp;
     uint32_t cabin_age_ms;
+
+    bool room_to_heater;        /* the heater is being given the room temperature instead of the controller's */
+    int room_temp;              /* what it is given, whole degrees C */
 
     bool stale;                 /* status or cabin temp older than AT_STALE_AFTER_MS */
 

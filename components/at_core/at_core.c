@@ -102,6 +102,16 @@ static void note_frame(at_core_t *c, uint32_t now, bool from_heater, const uint8
     }
 }
 
+/* The room temperature, when it is on, fresh, and fits the protocol's one unsigned byte. */
+static bool room_source(const at_core_t *c, uint32_t now, int *t)
+{
+    if (!c->use_room || !c->have_room || now - c->room_ms >= AT_ROOM_FRESH_MS) {
+        return false;
+    }
+    *t = c->room_temp < 0 ? 0 : c->room_temp > 99 ? 99 : c->room_temp;
+    return true;
+}
+
 static bool panel_silent(const at_core_t *c, uint32_t now)
 {
     /* never heard: give a controller that is plugged in the first few seconds after boot to speak */
@@ -176,7 +186,21 @@ static void relay_cb(at_ev_kind_t kind, const uint8_t *data, size_t len, bool cr
         c->panel_last_control_type = data[4];
         c->panel_control_seq++;
     }
-    if (r->from_heater && crc_ok && at_is_extended_frame(data, len)) {
+    int room;
+    if (!r->from_heater && crc_ok && len == AT_HEADER_LEN + 1 + AT_CRC_LEN && data[1] == AT_DEV_PANEL &&
+        data[4] == AT_TYPE_CABIN_TEMP && !c->bypass && room_source(c, r->now, &room)) {
+        /* The heater's own thermostat runs on the temperature the controller
+         * reports; give it the better room sensor instead.  The status model
+         * below still records what the controller measured. */
+        uint8_t b = (uint8_t)room, f[AT_MAX_FRAME];
+        size_t n = at_build_frame(AT_DEV_PANEL, AT_TYPE_CABIN_TEMP, &b, 1, f);
+        if (*outlen + n <= sizeof(c->out_h)) {
+            memcpy(out + *outlen, f, n);
+            *outlen += n;
+        }
+        log_add(c, r->now, 'P', data, len, true);
+        log_add(c, r->now, 'T', f, n, true);
+    } else if (r->from_heater && crc_ok && at_is_extended_frame(data, len)) {
         log_add(c, r->now, 'F', data, len, true); /* never forwarded: confuses the panel */
     } else {
         if (*outlen + len <= sizeof(c->out_h)) {
@@ -444,15 +468,13 @@ static void try_start_injection(at_core_t *c, uint32_t now)
 
 static bool cabin_source(const at_core_t *c, uint32_t now, int *t)
 {
-    if (c->have_room && now - c->room_ms < AT_ROOM_FRESH_MS) {
-        *t = c->room_temp;
-    } else if (c->have_cabin) {
-        *t = c->cabin_temp;
-    } else {
+    if (room_source(c, now, t)) {
+        return true;
+    }
+    if (!c->have_cabin) {
         return false;
     }
-    if (*t < 0) *t = 0; /* one unsigned byte on the wire */
-    if (*t > 99) *t = 99;
+    *t = c->cabin_temp < 0 ? 0 : c->cabin_temp > 99 ? 99 : c->cabin_temp; /* one unsigned byte on the wire */
     return true;
 }
 
@@ -497,11 +519,17 @@ void at_core_set_room_temp(at_core_t *c, float celsius, uint32_t now)
     c->room_ms = now;
 }
 
+void at_core_set_use_room_temp(at_core_t *c, bool on)
+{
+    c->use_room = on;
+}
+
 void at_core_init(at_core_t *c, at_port_t heater, at_port_t panel)
 {
     memset(c, 0, sizeof(*c));
     c->heater = heater;
     c->panel = panel;
+    c->use_room = true;
     at_framer_init(&c->fh);
     at_framer_init(&c->fp);
     at_framer_init(&c->ih);
@@ -635,6 +663,7 @@ void at_core_snapshot(const at_core_t *c, uint32_t now, at_snapshot_t *s)
         s->cabin_temp = c->cabin_temp;
         s->cabin_age_ms = now - c->cabin_ms;
     }
+    s->room_to_heater = !c->bypass && room_source(c, now, &s->room_temp);
     s->standalone = panel_silent(c, now);
     s->panel_stop_hold = c->panel_stop_hold;
     s->hearth_run = c->hearth_run;

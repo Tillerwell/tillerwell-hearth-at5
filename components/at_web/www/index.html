@@ -216,7 +216,7 @@ function render(){
   $('cabin').textContent=fmt(s.cabin_temp,' °C');
   $('coolant').textContent=fmt(s.coolant_temp,' °C');
   $('battery').textContent=fmt(s.supply_voltage!=null?s.supply_voltage:s.ext_voltage,' V');
-  $('eff').textContent=s.effective_temp==null?'–':fmt(s.effective_temp,' °C')+(s.external_temp_active?' (ext)':'');
+  $('eff').textContent=s.effective_temp==null?'–':s.external_temp_active?s.effective_temp.toFixed(1)+' °C (ext)':Math.round(s.effective_temp)+' °C';
   $('elapsed').textContent=s.elapsed_min==null?'–':s.elapsed_min+' min';
   $('fault').textContent=s.fault_active?('Fault '+s.fault+': '+s.fault_name):(s.last_fault_name?('Last fault: '+s.last_fault_name+' ('+Math.round(s.last_fault_ago_s/60)+' min ago)'):'');
   if(document.activeElement!==$('pre'))$('pre').value=$('pre').value||s.preheat_minutes;

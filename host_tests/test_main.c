@@ -208,6 +208,7 @@ typedef struct {
     size_t pending_len;
     int got_frames;
     uint8_t got_types[32];
+    int heater_cabin; /* payload of the last cabin temperature report the heater received */
     uint8_t last_start[AT_MAX_FRAME]; /* the last start (type 0x01) frame, byte for byte */
     size_t last_start_len;
     int heater_state;
@@ -238,6 +239,7 @@ static void heater_cb(at_ev_kind_t k, const uint8_t *d, size_t n, bool ok, void 
     if (s->got_frames < 32) s->got_types[s->got_frames] = d[4];
     s->got_frames++;
     if (d[4] == 0x01 && n <= sizeof(s->last_start)) { memcpy(s->last_start, d, n); s->last_start_len = n; }
+    if (d[4] == 0x11 && n == 8) s->heater_cabin = d[5];
     if (s->heater_silent) return;
     uint8_t out[AT_MAX_FRAME];
     size_t on = 0;
@@ -691,6 +693,44 @@ static void test_standalone(void)
     sim_run(&s, &c, 3000);
     at_core_snapshot(&c, s.now, &sn);
     CHECK(!sn.standalone && c.own_polls == polls);
+}
+
+static void test_room_temp_to_heater(void)
+{
+    printf("room temperature replaces the controller's on its way to the heater\n");
+    static sim_t s;
+    static at_core_t c;
+    bus_setup(&s, &c);
+    sim_run(&s, &c, 4500);
+    at_snapshot_t sn;
+    at_core_snapshot(&c, s.now, &sn);
+    CHECK(s.heater_cabin == 21 && !sn.room_to_heater); /* no room temperature: the controller's goes through */
+
+    at_core_set_room_temp(&c, 17.6f, s.now);
+    sim_run(&s, &c, 2500);
+    at_core_snapshot(&c, s.now, &sn);
+    CHECK(s.heater_cabin == 18 && sn.room_to_heater && sn.room_temp == 18);
+    CHECK(sn.cabin_temp == 21);                      /* still records what the controller measured */
+    CHECK(s.panel_acks >= 2 && sn.bad_crc_panel == 0 && sn.bad_crc_heater == 0);
+
+    at_core_set_room_temp(&c, -3.0f, s.now);         /* one unsigned byte on the wire */
+    sim_run(&s, &c, 2500);
+    CHECK(s.heater_cabin == 0);
+
+    at_core_set_use_room_temp(&c, false);            /* "Use external temperature" off */
+    sim_run(&s, &c, 2500);
+    CHECK(s.heater_cabin == 21);
+    at_core_set_use_room_temp(&c, true);
+    at_core_set_bypass(&c, true);                    /* bypass relays untouched */
+    sim_run(&s, &c, 2500);
+    CHECK(s.heater_cabin == 21);
+    at_core_set_bypass(&c, false);
+    sim_run(&s, &c, 2500);
+    CHECK(s.heater_cabin == 0);
+
+    sim_run(&s, &c, AT_ROOM_FRESH_MS);               /* stale: back to the controller's */
+    at_core_snapshot(&c, s.now, &sn);
+    CHECK(s.heater_cabin == 21 && !sn.room_to_heater);
 }
 
 static void test_ext_filter_and_pubr0(void)
@@ -1635,6 +1675,7 @@ int main(void)
     test_controller_stop_during_hearth_run();
     test_bypass();
     test_standalone();
+    test_room_temp_to_heater();
     test_ext_filter_and_pubr0();
     test_strays_not_to_panel();
     test_fault_tracking();

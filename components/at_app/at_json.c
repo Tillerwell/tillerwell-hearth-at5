@@ -241,6 +241,9 @@ static char *build_state_json(void)
     cJSON_AddBoolToObject(o, "external_temp_active", v.have_effective_temp && v.effective_is_external);
     add_num_or_null(o, "external_temp", v.have_external, v.external_temp);
     cJSON_AddBoolToObject(o, "use_external_temp", v.use_external_temp);
+    /* what the heater's own thermostat is told, controller's reading or the room sensor in its place */
+    add_num_or_null(o, "heater_temp", s->room_to_heater || s->have_cabin, s->room_to_heater ? s->room_temp : s->cabin_temp);
+    cJSON_AddBoolToObject(o, "heater_temp_external", s->room_to_heater);
 
     cJSON_AddBoolToObject(o, "auto_enabled", v.auto_enabled);
     cJSON_AddNumberToObject(o, "auto_target", v.auto_target);
