@@ -121,6 +121,7 @@ typedef struct {
     bool auto_enabled;
     float auto_target;
     float auto_low, auto_high, hyst_min, hyst_max;
+    float auto_start_at;
     float preheat_temp;
     bool freeze_enabled;
     float freeze_target;

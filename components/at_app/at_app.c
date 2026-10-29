@@ -267,7 +267,7 @@ esp_err_t at_app_start(void)
                               band.hyst_max < 1 ? 1 : (band.hyst_max > 3 ? 3 : band.hyst_max));
     } else {
         at_ctl_set_auto_range(&s_ctl, 19.0f, 22.0f); /* narrowest default band that fits the default hysteresis */
-        at_ctl_set_hysteresis(&s_ctl, 2.0f, 1.0f);   /* defaults: start 2 C below the range, stop 1 C above it */
+        at_ctl_set_hysteresis(&s_ctl, 2.0f, 1.0f);   /* defaults: the range is at least 3 C wide */
     }
     s_preheat_temp = at_settings_preheat_temp_load();
     s_ctl.use_external = cfg.use_external_temp;
@@ -307,6 +307,7 @@ void at_app_view(at_view_t *v)
     v->auto_high = s_ctl.autot.high;
     v->hyst_min = s_ctl.autot.hyst_min;
     v->hyst_max = s_ctl.autot.hyst_max;
+    v->auto_start_at = at_ctl_auto_start_at(&s_ctl);
     v->preheat_temp = s_preheat_temp;
     v->freeze_enabled = s_ctl.freeze.enabled;
     v->freeze_target = s_ctl.freeze.target;

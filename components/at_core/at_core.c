@@ -599,13 +599,15 @@ bool at_cmd_set_preheat_duration(at_core_t *c, int minutes, uint32_t now)
     return send_panel_frame(c, AT_TYPE_PREHEAT_DUR, dur, 2, 0, "preheat-time", false, now);
 }
 
-/* The Comfort Controller selects thermostat mode with its default 34-minute
- * start value (00 22).  It retains the selected mode locally, so injecting
- * a different "unlimited" value makes the controller show preheat even
- * though the heater accepts the start.  Mirror the controller's own frame. */
+/* The heater has no thermostat of its own: the start payload is a run time in
+ * minutes (00 22 ran 34 min, then the heater stopped itself whatever the cabin
+ * temperature).  ff fb is the controller's own "thermostat, run indefinitely"
+ * start, so the run lasts until the Hearth's thermostat stops it at the top of
+ * the band, with no stop/restart short cycles in between.  A connected
+ * controller shows preheat for any start it did not send, 00 22 included. */
 bool at_cmd_start_thermostat(at_core_t *c, uint32_t now)
 {
-    static const uint8_t m[2] = {0x00, 0x22};
+    static const uint8_t m[2] = {0xFF, 0xFB};
     c->panel_stop_hold = false;
     if (!send_panel_frame(c, AT_TYPE_START, m, 2, 0, "thermostat", false, now)) {
         return false;

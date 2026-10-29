@@ -114,28 +114,45 @@ isn't fully nailed down; test and watch the bus rather than assuming.
 
 **Start, thermostat mode:**
 ```
-type01, payload = 00 22      (Comfort Controller's thermostat selection)
+type01, payload = ff fb      (thermostat, run indefinitely)
 ```
-The start payload is controller-specific: the Comfort Controller retains its
-selected mode locally, so Hearth must send the same frame it observes from
-that controller. Captured off the bus on 2026-10-27 (Autoterm Flow with its
-own Comfort Controller):
+**Settled (2026-10-29): the heater has no thermostat mode.**
+The `type01` payload is a run time in minutes. The heater runs that long and
+then stops itself, whatever the cabin temperature. "Thermostat" exists only in
+the controller (or the Hearth), which starts and stops timed runs on its own
+room reading. The heater never receives a set temperature. Sources:
 
-| Panel start | `type01` payload | What the heater did |
+- Autoterm BINAR-5S operation manual (the Flow 5D is the renamed Binar-5S),
+  Characteristics: "Duration of one operating cycle, minutes: 20...120".
+  <https://cdn.autoterm.com/Manuals/Heaters/Operation%20Binar%205S/Binar-5S-Operation-Manual-EN-v03.2018.pdf>
+- Comfort Control manual v06.2021, 3.3 Heating: Flow 5 thermostat mode
+  "Temperature is read by control panel". Default band +1 / -2 degC. Work time
+  30 min to infinity. <https://nakatanenga.de/media/67/8d/81/1693557133/comfort-control-en-v06-2021-v1-20-a4.pdf>
+- sinise/autoterm-heater-control `docs/PROTOCOL.md`: no setpoint was found on
+  the wire either. <https://github.com/sinise/autoterm-heater-control>
+
+| Start | `type01` payload | What the heater did |
 |---|---|---|
-| Thermostat | `00 22` | panel shows thermostat |
-| (experimental box payload) | `ff fb` | heater accepts it, but the panel shows preheating |
-| (a panel start right after the box's run) | `00 03` | ran 3 min, then cooled down with no stop and no fault |
+| Controller, thermostat, run indefinitely | `ff fb` | kept running until stopped (RoamOS 1.0008 to 1.0015) |
+| Controller restarts | `ff fd`, `ff fc`, `ff ff` | restart of its armed thermostat |
+| Hearth up to RoamOS 1.0037 | `00 22` | ran 34 min + ignition (37-38 min), then stopped by itself, cabin still below the band's top (seen again 2026-10-29) |
+| Controller start right after a Hearth run | `00 03` | ran 3 min, then cooled down with no stop and no fault |
 | Preheat, default | `00 1e` | 30 min preheat |
 
-The panel may send additional frames around a thermostat selection; their
-meaning is not yet known. Hearth mirrors the observed `00 22` start frame.
+Hearth sends `ff fb` so a thermostat run only ends with the Hearth's own stop
+at the top of the band. A timed start would make the heater stop part-way
+through heating and restart, which is a short cycle that wears the heater. Do
+not go back to `00 22`. RoamOS 1.0016 to 1.0037 did that so the controller
+would show thermostat, but the controller shows preheat for any start it did
+not send itself (see "Start echo" and "The mode is not stored in the heater"
+below), so there was nothing to gain from it.
 
-**Correction (2026-10-27):** an earlier interpretation treated `00 22` as a
-34-minute preheat duration. A direct Comfort Controller capture shows that it
-is also that controller's thermostat start frame; the controller keeps the
-mode selection locally. Do not substitute another start payload merely because
-it appears to encode a duration.
+The panel also sent `type21, payload 05 a0` three times around a thermostat
+selection (heater replied `01 5b 00`). Its meaning is unknown, and the box does
+not send it.
+
+**Superseded (2026-10-29):** the 30-40 minute self-stops below were the
+`00 22` run time running out, not a heater safety trip. Kept for the record.
 
 **Resolved (at the time):** the heater has been observed self-stopping (going idle,
 then restarting itself within seconds) roughly every 30-40 minutes under

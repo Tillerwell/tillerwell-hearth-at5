@@ -16,6 +16,8 @@ static void set_note(at_ctl_loop_t *l, const char *fmt, ...)
     va_end(ap);
 }
 
+static float set_temp(const at_ctl_loop_t *l);
+
 static void reset_retry(at_ctl_loop_t *l)
 {
     l->retry_count = 0;
@@ -29,6 +31,8 @@ void at_ctl_init(at_ctl_t *t, float auto_target, float freeze_target)
     t->autot.target = auto_target;
     t->autot.low = auto_target - AT_CTL_HYSTERESIS;
     t->autot.high = auto_target + AT_CTL_HYSTERESIS;
+    /* Auto restored at boot is mid-cycle: wait for low rather than risk a short run. */
+    t->autot.reached_high = true;
     t->freeze.target = freeze_target;
     t->use_external = true;
 }
@@ -99,9 +103,10 @@ void at_ctl_set_auto(at_ctl_t *t, bool enabled, const at_snapshot_t *s, uint32_t
         uint32_t age;
         bool ext;
         bool known = at_ctl_effective_temp(t, s, now, &temp, &age, &ext) && age <= AT_CTL_MAX_READING_AGE_MS;
-        if (known && temp >= l->target) {
-            set_note(l, "Auto thermostat enabled -> temperature %.1f already >= target %.1f, not starting",
-                     temp, l->target);
+        const float set = set_temp(l);
+        l->reached_high = false;
+        if (known && temp > set) {
+            set_note(l, "Auto thermostat enabled -> temperature %.1f above set %.1f, waiting", temp, set);
         } else {
             set_note(l, "Auto thermostat enabled -> sending start thermostat");
             ops->start_thermostat(ops->ctx);
@@ -165,6 +170,19 @@ void at_ctl_set_freeze_target(at_ctl_t *t, float target)
     t->freeze.target = target;
 }
 
+/* Like the Comfort Controller's set temperature: its thermostat runs to set + 1
+ * (high) and restarts at set - 2 (low). */
+static float set_temp(const at_ctl_loop_t *l)
+{
+    float set = l->high - AT_CTL_HYSTERESIS;
+    return set < l->low ? l->low : set;
+}
+
+float at_ctl_auto_start_at(const at_ctl_t *t)
+{
+    return t->autot.reached_high ? t->autot.low : set_temp(&t->autot);
+}
+
 static bool is_idle(const at_snapshot_t *s)
 {
     return s->have_status && s->status.state_raw == 0x00;
@@ -193,8 +211,13 @@ static void tick_auto(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const a
     if (idle) {
         l->stop_pending = false;
     }
-    const float stop_at = l->high + l->hyst_max;
-    const float start_at = l->low - l->hyst_min;
+    /* The run only ends at the top of the band; the heater is never stopped
+     * and restarted inside it, which would short-cycle it. */
+    if (temp >= l->high) {
+        l->reached_high = true;
+    }
+    const float stop_at = l->high;
+    const float start_at = l->reached_high ? l->low : set_temp(l);
     if (temp >= stop_at && !idle && !l->stop_pending) {
         set_note(l, "temperature %.1f >= %.1f -> stop", temp, stop_at);
         ops->stop(ops->ctx);

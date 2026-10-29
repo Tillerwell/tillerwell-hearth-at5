@@ -3,8 +3,11 @@
  * Port of AutoThermostat / PreventFreezing from the base project, as pure
  * tick functions over an at_snapshot_t so they can be tested on a host.
  *
- * Auto:    keep the cabin in a band [low, high]: stop at high + hyst_max, start (thermostat
- *          mode) at low - hyst_min. Setting a single target gives the old band target-1 .. target+1.
+ * Auto:    keep the cabin in a band [low, high] like the Comfort Controller's thermostat set to
+ *          high - 1: run until the cabin reaches high, then stay off until it falls to low.
+ *          Before the first time the cabin reaches high, it starts below high - 1 (the set
+ *          temperature) instead of waiting for low.  Setting a single target gives the band
+ *          target-1 .. target+1.  hyst_min/hyst_max only set how narrow the band may be.
  * Freeze:  start whenever the temperature reaches the floor, regardless of
  *          Auto or a previous Stop; only stops runs it started itself.
  * A fault never disables either loop: start attempts back off 5, 15 and 20
@@ -37,10 +40,11 @@ typedef struct {
     bool enabled;
     float target;               /* Auto: midpoint of the band */
     float low, high;            /* Auto only */
-    float hyst_min, hyst_max;   /* Auto only: extra degrees past each end before acting */
+    float hyst_min, hyst_max;   /* Auto only: the band must be at least both wide (at_app) */
     bool has_acted;
     uint32_t last_action_ms;
     bool stop_pending;          /* Auto only */
+    bool reached_high;          /* Auto only: the cabin reached high since arming, so starts wait for low */
     bool started_by_me;         /* Freeze only */
     int retry_count;
     bool retry_armed;
@@ -67,10 +71,12 @@ void at_ctl_set_external(at_ctl_t *t, float temp, uint32_t now_ms);
 bool at_ctl_effective_temp(const at_ctl_t *t, const at_snapshot_t *s, uint32_t now_ms,
                            float *temp, uint32_t *age_ms, bool *external);
 
-/* Turn Auto on/off. Acts immediately like the base project: on starts the
- * heater unless the cabin is already at/above target; off sends stop. */
+/* Turn Auto on/off. On starts the heater straight away if the cabin is below
+ * the set temperature (high - 1), otherwise waits for it; off sends stop. */
 void at_ctl_set_auto(at_ctl_t *t, bool enabled, const at_snapshot_t *s, uint32_t now_ms, const at_ctl_ops_t *ops);
 void at_ctl_disarm_auto(at_ctl_t *t, const char *note);
+/* The cabin temperature Auto's next start happens at: high - 1 before the first run, low after it. */
+float at_ctl_auto_start_at(const at_ctl_t *t);
 void at_ctl_set_auto_target(at_ctl_t *t, float target);
 void at_ctl_set_auto_range(at_ctl_t *t, float low, float high);
 void at_ctl_set_hysteresis(at_ctl_t *t, float hyst_min, float hyst_max);

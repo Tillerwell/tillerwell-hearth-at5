@@ -251,6 +251,7 @@ static char *build_state_json(void)
     cJSON_AddNumberToObject(o, "auto_high", v.auto_high);
     cJSON_AddNumberToObject(o, "hyst_min", v.hyst_min);
     cJSON_AddNumberToObject(o, "hyst_max", v.hyst_max);
+    cJSON_AddNumberToObject(o, "auto_start_at", v.auto_start_at);
     cJSON_AddNumberToObject(o, "preheat_temp", v.preheat_temp);
     cJSON_AddStringToObject(o, "model", CONFIG_AUTOTERM_MODEL);
     cJSON_AddStringToObject(o, "hw_rev", CONFIG_AUTOTERM_HW_REV);

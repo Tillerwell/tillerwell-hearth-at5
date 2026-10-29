@@ -404,10 +404,9 @@ static void test_injection(void)
     CHECK(at_cmd_start_thermostat(&c, s.now));
     sim_run(&s, &c, 3000);
     CHECK(count_type(&s, 0x01) == 1);
-    /* The Comfort Controller's thermostat start, captured from the production
-     * Flow 5.  The controller keeps this mode locally, so the injected frame
-     * must exactly match it. */
-    static const uint8_t panel_thermostat[] = {0xaa, 0x03, 0x02, 0x00, 0x01, 0x00, 0x22, 0x20, 0xb9};
+    /* The controller's "thermostat, run indefinitely" start, captured off the
+     * bus.  The payload is a run time: 00 22 would stop the heater after 34 min. */
+    static const uint8_t panel_thermostat[] = {0xaa, 0x03, 0x02, 0x00, 0x01, 0xff, 0xfb, 0x4a, 0x39};
     CHECK(EQV(s.last_start, s.last_start_len, panel_thermostat));
     CHECK(s.heater_state == 2);
     at_snapshot_t sn;
@@ -870,6 +869,76 @@ static void test_ctl(void)
     CHECK(l2.starts == 0);
     at_ctl_set_auto(&t2, false, &warm, 2000, &ops2);
     CHECK(l2.stops == 1);
+
+    /* a band of 18-21 acts like the Comfort Controller set to 20: the first run starts at 20, every
+     * later one at 18, and each runs to 21 with no stop inside the band */
+    {
+        ops_log_t lb = {0};
+        at_ctl_ops_t opsb = {op_start, op_stop, &lb};
+        at_ctl_t tb;
+        at_ctl_init(&tb, 20.0f, 5.0f);
+        at_ctl_set_auto_range(&tb, 18.0f, 21.0f);
+        at_ctl_set_hysteresis(&tb, 2.0f, 1.0f);
+        uint32_t tm = 100000;
+        at_snapshot_t s209 = mk_snap(21, 0, 0);
+        at_ctl_set_external(&tb, 20.9f, tm);
+        at_ctl_set_auto(&tb, true, &s209, tm, &opsb);
+        CHECK(lb.starts == 0); /* above the set temperature: waits */
+        CHECK(at_ctl_auto_start_at(&tb) == 20.0f);
+        at_ctl_set_external(&tb, 20.4f, tm += 100000);
+        at_ctl_tick(&tb, &s209, tm, &opsb);
+        CHECK(lb.starts == 0);
+        at_ctl_set_external(&tb, 20.0f, tm += 100000);
+        at_ctl_tick(&tb, &s209, tm, &opsb);
+        CHECK(lb.starts == 1); /* down to 20: first run */
+        at_snapshot_t burning = mk_snap(20, 2, 0);
+        at_ctl_set_external(&tb, 20.8f, tm += 100000);
+        at_ctl_tick(&tb, &burning, tm, &opsb);
+        CHECK(lb.stops == 0);
+        at_ctl_set_external(&tb, 21.0f, tm += 100000);
+        at_ctl_tick(&tb, &burning, tm, &opsb);
+        CHECK(lb.stops == 1); /* top of the band: stop */
+        CHECK(at_ctl_auto_start_at(&tb) == 18.0f);
+        at_snapshot_t idle = mk_snap(20, 0, 0);
+        at_ctl_set_external(&tb, 20.0f, tm += 100000);
+        at_ctl_tick(&tb, &idle, tm, &opsb);
+        at_ctl_set_external(&tb, 18.1f, tm += 100000);
+        at_ctl_tick(&tb, &idle, tm, &opsb);
+        CHECK(lb.starts == 1); /* after the first run it waits for the low end */
+        at_ctl_set_external(&tb, 18.0f, tm += 100000);
+        at_ctl_tick(&tb, &idle, tm, &opsb);
+        CHECK(lb.starts == 2);
+        /* running: 18.1 and 17.9 change nothing, it runs on to 21 */
+        at_ctl_set_external(&tb, 18.1f, tm += 100000);
+        at_ctl_tick(&tb, &burning, tm, &opsb);
+        at_ctl_set_external(&tb, 17.9f, tm += 100000);
+        at_ctl_tick(&tb, &burning, tm, &opsb);
+        CHECK(lb.starts == 2 && lb.stops == 1);
+        at_ctl_set_external(&tb, 21.0f, tm += 100000);
+        at_ctl_tick(&tb, &burning, tm, &opsb);
+        CHECK(lb.stops == 2);
+
+        /* armed below the set temperature: starts straight away */
+        ops_log_t lc = {0};
+        at_ctl_ops_t opsc = {op_start, op_stop, &lc};
+        at_ctl_t tc;
+        at_ctl_init(&tc, 20.0f, 5.0f);
+        at_ctl_set_auto_range(&tc, 18.0f, 21.0f);
+        at_ctl_set_external(&tc, 19.5f, 1000);
+        at_ctl_set_auto(&tc, true, &idle, 1000, &opsc);
+        CHECK(lc.starts == 1);
+
+        /* Auto restored at boot (no arming) waits for the low end */
+        ops_log_t ld = {0};
+        at_ctl_ops_t opsd = {op_start, op_stop, &ld};
+        at_ctl_t td;
+        at_ctl_init(&td, 20.0f, 5.0f);
+        at_ctl_set_auto_range(&td, 18.0f, 21.0f);
+        td.autot.enabled = true;
+        at_ctl_set_external(&td, 19.5f, 100000);
+        at_ctl_tick(&td, &idle, 100000, &opsd);
+        CHECK(ld.starts == 0);
+    }
 
     /* fault back-off: 5 min, 15 min, 20 min, then give up */
     ops_log_t l3 = {0};
