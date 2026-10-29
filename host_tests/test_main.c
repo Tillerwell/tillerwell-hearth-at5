@@ -928,6 +928,33 @@ static void test_ctl(void)
         at_ctl_set_auto(&tc, true, &idle, 1000, &opsc);
         CHECK(lc.starts == 1);
 
+        /* a Home Assistant reading 20 s old still counts: armed at 20.5 it waits, and the loop
+         * starts at 20 on a reading up to 90 s old; an older one is no reading at all */
+        ops_log_t le = {0};
+        at_ctl_ops_t opse = {op_start, op_stop, &le};
+        at_ctl_t te;
+        at_ctl_init(&te, 20.0f, 5.0f);
+        at_ctl_set_auto_range(&te, 18.0f, 21.0f);
+        at_snapshot_t nocab = mk_snap(0, 0, 0);
+        nocab.have_cabin = false;
+        at_ctl_set_external(&te, 20.5f, 100000);
+        at_ctl_set_auto(&te, true, &nocab, 120000, &opse);
+        CHECK(le.starts == 0);
+        at_ctl_set_external(&te, 20.0f, 200000);
+        at_ctl_tick(&te, &nocab, 200000 + 60000, &opse);
+        CHECK(le.starts == 1);
+
+        /* armed with no reading at all: never starts blind */
+        ops_log_t lf = {0};
+        at_ctl_ops_t opsf = {op_start, op_stop, &lf};
+        at_ctl_t tf;
+        at_ctl_init(&tf, 20.0f, 5.0f);
+        at_ctl_set_auto_range(&tf, 18.0f, 21.0f);
+        at_ctl_set_external(&tf, 15.0f, 1000);
+        at_ctl_set_auto(&tf, true, &nocab, 1000 + AT_CTL_EXT_STALE_MS + 1, &opsf);
+        at_ctl_tick(&tf, &nocab, 1000 + AT_CTL_EXT_STALE_MS + 200000, &opsf);
+        CHECK(lf.starts == 0);
+
         /* Auto restored at boot (no arming) waits for the low end */
         ops_log_t ld = {0};
         at_ctl_ops_t opsd = {op_start, op_stop, &ld};

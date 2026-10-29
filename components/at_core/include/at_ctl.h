@@ -71,8 +71,9 @@ void at_ctl_set_external(at_ctl_t *t, float temp, uint32_t now_ms);
 bool at_ctl_effective_temp(const at_ctl_t *t, const at_snapshot_t *s, uint32_t now_ms,
                            float *temp, uint32_t *age_ms, bool *external);
 
-/* Turn Auto on/off. On starts the heater straight away if the cabin is below
- * the set temperature (high - 1), otherwise waits for it; off sends stop. */
+/* Turn Auto on/off. On starts the heater straight away if the cabin is at or
+ * below the set temperature (high - 1), otherwise, or with no usable reading,
+ * waits for the loop; off sends stop. */
 void at_ctl_set_auto(at_ctl_t *t, bool enabled, const at_snapshot_t *s, uint32_t now_ms, const at_ctl_ops_t *ops);
 void at_ctl_disarm_auto(at_ctl_t *t, const char *note);
 /* The cabin temperature Auto's next start happens at: high - 1 before the first run, low after it. */

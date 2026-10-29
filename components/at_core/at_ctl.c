@@ -62,6 +62,17 @@ bool at_ctl_effective_temp(const at_ctl_t *t, const at_snapshot_t *s, uint32_t n
     return false;
 }
 
+/* A reading the loops may act on.  The controller's own sensor reports every few
+ * seconds, so anything older than AT_CTL_MAX_READING_AGE_MS is suspect; a pushed
+ * external reading (Home Assistant sends one on change or every 30 s) counts
+ * until it goes stale at AT_CTL_EXT_STALE_MS. */
+static bool usable_temp(const at_ctl_t *t, const at_snapshot_t *s, uint32_t now, float *temp)
+{
+    uint32_t age;
+    bool ext;
+    return at_ctl_effective_temp(t, s, now, temp, &age, &ext) && (ext || age <= AT_CTL_MAX_READING_AGE_MS);
+}
+
 /* True once enough back-off time has passed to retry a start while faulted. */
 static bool retry_ready(at_ctl_loop_t *l, const at_snapshot_t *s, uint32_t now)
 {
@@ -100,12 +111,12 @@ void at_ctl_set_auto(at_ctl_t *t, bool enabled, const at_snapshot_t *s, uint32_t
     }
     if (enabled) {
         float temp;
-        uint32_t age;
-        bool ext;
-        bool known = at_ctl_effective_temp(t, s, now, &temp, &age, &ext) && age <= AT_CTL_MAX_READING_AGE_MS;
         const float set = set_temp(l);
         l->reached_high = false;
-        if (known && temp > set) {
+        if (!usable_temp(t, s, now, &temp)) {
+            /* never start blind: with no reading nothing could stop the run */
+            set_note(l, "Auto thermostat enabled -> no temperature reading yet, waiting");
+        } else if (temp > set) {
             set_note(l, "Auto thermostat enabled -> temperature %.1f above set %.1f, waiting", temp, set);
         } else {
             set_note(l, "Auto thermostat enabled -> sending start thermostat");
@@ -202,9 +213,7 @@ static void tick_auto(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const a
         return;
     }
     float temp;
-    uint32_t age;
-    bool ext;
-    if (!at_ctl_effective_temp(t, s, now, &temp, &age, &ext) || age > AT_CTL_MAX_READING_AGE_MS || !s->have_status) {
+    if (!usable_temp(t, s, now, &temp) || !s->have_status) {
         return;
     }
     bool idle = is_idle(s);
@@ -255,9 +264,7 @@ static void tick_freeze(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const
         return;
     }
     float temp;
-    uint32_t age;
-    bool ext;
-    if (!at_ctl_effective_temp(t, s, now, &temp, &age, &ext) || age > AT_CTL_MAX_READING_AGE_MS || !s->have_status) {
+    if (!usable_temp(t, s, now, &temp) || !s->have_status) {
         return;
     }
     bool idle = is_idle(s);
