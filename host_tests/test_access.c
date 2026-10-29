@@ -329,7 +329,7 @@ static void test_cloud_cmds(void)
     CHECK(at_auth_cmd_json_perm("{\"cmd\":\"fuel_price\",\"value\":1}") == AT_PERM_MANAGER, "fuel_price needs manager");
     CHECK(at_auth_cmd_json_perm("{\"cmd\":\"factory_reset\"}") == AT_PERM_ADMIN, "factory_reset needs admin");
     CHECK(at_auth_cmd_json_perm("{\"cmd\":\"never_heard_of_it\"}") == AT_PERM_ADMIN, "unknown command needs admin");
-    CHECK(at_auth_cmd_json_perm("{\"cmd\":\"preheat_duration\"}") == AT_PERM_ADMIN, "unlisted commands fail closed");
+    CHECK(at_auth_cmd_json_perm("{\"cmd\":\"something_new\"}") == AT_PERM_ADMIN, "unlisted commands fail closed");
     CHECK(at_auth_cmd_json_perm("nonsense") == AT_PERM_ADMIN && at_auth_cmd_json_perm(NULL) == AT_PERM_ADMIN, "unparseable: admin");
 
     // An expired user is not found, so its commands stop with the grant.

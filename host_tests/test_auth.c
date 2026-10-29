@@ -178,6 +178,8 @@ static void test_permissions(void)
     CHECK(at_auth_route_perm("GET", "/api/statusx") == AT_PERM_ADMIN, "near-miss route fails closed");
     CHECK(at_auth_route_perm("GET", "/api/secret") == AT_PERM_ADMIN, "unknown route fails closed");
     CHECK(at_auth_cmd_perm("stop") == AT_PERM_CONTROL, "stop needs control");
+    CHECK(at_auth_cmd_perm("auto_range") == AT_PERM_CONTROL, "control may set the thermostat range");
+    CHECK(at_auth_cmd_perm("preheat_duration") == AT_PERM_CONTROL, "control may change a running preheat's length");
     CHECK(at_auth_cmd_perm("hysteresis") == AT_PERM_MANAGER, "settings need manager");
     CHECK(at_auth_cmd_perm("factory_reset") == AT_PERM_ADMIN, "factory reset needs admin");
     CHECK(at_auth_cmd_perm("something_new") == AT_PERM_ADMIN, "unknown command fails closed");

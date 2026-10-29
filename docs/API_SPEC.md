@@ -108,8 +108,8 @@ Levels are ordered: `view` < `control` < `manager` < `admin` (cloud plan Q8).
 
 | Needs | Commands |
 |---|---|
-| control | `start_preheat`, `stop`, `auto`, `auto_target`, `set_time`, `tank_level`, `tank_filled` |
-| manager | `auto_range`, `hysteresis`, `preheat_temp`, `preheat_minutes`, `timezone`, `display_name`, `fuel_price`, `fuel_factor`, `fuel_rates`, `tank_capacity` |
+| control | `start_preheat`, `stop`, `auto`, `auto_target`, `auto_range`, `preheat_duration`, `set_time`, `tank_level`, `tank_filled` |
+| manager | `hysteresis`, `preheat_temp`, `preheat_minutes`, `timezone`, `display_name`, `fuel_price`, `fuel_factor`, `fuel_rates`, `tank_capacity` |
 | admin | `factory_reset`, `reboot`, `auto_update`, `ota` (cloud only, §9.7), and **any command not listed** (fail closed) |
 
 `GET /api/hello` (public) tells a phone what it is talking to before it holds a key: `{"device_id","name","version","claimed":true|false,"fingerprint"}`.
