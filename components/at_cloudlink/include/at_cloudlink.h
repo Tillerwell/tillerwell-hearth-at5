@@ -12,14 +12,12 @@
 extern "C" {
 #endif
 
-// Endpoint list, tried in this order (cloud plan §9). The third is the broker's own host name, which resolves even when
-// the two domains do not (they need DNS records first); the fourth is the standby's reserved IP and stays empty (and is
+// Endpoint list, tried in this order (cloud plan §9). The third is the standby's reserved IP and stays empty (and is
 // skipped) until that address exists. The name checked against the broker certificate is the host dialled, so the
 // certificate must list every entry (the IP as a subject alternative name).
 #define AT_CLOUDLINK_HOST_1 "mqtt.tillerwell.com"
 #define AT_CLOUDLINK_HOST_2 "mqtt.tillerwell.co.uk"
-#define AT_CLOUDLINK_HOST_3 "vps-de870a75.vps.ovh.ca"
-#define AT_CLOUDLINK_HOST_4 ""
+#define AT_CLOUDLINK_HOST_3 ""
 #define AT_CLOUDLINK_PORT 8883
 
 // Runs a POST /api/cmd body through the safety layer; false = the box refused or did nothing (at_web_exec_cmd).

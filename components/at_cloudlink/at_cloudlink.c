@@ -63,10 +63,10 @@ static int64_t now_s(void) { return esp_timer_get_time() / 1000000; }
 
 static const char *host_of(int i)
 {
-    return i == 0 ? AT_CLOUDLINK_HOST_1 : i == 1 ? AT_CLOUDLINK_HOST_2 : i == 2 ? AT_CLOUDLINK_HOST_3 : AT_CLOUDLINK_HOST_4;
+    return i == 0 ? AT_CLOUDLINK_HOST_1 : i == 1 ? AT_CLOUDLINK_HOST_2 : AT_CLOUDLINK_HOST_3;
 }
 
-static int endpoint_count(void) { return AT_CLOUDLINK_HOST_4[0] ? 4 : 3; }
+static int endpoint_count(void) { return AT_CLOUDLINK_HOST_3[0] ? 3 : 2; }
 
 static void note_heap(void)
 {
