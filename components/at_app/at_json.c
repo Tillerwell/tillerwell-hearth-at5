@@ -186,6 +186,51 @@ int at_app_timers_put_json(const char *json, char *err, size_t err_len)
     return 200;
 }
 
+char *at_app_backup_json(void)
+{
+    at_view_t v;
+    at_app_view(&v);
+    at_fuel_view_t fv;
+    at_app_fuel_view(&fv);
+    at_timer_status_t ts;
+    at_app_timer_status(&ts);
+    char name[AT_DISPLAY_NAME_MAX];
+    at_settings_display_name(name, sizeof(name));
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddNumberToObject(o, "v", 1);
+    cJSON_AddStringToObject(o, "display_name", name);
+    cJSON_AddNumberToObject(o, "auto_low", round3(v.auto_low));
+    cJSON_AddNumberToObject(o, "auto_high", round3(v.auto_high));
+    cJSON_AddNumberToObject(o, "auto_target", round3(v.auto_target));
+    cJSON_AddNumberToObject(o, "hyst_min", round3(v.hyst_min));
+    cJSON_AddNumberToObject(o, "hyst_max", round3(v.hyst_max));
+    cJSON_AddBoolToObject(o, "use_external_temp", v.use_external_temp);
+    cJSON_AddNumberToObject(o, "preheat_temp", round3(v.preheat_temp));
+    cJSON_AddNumberToObject(o, "preheat_minutes", v.preheat_minutes);
+    cJSON_AddBoolToObject(o, "freeze_enabled", v.freeze_enabled);
+    cJSON_AddNumberToObject(o, "freeze_target", round3(v.freeze_target));
+    cJSON_AddStringToObject(o, "timezone", ts.timezone);
+    cJSON_AddBoolToObject(o, "auto_update", at_settings_auto_update());
+    cJSON_AddNumberToObject(o, "fuel_price", round3(fv.cfg.price));
+    cJSON_AddNumberToObject(o, "fuel_factor", round3(fv.cfg.factor));
+    cJSON *rates = cJSON_AddObjectToObject(o, "fuel_rates");
+    for (int l = AT_FUEL_STARTING; l < AT_FUEL_LEVELS; l++) {
+        cJSON_AddNumberToObject(rates, at_fuel_level_name((at_fuel_level_t)l), round3(fv.cfg.rate_lph[l]));
+    }
+    cJSON_AddNumberToObject(o, "ml_per_pulse", round(fv.pump.ml_per_pulse * 1e5) / 1e5);
+    cJSON_AddNumberToObject(o, "tank_capacity", round3(fv.tank.capacity_l));
+
+    char *timers = at_app_timers_json();
+    cJSON *arr = timers ? cJSON_Parse(timers) : NULL;
+    free(timers);
+    cJSON_AddItemToObject(o, "timers", arr ? arr : cJSON_CreateArray());
+
+    char *str = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    return str;
+}
+
 /* GET /api/fuel: the daily log, newest first, with local dates. */
 char *at_app_fuel_json(void)
 {

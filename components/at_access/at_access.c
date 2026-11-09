@@ -137,6 +137,22 @@ int at_access_user_remove(const char *kid)
     return 0;
 }
 
+const char *at_access_user_import(const uint8_t pub[AT_AUTH_PUBKEY_LEN], at_perm_t perm, const char *label, int64_t exp,
+                                  const char *by)
+{
+    if (!pub || pub[0] != 0x04 || perm == AT_PERM_NONE || !by) return "malformed";
+    at_user_t u;
+    memset(&u, 0, sizeof(u));
+    at_auth_key_id(pub, u.kid);
+    if (strcmp(u.kid, by) == 0) return NULL;   // the importing admin is already here, as an admin
+    memcpy(u.pub, pub, sizeof(u.pub));
+    u.perm = (uint8_t)perm;
+    snprintf(u.label, sizeof(u.label), "%s", label ? label : "");
+    u.exp = exp < 0 ? 0 : exp;
+    snprintf(u.by, sizeof(u.by), "%s", by);
+    return at_access_user_add(&u) ? NULL : "table_full";
+}
+
 // --- nonces -----------------------------------------------------------------
 
 void at_access_nonce_new(char out[AT_NONCE_LEN + 1])

@@ -101,7 +101,7 @@ Levels are ordered: `view` < `control` < `manager` < `admin` (cloud plan Q8).
 | `PUT /api/timers` | control |
 | `POST /api/cmd` | depends on `cmd`, below (at least control) |
 | `GET /api/wifi/scan`, `POST /api/wifi`, `POST /api/mode` | manager |
-| `/api/auth/users…`, `/api/cloud…`, `POST /api/ota`, `POST /api/auth/grant-revoke` | admin |
+| `/api/auth/users…`, `/api/cloud…`, `/api/backup`, `POST /api/ota`, `POST /api/auth/grant-revoke` | admin |
 | anything else | admin (fail closed) |
 
 `POST /api/cmd`:
@@ -162,6 +162,24 @@ The guest's app stores the private key from the QR, then sends `POST /api/auth/r
 
 Redeem errors: `unknown_signer`/`bad_signature` 401, `wrong_device`/`wrong_key` 403, `already_used`/`table_full` 409, `expired` 410, `malformed` 400.
 
+### 7.5 Replacing a heater (firmware 1.41)
+
+When an owner's box dies, the app sets up the new box and the cloud moves the old box's record onto it (the old certificate is revoked). The app then restores two things over the local API, both admin only:
+
+- `POST /api/auth/users` `{"users":[{"pub":"<base64url 65 bytes>","perm":"view|control|manager|admin","label":"…","exp":0}]}` adds users by public key with no invite: the old box's other admins, its invited users and the website's key (§9.6). The signing admin's own key is skipped, so it is never downgraded. Answers `{"ok":true,"added":n,"skipped":n}` (skipped = malformed entries), or `409 {"error":"table_full"}` at the first one with no room (those before it stay added).
+- `GET /api/backup` returns the owner's settings, `PUT /api/backup` applies them:
+
+```json
+{"v":1,"display_name":"Saloon","auto_low":18,"auto_high":21,"auto_target":20,"hyst_min":1,"hyst_max":1,
+ "use_external_temp":true,"preheat_temp":88,"preheat_minutes":30,"freeze_enabled":false,"freeze_target":5,
+ "timezone":"Europe/London","auto_update":false,"fuel_price":1.45,"fuel_factor":1,
+ "fuel_rates":{"starting":0.3,"low":0.12,"middle":0.3,"high":0.6},"ml_per_pulse":0,"tank_capacity":0,"timers":[…]}
+```
+
+`timers` is the `GET /api/timers` array. Nothing in it belongs to one box alone (Wi-Fi, users, keys, the fuel log) or to the moment (whether the heater is running, whether the thermostat is on), so restoring never starts or stops the heater. `PUT` applies each field through the same checks as `POST /api/cmd`; a field the box turns down is named in `{"ok":true,"skipped":[…]}` and the rest still apply. `ml_per_pulse` and `tank_capacity` of 0 mean "never set" and are left alone. A changed `display_name` restarts the box, so it is applied last.
+
+The box also sends this document to the cloud (§9.3), which keeps the last copy so it is there when the box is not.
+
 ## 8. Cloud enrolment (opt-in)
 
 All admin-only, over the signed local API:
@@ -214,6 +232,7 @@ The box answers every command it can name with exactly one ack: `done` once the 
 
 - `status`: the plain text `online`, retained, QoS 1; the broker publishes `offline` as the box's Last Will. A deliberate stop (the link removed with `DELETE /api/cloud`) publishes `offline` itself first, since a clean disconnect does not fire the will.
 - `state`: the same JSON as `GET /api/status`, plus `"firmware":"<version>"` as its first field (and `"ota_error":"<code>"` after it when the last remote update failed, §9.7), retained, QoS 1. Sent on connect, whenever the run state, fault code, run mode, burner or Auto changes, and at least every 15 s.
+- `backup`: the `GET /api/backup` document (§7.5), retained, QoS 1. Sent on connect and within a minute of any setting changing (firmware 1.41).
 - `event`: `{"kind":"fault"|"refused"|"local_start"|"local_stop"|…, …}`. Firmware 1.0030 sends `fault` (`code`, `name`, once when a fault appears) and `refused` (`id`). `local_start` and `local_stop` are reserved and not sent yet.
 
 ### 9.4 Keys the cloud knows

@@ -349,6 +349,45 @@ static void test_cloud_cmds(void)
     fake_clock_ok = false;
 }
 
+// §7.5: a replacement heater takes the old one's users straight from the admin, no invites.
+static void test_import(void)
+{
+    memset(store, 0, sizeof(store));
+    boot();
+    claim_admin();
+    const char *admin_kid = key_named("admin")->key_id;
+    uint8_t pub[AT_AUTH_PUBKEY_LEN];
+    pub_of("guest", pub);
+    CHECK(at_access_user_import(pub, AT_PERM_CONTROL, "Sam's phone", 0, admin_kid) == NULL, "import a guest");
+    char kid[AT_AUTH_KID_LEN + 1];
+    at_auth_key_id(pub, kid);
+    at_user_t u;
+    CHECK(at_access_user_find(kid, &u) && u.perm == AT_PERM_CONTROL && !strcmp(u.label, "Sam's phone") &&
+              !strcmp(u.by, admin_kid), "imported guest is a control user, added by the admin");
+    CHECK(at_access_user_import(pub, AT_PERM_CONTROL, "Sam's phone", 0, admin_kid) == NULL && at_access_user_count() == 2,
+          "importing again changes nothing");
+
+    uint8_t own[AT_AUTH_PUBKEY_LEN];
+    pub_of("admin", own);
+    CHECK(at_access_user_import(own, AT_PERM_VIEW, "x", 0, admin_kid) == NULL, "own key: quietly skipped");
+    at_access_user_find(admin_kid, &u);
+    CHECK(u.perm == AT_PERM_ADMIN, "the importing admin is never downgraded");
+
+    uint8_t bad[AT_AUTH_PUBKEY_LEN] = { 0x02 };
+    const char *err = at_access_user_import(bad, AT_PERM_VIEW, "x", 0, admin_kid);
+    CHECK(err && !strcmp(err, "malformed"), "not an uncompressed point");
+    err = at_access_user_import(pub, AT_PERM_NONE, "x", 0, admin_kid);
+    CHECK(err && !strcmp(err, "malformed"), "no permission");
+
+    for (int i = at_access_user_count(); i < AT_USERS_MAX; i++) {
+        uint8_t p[AT_AUTH_PUBKEY_LEN] = { 0x04, (uint8_t)i, 0x55 };
+        CHECK(at_access_user_import(p, AT_PERM_VIEW, "", 0, admin_kid) == NULL, "fill %d", i);
+    }
+    uint8_t extra[AT_AUTH_PUBKEY_LEN] = { 0x04, 0xee };
+    err = at_access_user_import(extra, AT_PERM_VIEW, "", 0, admin_kid);
+    CHECK(err && !strcmp(err, "table_full"), "17th refused");
+}
+
 int main(void)
 {
     test_claim();
@@ -357,6 +396,7 @@ int main(void)
     test_redeem();
     test_users_and_legacy();
     test_cloud_cmds();
+    test_import();
     printf("%s: %d checks, %d failures\n", failures ? "FAILED" : "OK", checks, failures);
     return failures ? 1 : 0;
 }

@@ -269,6 +269,9 @@ char *at_app_state_json(void);
 void at_app_state_json_init(void);
 /* GET /api/fuel: the daily fuel log, newest first. Caller frees. */
 char *at_app_fuel_json(void);
+/* GET /api/backup and the cloud's `backup` topic (docs/API_SPEC.md §7.5): every setting an owner chose, and nothing
+ * that belongs to this box alone (Wi-Fi, users, keys, fuel history) or to the moment (whether it is running). Caller frees. */
+char *at_app_backup_json(void);
 
 #ifdef __cplusplus
 }

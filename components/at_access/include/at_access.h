@@ -51,6 +51,10 @@ bool at_access_has_admin(void);
 bool at_access_user_add(const at_user_t *u);                  // replaces the same kid; false if full
 // 0 = removed, 1 = not found, 2 = refused (the last admin)
 int at_access_user_remove(const char *kid);
+// An admin adds a user by public key, without an invite (§7.5: carrying a replaced heater's users across). by is the
+// admin's kid. Never touches the admin's own entry. NULL = added (or already there), "malformed", "table_full".
+const char *at_access_user_import(const uint8_t pub[AT_AUTH_PUBKEY_LEN], at_perm_t perm, const char *label, int64_t exp,
+                                  const char *by);
 
 // --- nonces (§5.1) -----------------------------------------------------
 void at_access_nonce_new(char out[AT_NONCE_LEN + 1]);

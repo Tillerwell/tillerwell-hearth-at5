@@ -28,6 +28,7 @@ static const char *TAG = "cloud";
 #define CMD_MSG_MAX 2048          // a command is about 1 KB; anything past the client's buffer is dropped unread
 #define CONNECT_TIMEOUT_S 30
 #define STATE_EVERY_S 15
+#define BACKUP_CHECK_S 60        // how often the settings backup is rebuilt to see whether it changed
 #define STATE_OUTBOX_MAX 8192     // do not pile up more than this behind a stalled connection
 #define TICK_MS 1000
 
@@ -49,11 +50,13 @@ static uint32_t s_failures;
 static int s_endpoint;
 static int64_t s_started_s, s_up_s, s_next_try_s;
 static uint32_t s_connects, s_cmds_ok, s_cmds_refused, s_heap_min, s_heap_at_connect;
-static char s_base[48], s_uri[96], s_client_id[32], s_t_status[64], s_t_state[64], s_t_cmd[64], s_t_ack[64], s_t_event[64];
+static char s_base[48], s_uri[96], s_client_id[32], s_t_status[64], s_t_state[64], s_t_cmd[64], s_t_ack[64], s_t_event[64], s_t_backup[64];
 static uint32_t s_last_fault;
 static bool s_fault_known;
 static int64_t s_state_s;
 static uint8_t s_state_key[4];
+static int64_t s_backup_s;
+static uint32_t s_backup_hash;   // of the last backup sent; 0 = send at the next check
 static bool s_ota_go;          // an `ota` command was accepted: stop the link, then let at_fwupdate download
 static volatile bool s_hold;   // at_cloudlink_hold: keep the link down so another TLS session has the memory
 static volatile bool s_paused; // the supervisor has honoured the hold and the client is gone
@@ -140,6 +143,24 @@ static void publish_state(void)
     }
     free(js);
     s_state_s = now_s();
+}
+
+// The owner's settings (docs/API_SPEC.md §7.5), retained, so the cloud can move them onto a replacement heater.
+// Sent on connect and whenever they change; checked once a minute because building it reads the timers.
+static void watch_backup(void)
+{
+    if (s_backup_hash && now_s() - s_backup_s < BACKUP_CHECK_S) return;
+    s_backup_s = now_s();
+    char *js = at_app_backup_json();
+    if (!js) return;
+    uint32_t h = 2166136261u;   // FNV-1a
+    for (const char *p = js; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+    if (!h) h = 1;
+    if (h != s_backup_hash) {
+        publish(s_t_backup, js, true);
+        s_backup_hash = h;
+    }
+    free(js);
 }
 
 // A fault appearing is an event; the state document itself goes out on a timer and whenever the run changes.
@@ -241,6 +262,7 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         esp_mqtt_client_subscribe(s_client, s_t_cmd, 1);
         esp_mqtt_client_enqueue(s_client, s_t_status, "online", 0, 1, true, true);
         s_state_s = 0;   // the supervisor publishes the state at once
+        s_backup_hash = 0;   // and the settings backup
         memset(s_state_key, 0xaa, sizeof(s_state_key));
         ESP_LOGI(TAG, "connected to %s (free heap %u)", host_of(s_endpoint), (unsigned)s_heap_at_connect);
         break;
@@ -426,6 +448,7 @@ static void supervisor(void *arg)
                 publish_event("ota_failed", 0, at_fwupdate_last_error(), NULL);
             }
             watch_state();
+            watch_backup();
         }
     }
 }
@@ -443,6 +466,7 @@ esp_err_t at_cloudlink_start(at_cloudlink_exec_t exec)
     snprintf(s_t_cmd, sizeof(s_t_cmd), "%s/cmd", s_base);
     snprintf(s_t_ack, sizeof(s_t_ack), "%s/ack", s_base);
     snprintf(s_t_event, sizeof(s_t_event), "%s/event", s_base);
+    snprintf(s_t_backup, sizeof(s_t_backup), "%s/backup", s_base);
     s_cmds = xQueueCreate(CMD_QUEUE_DEPTH, sizeof(char *));
     if (!s_cmds) return ESP_ERR_NO_MEM;
     // Priority 2, below every heater task: when the cloud is slow or the radio is busy, only the cloud waits.

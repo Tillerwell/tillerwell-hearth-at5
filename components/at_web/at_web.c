@@ -981,6 +981,140 @@ static esp_err_t h_users_list(httpd_req_t *req)
     return send_json(req, o);
 }
 
+/* POST /api/auth/users {"users":[{"pub","perm","label","exp"}]} (admin, §7.5): adds users by public key, no invites.
+ * The app uses it to carry a replaced heater's users across. Stops at the first one the table has no room for. */
+static esp_err_t h_users_import(httpd_req_t *req)
+{
+    REQUIRE_SIGNED(req);
+    char *raw = read_body(req, BODY_MAX);
+    cJSON *j = raw ? cJSON_Parse(raw) : NULL;
+    free(raw);
+    const cJSON *arr = j ? cJSON_GetObjectItemCaseSensitive(j, "users") : NULL;
+    if (!cJSON_IsArray(arr)) {
+        cJSON_Delete(j);
+        return send_auth_error(req, "400 Bad Request", "bad_body", NULL);
+    }
+    int added = 0, skipped = 0;
+    const char *err = NULL;
+    const cJSON *it;
+    cJSON_ArrayForEach(it, arr) {
+        const char *pub_b64 = jstr(it, "pub");
+        const char *perm = jstr(it, "perm");
+        uint8_t pub[AT_AUTH_PUBKEY_LEN];
+        if (!pub_b64 || !perm ||
+            at_b64url_decode(pub_b64, strlen(pub_b64), pub, sizeof(pub)) != AT_AUTH_PUBKEY_LEN) {
+            skipped++;
+            continue;
+        }
+        const char *e = at_access_user_import(pub, at_perm_from_name(perm), jstr(it, "label"), (int64_t)jnum(it, "exp", 0),
+                                              s_who.user.kid);
+        if (!e) added++;
+        else if (!strcmp(e, "table_full")) { err = e; break; }
+        else skipped++;
+    }
+    cJSON_Delete(j);
+    if (err) return send_auth_error(req, "409 Conflict", err, NULL);
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddNumberToObject(o, "added", added);
+    cJSON_AddNumberToObject(o, "skipped", skipped);
+    return send_json(req, o);
+}
+
+/* ---- /api/backup (§7.5), admin only: the owner's settings, to move them onto a replacement heater ---------------- */
+
+static esp_err_t h_backup_get(httpd_req_t *req)
+{
+    REQUIRE_SIGNED(req);
+    char *s = at_app_backup_json();
+    if (!s) return httpd_resp_send_500(req);
+    esp_err_t e = send_json_str(req, s);
+    free(s);
+    return e;
+}
+
+/* One setting through the same command path as POST /api/cmd, so it gets the same checks. */
+static bool backup_cmd(const char *cmd, const cJSON *from, const char *key, const char *as)
+{
+    const cJSON *v = cJSON_GetObjectItemCaseSensitive(from, key);
+    if (!v) return true;   /* not in this backup: leave it alone */
+    cJSON *c = cJSON_CreateObject();
+    cJSON_AddStringToObject(c, "cmd", cmd);
+    cJSON_AddItemToObject(c, as, cJSON_Duplicate(v, true));
+    bool ok = run_cmd(c);
+    cJSON_Delete(c);
+    return ok;
+}
+
+/* PUT /api/backup: applies what GET /api/backup gave, field by field. A field the box turns down is listed in
+ * "skipped" and the rest still apply. Never starts or stops the heater. The name goes last: changing it restarts the box. */
+static esp_err_t h_backup_put(httpd_req_t *req)
+{
+    REQUIRE_SIGNED(req);
+    char *raw = read_body(req, BODY_MAX);
+    cJSON *b = raw ? cJSON_Parse(raw) : NULL;
+    free(raw);
+    if (!cJSON_IsObject(b) || jnum(b, "v", 0) != 1) {
+        cJSON_Delete(b);
+        return send_auth_error(req, "400 Bad Request", "bad_body", NULL);
+    }
+    cJSON *skipped = cJSON_CreateArray();
+#define SKIP_IF(cond, name) do { if (!(cond)) cJSON_AddItemToArray(skipped, cJSON_CreateString(name)); } while (0)
+    cJSON *band = cJSON_CreateObject();
+    if (cJSON_GetObjectItemCaseSensitive(b, "auto_low") && cJSON_GetObjectItemCaseSensitive(b, "auto_high")) {
+        cJSON_AddStringToObject(band, "cmd", "auto_range");
+        cJSON_AddNumberToObject(band, "low", jnum(b, "auto_low", 19));
+        cJSON_AddNumberToObject(band, "high", jnum(b, "auto_high", 21));
+    }
+    cJSON *hyst = cJSON_CreateObject();
+    if (cJSON_GetObjectItemCaseSensitive(b, "hyst_min") && cJSON_GetObjectItemCaseSensitive(b, "hyst_max")) {
+        cJSON_AddStringToObject(hyst, "cmd", "hysteresis");
+        cJSON_AddNumberToObject(hyst, "min", jnum(b, "hyst_min", 0));
+        cJSON_AddNumberToObject(hyst, "max", jnum(b, "hyst_max", 0));
+    }
+    /* The band and the hysteresis limit each other, so the band goes on either side of it. */
+    if (jstr(band, "cmd")) run_cmd(band);
+    if (jstr(hyst, "cmd")) SKIP_IF(run_cmd(hyst), "hysteresis");
+    if (jstr(band, "cmd")) SKIP_IF(run_cmd(band), "auto_range");
+    cJSON_Delete(band);
+    cJSON_Delete(hyst);
+    SKIP_IF(backup_cmd("auto_target", b, "auto_target", "value"), "auto_target");
+    SKIP_IF(backup_cmd("use_external_temp", b, "use_external_temp", "enabled"), "use_external_temp");
+    SKIP_IF(backup_cmd("preheat_temp", b, "preheat_temp", "value"), "preheat_temp");
+    SKIP_IF(backup_cmd("preheat_minutes", b, "preheat_minutes", "value"), "preheat_minutes");
+    SKIP_IF(backup_cmd("freeze_target", b, "freeze_target", "value"), "freeze_target");
+    SKIP_IF(backup_cmd("freeze", b, "freeze_enabled", "enabled"), "freeze_enabled");
+    SKIP_IF(backup_cmd("timezone", b, "timezone", "value"), "timezone");
+    SKIP_IF(backup_cmd("auto_update", b, "auto_update", "enabled"), "auto_update");
+    SKIP_IF(backup_cmd("fuel_price", b, "fuel_price", "value"), "fuel_price");
+    SKIP_IF(backup_cmd("fuel_factor", b, "fuel_factor", "value"), "fuel_factor");
+    const cJSON *rates = cJSON_GetObjectItemCaseSensitive(b, "fuel_rates");
+    if (cJSON_IsObject(rates)) {
+        cJSON *c = cJSON_Duplicate(rates, true);
+        cJSON_AddStringToObject(c, "cmd", "fuel_rates");
+        SKIP_IF(run_cmd(c), "fuel_rates");
+        cJSON_Delete(c);
+    }
+    /* 0 means "never set" for these two, and the box refuses 0 */
+    if (jnum(b, "ml_per_pulse", 0) > 0) SKIP_IF(backup_cmd("ml_per_pulse", b, "ml_per_pulse", "value"), "ml_per_pulse");
+    if (jnum(b, "tank_capacity", 0) > 0) SKIP_IF(backup_cmd("tank_capacity", b, "tank_capacity", "value"), "tank_capacity");
+    const cJSON *timers = cJSON_GetObjectItemCaseSensitive(b, "timers");
+    if (cJSON_IsArray(timers)) {
+        char *t = cJSON_PrintUnformatted(timers);
+        char why[160];
+        SKIP_IF(t && at_app_timers_put_json(t, why, sizeof(why)) == 200, "timers");
+        free(t);
+    }
+    const char *name = jstr(b, "display_name");
+    if (name) SKIP_IF(set_display_name(name), "display_name");
+#undef SKIP_IF
+    cJSON_Delete(b);
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "ok", true);
+    cJSON_AddItemToObject(o, "skipped", skipped);
+    return send_json(req, o);
+}
+
 static esp_err_t h_user_delete(httpd_req_t *req)
 {
     REQUIRE_SIGNED(req);
@@ -1073,7 +1207,7 @@ esp_err_t at_web_start(void)
         return ESP_OK;
     }
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 32;
+    cfg.max_uri_handlers = 36; /* 31 routes; a registration past this aborts at startup */
     cfg.uri_match_fn = httpd_uri_match_wildcard; /* one route (DELETE users/<kid>) uses a wildcard */
     cfg.stack_size = 8192;
     cfg.lru_purge_enable = true;
@@ -1103,6 +1237,9 @@ esp_err_t at_web_start(void)
         {.uri = "/api/auth/redeem", .method = HTTP_POST, .handler = h_redeem},
         {.uri = "/api/auth/me", .method = HTTP_GET, .handler = h_me},
         {.uri = "/api/auth/users", .method = HTTP_GET, .handler = h_users_list},
+        {.uri = "/api/auth/users", .method = HTTP_POST, .handler = h_users_import},
+        {.uri = "/api/backup", .method = HTTP_GET, .handler = h_backup_get},
+        {.uri = "/api/backup", .method = HTTP_PUT, .handler = h_backup_put},
         {.uri = "/api/auth/users/*", .method = HTTP_DELETE, .handler = h_user_delete},
         {.uri = "/api/auth/grant-revoke", .method = HTTP_POST, .handler = h_grant_revoke},
         {.uri = "/api/auth/legacy", .method = HTTP_POST, .handler = h_legacy},
