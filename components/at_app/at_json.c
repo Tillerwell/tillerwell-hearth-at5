@@ -136,6 +136,28 @@ static bool timer_from_json(const cJSON *o, at_timer_t *t, char *err, size_t err
 #undef FAIL
 }
 
+/* Validate and store a whole candidate list; the error and return code as for at_app_timers_put_json. */
+static int store_list(const at_timer_t *list, int n, char *err, size_t err_len)
+{
+    at_timer_problem_t p;
+    esp_err_t e = at_app_timers_set(list, n, &p);
+    if (e == ESP_ERR_INVALID_ARG) {
+        if (p.index >= 0 && p.other >= 0) {
+            snprintf(err, err_len, "timer %d: %s (timer %d)", p.index + 1, at_timer_err_text(p.err), p.other + 1);
+        } else if (p.index >= 0) {
+            snprintf(err, err_len, "timer %d: %s", p.index + 1, at_timer_err_text(p.err));
+        } else {
+            snprintf(err, err_len, "%s", at_timer_err_text(p.err));
+        }
+        return 400;
+    }
+    if (e != ESP_OK) {
+        snprintf(err, err_len, "could not save the timers");
+        return 500;
+    }
+    return 200;
+}
+
 int at_app_timers_put_json(const char *json, char *err, size_t err_len)
 {
     cJSON *arr = cJSON_Parse(json);
@@ -166,24 +188,59 @@ int at_app_timers_put_json(const char *json, char *err, size_t err_len)
         }
     }
     cJSON_Delete(arr);
-    at_timer_problem_t p;
-    esp_err_t e = at_app_timers_set(list, n, &p);
+    int code = store_list(list, n, err, err_len);
     free(list);
-    if (e == ESP_ERR_INVALID_ARG) {
-        if (p.index >= 0 && p.other >= 0) {
-            snprintf(err, err_len, "timer %d: %s (timer %d)", p.index + 1, at_timer_err_text(p.err), p.other + 1);
-        } else if (p.index >= 0) {
-            snprintf(err, err_len, "timer %d: %s", p.index + 1, at_timer_err_text(p.err));
-        } else {
-            snprintf(err, err_len, "%s", at_timer_err_text(p.err));
-        }
+    return code;
+}
+
+/* One timer at a time, for the cloud (a whole list does not fit in a signed command): timer_set replaces the
+ * timer with the same id or adds it at the end, timer_delete removes it. The rest of the list is the box's own. */
+int at_app_timer_set_json(const cJSON *timer, char *err, size_t err_len)
+{
+    at_timer_t t;
+    char why[96];
+    if (!timer_from_json(timer, &t, why, sizeof(why))) {
+        snprintf(err, err_len, "timer: %s", why);
         return 400;
     }
-    if (e != ESP_OK) {
-        snprintf(err, err_len, "could not save the timers");
+    at_timer_t *list = malloc(sizeof(at_timer_t) * AT_TIMERS_MAX);
+    if (!list) {
+        snprintf(err, err_len, "out of memory");
         return 500;
     }
-    return 200;
+    int n = at_app_timers_get(list, AT_TIMERS_MAX);
+    int k = 0;
+    while (k < n && strcmp(list[k].id, t.id) != 0) k++;
+    if (k == AT_TIMERS_MAX) {
+        free(list);
+        snprintf(err, err_len, "%s", at_timer_err_text(AT_TERR_TOO_MANY));
+        return 400;
+    }
+    list[k] = t;
+    int code = store_list(list, k == n ? n + 1 : n, err, err_len);
+    free(list);
+    return code;
+}
+
+int at_app_timer_delete(const char *id, char *err, size_t err_len)
+{
+    at_timer_t *list = malloc(sizeof(at_timer_t) * AT_TIMERS_MAX);
+    if (!list) {
+        snprintf(err, err_len, "out of memory");
+        return 500;
+    }
+    int n = at_app_timers_get(list, AT_TIMERS_MAX);
+    int k = 0;
+    while (id && k < n && strcmp(list[k].id, id) != 0) k++;
+    if (!id || k == n) {
+        free(list);
+        snprintf(err, err_len, "no timer with that id");
+        return 404;
+    }
+    memmove(&list[k], &list[k + 1], (size_t)(n - k - 1) * sizeof(at_timer_t));
+    int code = store_list(list, n - 1, err, err_len);
+    free(list);
+    return code;
 }
 
 char *at_app_backup_json(void)

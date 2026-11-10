@@ -270,6 +270,11 @@ char *at_app_timers_json(void);
 /* Parse a JSON array of timers and replace the stored list. Returns 200 on success, 400 if the text or any rule
  * is wrong (err says why; nothing changes), 500 if it could not be saved. */
 int at_app_timers_put_json(const char *json, char *err, size_t err_len);
+/* Add or replace one timer (matched by id) / remove one, keeping the rest; same rules and return codes (404: no
+ * timer with that id). `timer` is a cJSON object in the /api/timers format. */
+struct cJSON;
+int at_app_timer_set_json(const struct cJSON *timer, char *err, size_t err_len);
+int at_app_timer_delete(const char *id, char *err, size_t err_len);
 
 /* Time zone: an IANA name from the built-in table or a POSIX TZ string. False if unrecognised. */
 bool at_app_set_timezone(const char *zone);

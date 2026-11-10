@@ -155,8 +155,8 @@ static void test_commands(void)
         CHECK(want_ok ? res == AT_AUTH_OK : strcmp(at_auth_result_name(res), c->expect) == 0,
               "[%s] got %s, want %s", c->name, at_auth_result_name(res), c->expect);
         if (res == AT_AUTH_OK) {
-            CHECK(strcmp(cmd.cmd_json, "{\"cmd\":\"start_preheat\",\"minutes\":20}") == 0, "[%s] cmd body: %s", c->name, cmd.cmd_json);
-            CHECK(at_auth_cmd_perm("start_preheat") <= perm, "[%s] signer may start", c->name);
+            CHECK(strcmp(cmd.cmd_json, c->cmd_json) == 0, "[%s] cmd body: %s", c->name, cmd.cmd_json);
+            CHECK(at_auth_cmd_json_perm(cmd.cmd_json) <= perm, "[%s] signer may send it", c->name);
             // Same message, box without network time: refused, never guessed.
             CHECK(at_auth_cloud_cmd_verify(c->message, pub, AV_DEVICE_ID, AV_NOW, false, &cmd) == AT_AUTH_NO_CLOCK,
                   "[%s] no clock refuses", c->name);
@@ -180,6 +180,8 @@ static void test_permissions(void)
     CHECK(at_auth_cmd_perm("stop") == AT_PERM_CONTROL, "stop needs control");
     CHECK(at_auth_cmd_perm("auto_range") == AT_PERM_CONTROL, "control may set the thermostat range");
     CHECK(at_auth_cmd_perm("preheat_duration") == AT_PERM_CONTROL, "control may change a running preheat's length");
+    CHECK(at_auth_cmd_perm("timer_set") == AT_PERM_CONTROL, "control may add and edit timers");
+    CHECK(at_auth_cmd_perm("timer_delete") == AT_PERM_CONTROL, "control may delete timers");
     CHECK(at_auth_cmd_perm("hysteresis") == AT_PERM_MANAGER, "settings need manager");
     CHECK(at_auth_cmd_perm("factory_reset") == AT_PERM_ADMIN, "factory reset needs admin");
     CHECK(at_auth_cmd_perm("something_new") == AT_PERM_ADMIN, "unknown command fails closed");

@@ -108,7 +108,7 @@ Levels are ordered: `view` < `control` < `manager` < `admin` (cloud plan Q8).
 
 | Needs | Commands |
 |---|---|
-| control | `start_preheat`, `stop`, `auto`, `auto_target`, `auto_range`, `preheat_duration`, `set_time`, `tank_level`, `tank_filled`, `heater_read`, `start_pump`, `fuel_prime` |
+| control | `start_preheat`, `stop`, `auto`, `auto_target`, `auto_range`, `preheat_duration`, `set_time`, `tank_level`, `tank_filled`, `heater_read`, `start_pump`, `fuel_prime`, `timer_set`, `timer_delete` |
 | manager | `heater_unlock`, `heater_settings`, `fan_test`, `pump_minutes`, `hysteresis`, `preheat_temp`, `preheat_minutes`, `timezone`, `display_name`, `fuel_price`, `fuel_factor`, `fuel_rates`, `tank_capacity` |
 | admin | `factory_reset`, `reboot`, `auto_update`, `ota` (cloud only, §9.7), and **any command not listed** (fail closed) |
 
@@ -232,7 +232,7 @@ The box answers every command it can name with exactly one ack: `done` once the 
 
 - `status`: the plain text `online`, retained, QoS 1; the broker publishes `offline` as the box's Last Will. A deliberate stop (the link removed with `DELETE /api/cloud`) publishes `offline` itself first, since a clean disconnect does not fire the will.
 - `state`: the same JSON as `GET /api/status`, plus `"firmware":"<version>"` as its first field (and `"ota_error":"<code>"` after it when the last remote update failed, §9.7), retained, QoS 1. Sent on connect, whenever the run state, fault code, run mode, burner or Auto changes, and at least every 15 s.
-- `backup`: the `GET /api/backup` document (§7.5), retained, QoS 1. Sent on connect and within a minute of any setting changing (firmware 1.41).
+- `backup`: the `GET /api/backup` document (§7.5), retained, QoS 1. Sent on connect, within a minute of any setting changing (firmware 1.41), and within a second of the timers changing by any route (firmware 1.44). Its `timers` array is the copy the website gives apps that are away from the box (§9.9).
 - `event`: `{"kind":"fault"|"refused"|"local_start"|"local_stop"|…, …}`. Firmware 1.0030 sends `fault` (`code`, `name`, once when a fault appears) and `refused` (`id`). `local_start` and `local_stop` are reserved and not sent yet.
 
 ### 9.4 Keys the cloud knows
@@ -324,6 +324,15 @@ Ten entries of 17 bytes from report byte 55; the report's last fault column says
 ```
 
 Every member is optional: `version` only once the heater has answered, `settings` once a settings block is known, `report` once all four pages are in, `unlock_*` after an unlock. `settings.wait_temp` is the heater's own coolant target (in preheat it stops burning there and waits). The report's field offsets come from the tool's profile and are **not yet checked against a real heater**; `GET /api/info` carries `heater_raw` (`settings` hex, `page_len`, the 256 `eeprom` bytes as hex) for that check. Read only: nothing here writes to the heater.
+
+### 9.9 Timers from away (firmware 1.44)
+
+Only for a box linked to the cloud (§8): nothing here exists without enrolment. A whole timer list (up to 32, about 5 KB) does not fit in a §9.1 command, so the cloud changes one timer at a time. Both are plain `POST /api/cmd` bodies too, and need **control** (§6):
+
+- `{"cmd":"timer_set","timer":{…}}`: `timer` is one object in the `GET /api/timers` format (docs/TIMERS.md). It replaces the timer with the same `id`, or is added at the end. The whole resulting list goes through the same rules as `PUT /api/timers`; if it breaks one, nothing changes and the command is `refused`.
+- `{"cmd":"timer_delete","id":"…"}`: removes that timer; `refused` if there is none.
+
+The box sends a fresh `backup` (§9.3) as soon as its list changes, so the website's copy follows changes made at home, from away and by the box itself (a finished one-off dropping off). The website returns that copy as `timers` and `timers_at` in `GET …/devices/<id>/state` (§9.6).
 
 ## 10. Test vectors
 

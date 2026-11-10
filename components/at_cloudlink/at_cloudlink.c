@@ -57,6 +57,7 @@ static int64_t s_state_s;
 static uint8_t s_state_key[4];
 static int64_t s_backup_s;
 static uint32_t s_backup_hash;   // of the last backup sent; 0 = send at the next check
+static uint32_t s_backup_timers; // at_app_timers_version() when the backup was last built
 static bool s_ota_go;          // an `ota` command was accepted: stop the link, then let at_fwupdate download
 static volatile bool s_hold;   // at_cloudlink_hold: keep the link down so another TLS session has the memory
 static volatile bool s_paused; // the supervisor has honoured the hold and the client is gone
@@ -146,11 +147,14 @@ static void publish_state(void)
 }
 
 // The owner's settings (docs/API_SPEC.md §7.5), retained, so the cloud can move them onto a replacement heater.
-// Sent on connect and whenever they change; checked once a minute because building it reads the timers.
+// Sent on connect and whenever they change; checked once a minute because building it reads the timers, and at
+// once when the timers change, since the cloud's copy is the timer list the apps show away from home.
 static void watch_backup(void)
 {
-    if (s_backup_hash && now_s() - s_backup_s < BACKUP_CHECK_S) return;
+    uint32_t tv = at_app_timers_version();
+    if (s_backup_hash && tv == s_backup_timers && now_s() - s_backup_s < BACKUP_CHECK_S) return;
     s_backup_s = now_s();
+    s_backup_timers = tv;
     char *js = at_app_backup_json();
     if (!js) return;
     uint32_t h = 2166136261u;   // FNV-1a

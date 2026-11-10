@@ -373,6 +373,7 @@ static const cmd_perm_t CMD_PERMS[] = {
     { "preheat_duration", AT_PERM_CONTROL }, { "heater_read", AT_PERM_CONTROL },
     { "heater_unlock", AT_PERM_MANAGER },  { "start_pump", AT_PERM_CONTROL },
     { "fuel_prime", AT_PERM_CONTROL },     { "fan_test", AT_PERM_MANAGER },
+    { "timer_set", AT_PERM_CONTROL },      { "timer_delete", AT_PERM_CONTROL },
     { "pump_minutes", AT_PERM_MANAGER },   { "heater_settings", AT_PERM_MANAGER },
     { "hysteresis", AT_PERM_MANAGER },
     { "preheat_temp", AT_PERM_MANAGER },  { "preheat_minutes", AT_PERM_MANAGER },

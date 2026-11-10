@@ -14,7 +14,9 @@ Code map:
 
 ## API
 
-`GET /api/timers` returns the list, `[]` when none. `PUT /api/timers` replaces the whole list; on success `{"ok":true}`, otherwise `400` and `{"ok":false,"error":"timer 2: too close to another timer: ... (timer 1)"}` with nothing changed (`500` if flash could not be written). Same optional web password as the rest of the API. The permission levels in the cloud doc (View to read, Control to change) do not exist in the firmware yet; they arrive with the signed-request work.
+`GET /api/timers` returns the list, `[]` when none. `PUT /api/timers` replaces the whole list; on success `{"ok":true}`, otherwise `400` and `{"ok":false,"error":"timer 2: too close to another timer: ... (timer 1)"}` with nothing changed (`500` if flash could not be written). Reading needs view, changing needs control (docs/API_SPEC.md §6).
+
+From away, through the cloud, the list is changed one timer at a time with `POST /api/cmd` `{"cmd":"timer_set","timer":{…}}` (add, or replace by `id`) and `{"cmd":"timer_delete","id":"…"}`, each checked against the whole resulting list by the same rules. The box sends the list to the cloud (in its `backup`) whenever it changes. Details: docs/API_SPEC.md §9.9.
 
 ```json
 {
@@ -74,7 +76,7 @@ Once per second the box compares the local clock with the schedule.
 
 ## Other front ends
 
-- **MQTT**: the list is published retained to `hearth/<name>/timers`; publish a whole array to `hearth/<name>/cmd/timers/set` to replace it; the outcome is on `hearth/<name>/timers/result` (`{"ok":true}` or `{"ok":false,"error":"..."}`). Home Assistant gets diagnostic entities "Clock set" and "Last timer event". The cloud broker topics and the signed-command path are part of the cloud work, not done here.
+- **MQTT**: the list is published retained to `hearth/<name>/timers`; publish a whole array to `hearth/<name>/cmd/timers/set` to replace it; the outcome is on `hearth/<name>/timers/result` (`{"ok":true}` or `{"ok":false,"error":"..."}`). Home Assistant gets diagnostic entities "Clock set" and "Last timer event". The cloud broker is separate: see docs/API_SPEC.md §9.9.
 - **Console**: `timers` shows the clock, the list, the next start and the last event; `timezone [name]` shows or sets the zone.
 - **Web page**: no timers screen yet; the app is the interface.
 - **Matter**: not exposed. The Thread-only image has no network time or API, so timers there stay inert (`clock_ok` false).

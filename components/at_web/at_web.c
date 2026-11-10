@@ -538,6 +538,17 @@ static bool run_cmd(const cJSON *j)
         ok = z && at_app_set_timezone(z);
     } else if (!strcmp(c, "set_time")) {
         ok = at_app_set_time((int64_t)jnum(j, "epoch", 0));
+    } else if (!strcmp(c, "timer_set")) {
+        /* one timer at a time: a whole list does not fit in a cloud command (docs/TIMERS.md) */
+        char why[160];
+        int code = at_app_timer_set_json(cJSON_GetObjectItemCaseSensitive(j, "timer"), why, sizeof(why));
+        if (code != 200) ESP_LOGW(TAG, "timer_set refused: %s", why);
+        ok = code == 200;
+    } else if (!strcmp(c, "timer_delete")) {
+        char why[160];
+        int code = at_app_timer_delete(jstr(j, "id"), why, sizeof(why));
+        if (code != 200) ESP_LOGW(TAG, "timer_delete refused: %s", why);
+        ok = code == 200;
     } else {
         ok = false;
     }

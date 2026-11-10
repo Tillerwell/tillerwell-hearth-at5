@@ -145,6 +145,11 @@ add_command("command changed after signing", "guest", {"cmd": "stop"}, "bad_sign
             tamper_cmd={"cmd": "factory_reset"})
 add_command("expired command", "guest", {"cmd": "stop"}, "expired", iat=NOW - 120, exp=NOW - 90)
 add_command("command for another box", "guest", {"cmd": "stop"}, "wrong_device", dev=OTHER_DEVICE_ID)
+# The longest timer_set the apps can send (spec §9.9): it must fit the box's command buffers.
+add_command("guest sets the longest timer from the cloud", "guest",
+            {"cmd": "timer_set", "timer": {"id": "6F1C2E0A-1B7D-4F55-9C3A-0D2E5A6B7C8D", "enabled": False,
+             "mode": "thermostat", "start_minute": 1439, "duration_min": 480, "days": [1, 2, 3, 4, 5, 6, 7],
+             "date": "2026-12-31", "low_c": 18, "high_c": 30}}, "valid")
 
 with open(os.path.join(ROOT, "docs", "auth-vectors.json"), "w") as f:
     json.dump(vectors, f, indent=2, default=lambda b: b.decode())
@@ -174,10 +179,11 @@ out.append("static const av_grant_t AV_GRANTS[] = {")
 for g in vectors["grants"]:
     out.append("  { " + ", ".join(c_str(g[k]) for k in ("name", "signer", "token", "qr", "expect")) + " },")
 out.append("};\n")
-out.append("typedef struct { const char *name; const char *signer; const char *message; const char *expect; } av_command_t;")
+out.append("typedef struct { const char *name; const char *signer; const char *message; const char *expect; const char *cmd_json; } av_command_t;")
 out.append("static const av_command_t AV_COMMANDS[] = {")
 for c in vectors["commands"]:
-    out.append("  { " + ", ".join(c_str(c[k]) for k in ("name", "signer", "message", "expect")) + " },")
+    cmd_json = json.dumps(json.loads(c["payload_json"])["cmd"], separators=(",", ":"))
+    out.append("  { " + ", ".join(c_str(c[k]) for k in ("name", "signer", "message", "expect")) + ", " + c_str(cmd_json) + " },")
 out.append("};")
 with open(os.path.join(ROOT, "host_tests", "auth_vectors.h"), "w") as f:
     f.write("\n".join(out) + "\n")
