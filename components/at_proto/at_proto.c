@@ -301,3 +301,30 @@ void at_decode_heater_report(const uint8_t *e, at_heater_report_t *o)
     o->water_pump_runs = be16(e + 231);
     o->warmup_runs = be16(e + 233);
 }
+
+int at_decode_heater_faults(const uint8_t *e, at_heater_fault_t *out, int max)
+{
+    int newest = e[48] < AT_FAULT_HISTORY_N ? e[48] : 0; /* the report's column is this + 1 */
+    int n = 0;
+    for (int k = 0; k < AT_FAULT_HISTORY_N && n < max; k++) {
+        const uint8_t *f = e + 55 + 17 * ((newest - k + AT_FAULT_HISTORY_N) % AT_FAULT_HISTORY_N);
+        if (!f[0]) {
+            continue;
+        }
+        at_heater_fault_t *o = &out[n++];
+        o->code = f[0];
+        o->repeats = f[1];
+        o->state = f[2];
+        o->substate = f[3];
+        o->run_s = be16(f + 4);
+        o->mode_s = be16(f + 6);
+        o->voltage = (float)be16(f + 8) / 10.0f;
+        o->flame_temp = be16(f + 10);
+        o->liquid_temp = f[12];
+        o->overheat_temp = f[13];
+        o->board_temp = f[14];
+        o->second_attempts = f[15];
+        o->flame_breaks = f[16];
+    }
+    return n;
+}

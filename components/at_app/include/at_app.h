@@ -146,7 +146,18 @@ bool at_app_start_preheat(int minutes);       /* minutes <= 0 uses the saved def
 bool at_app_set_preheat_duration(int minutes);
 bool at_app_start_thermostat(void);
 bool at_app_stop(void);
-bool at_app_start_pump(void);
+/* The water (circulation) pump alone; minutes <= 0 uses the saved run time (at_app_pump_minutes). */
+bool at_app_start_pump(int minutes);
+#define AT_PUMP_MINUTES_DEFAULT 40
+int at_app_pump_minutes(void);
+void at_app_set_pump_minutes(int minutes);
+/* Prime the fuel pump after the tank ran dry, and spin the blower on its own. Both only while the heater is idle,
+ * its status fresh, and the box's thermostat not armed (it would start the heater part-way). Stop ends either. */
+bool at_app_fuel_prime(void);
+bool at_app_fan_test(void);
+/* Change the heater's own coolant target (20-95, -1 keeps it) and water pump in standby (1, 0, -1 keeps it). Needs
+ * the settings block read first (at_app_read_heater_info, or the controller's own read at power-up). */
+bool at_app_write_heater_settings(int wait_temp, int pump_standby);
 bool at_app_send_pubr0(void);
 bool at_app_send_pubr0_variant(int variant); /* see at_cmd_send_pubr0_variant */
 /* Read the heater's version, settings block and operation report (docs/PROTOCOL.md, "Vendor test utility

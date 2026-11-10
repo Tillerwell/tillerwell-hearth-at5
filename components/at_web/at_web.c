@@ -455,11 +455,26 @@ static bool run_cmd(const cJSON *j)
     } else if (!strcmp(c, "stop")) {
         ok = at_app_stop();
     } else if (!strcmp(c, "start_pump")) {
-        ok = at_app_start_pump();
+        ok = at_app_start_pump((int)jnum(j, "minutes", 0));
     } else if (!strcmp(c, "send_pubr0")) {
         ok = at_app_send_pubr0();
     } else if (!strcmp(c, "heater_read")) {
         ok = at_app_read_heater_info();
+    } else if (!strcmp(c, "fuel_prime")) {
+        ok = at_app_fuel_prime();
+    } else if (!strcmp(c, "fan_test")) {
+        ok = at_app_fan_test();
+    } else if (!strcmp(c, "pump_minutes")) {
+        double v = jnum(j, "value", -1);
+        ok = v >= 1 && v <= 1440;
+        if (ok) at_app_set_pump_minutes((int)v);
+    } else if (!strcmp(c, "heater_settings")) {
+        /* only the fields given change; each is checked by the core */
+        const cJSON *wt = cJSON_GetObjectItemCaseSensitive(j, "wait_temp");
+        const cJSON *ps = cJSON_GetObjectItemCaseSensitive(j, "pump_standby");
+        int wait = cJSON_IsNumber(wt) ? (int)wt->valuedouble : -1;
+        int standby = cJSON_IsBool(ps) ? cJSON_IsTrue(ps) : -1;
+        ok = (wait != -1 || standby != -1) && at_app_write_heater_settings(wait, standby);
     } else if (!strcmp(c, "heater_unlock")) {
         ok = at_app_unlock();
     } else if (!strcmp(c, "diag_stream")) {
@@ -1107,6 +1122,7 @@ static esp_err_t h_backup_put(httpd_req_t *req)
     SKIP_IF(backup_cmd("use_external_temp", b, "use_external_temp", "enabled"), "use_external_temp");
     SKIP_IF(backup_cmd("preheat_temp", b, "preheat_temp", "value"), "preheat_temp");
     SKIP_IF(backup_cmd("preheat_minutes", b, "preheat_minutes", "value"), "preheat_minutes");
+    SKIP_IF(backup_cmd("pump_minutes", b, "pump_minutes", "value"), "pump_minutes");
     SKIP_IF(backup_cmd("freeze_target", b, "freeze_target", "value"), "freeze_target");
     SKIP_IF(backup_cmd("freeze", b, "freeze_enabled", "enabled"), "freeze_enabled");
     SKIP_IF(backup_cmd("timezone", b, "timezone", "value"), "timezone");

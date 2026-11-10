@@ -108,8 +108,8 @@ Levels are ordered: `view` < `control` < `manager` < `admin` (cloud plan Q8).
 
 | Needs | Commands |
 |---|---|
-| control | `start_preheat`, `stop`, `auto`, `auto_target`, `auto_range`, `preheat_duration`, `set_time`, `tank_level`, `tank_filled`, `heater_read` |
-| manager | `heater_unlock`, `hysteresis`, `preheat_temp`, `preheat_minutes`, `timezone`, `display_name`, `fuel_price`, `fuel_factor`, `fuel_rates`, `tank_capacity` |
+| control | `start_preheat`, `stop`, `auto`, `auto_target`, `auto_range`, `preheat_duration`, `set_time`, `tank_level`, `tank_filled`, `heater_read`, `start_pump`, `fuel_prime` |
+| manager | `heater_unlock`, `heater_settings`, `fan_test`, `pump_minutes`, `hysteresis`, `preheat_temp`, `preheat_minutes`, `timezone`, `display_name`, `fuel_price`, `fuel_factor`, `fuel_rates`, `tank_capacity` |
 | admin | `factory_reset`, `reboot`, `auto_update`, `ota` (cloud only, §9.7), and **any command not listed** (fail closed) |
 
 `GET /api/hello` (public) tells a phone what it is talking to before it holds a key: `{"device_id","name","version","claimed":true|false,"fingerprint"}`.
@@ -292,6 +292,24 @@ Requests the vendor's test tool makes (docs/PROTOCOL.md, "Vendor test utility de
 - `{"cmd":"heater_read"}` (control): asks the heater for its version (`type 06`), its settings block (`type 20`) and its operation report (`type 0b`, four 64-byte pages). Six short diverts, about 3 s in all. The box acks at once; the answers show up in `heater_info` as they arrive, with `reading` true until the last one is in. Refused (`refused`) with Bypass on or the command queue too full for all six.
 - `{"cmd":"heater_unlock"}` (manager): `type 0d`, which clears the heater's lockout (state `1.1`, "locked", after repeated failed starts or overheats). Only while the heater is idle or locked, its status is fresh and no Hearth run is going; otherwise `refused`. It does not clear a fault code, which stays until the next good ignition. There is no command that restarts the heater.
 - `{"cmd":"diag_stream","enabled":true|false}` (admin): the vendor tool's switch for the extended frame. Experimental.
+
+Firmware 1.43 adds the heater's own service functions, again exactly as the vendor tool sends them:
+
+- `{"cmd":"fuel_prime"}` (control): `type 12`, the tool's FuelPump button. Runs the fuel pump without lighting, to push diesel through and clear the air after the tank ran dry. `{"cmd":"stop"}` ends it.
+- `{"cmd":"fan_test"}` (manager): `type 08 60`, spins the blower without lighting. `stop` ends it.
+  Both only while the heater is idle (state 0), its status fresh, the box's thermostat (Auto) off and no Hearth run going; otherwise `refused`.
+- `{"cmd":"start_pump","minutes":n}` (control, was admin): the water (circulation) pump alone, `type 21` with the run time as a big-endian u16, 1-1440. Without `minutes` it uses the saved `pump_minutes` (default 40, the tool's own). This is **not** the fuel pump: earlier notes and the box's own page called it "pump only" and "ventilation", wrongly.
+- `{"cmd":"pump_minutes","value":n}` (manager): the saved water pump run time, 1-1440. In the status and in the backup (§7.5) as `pump_minutes`.
+- `{"cmd":"heater_settings","wait_temp":20-95,"pump_standby":true|false}` (manager): changes the heater's own coolant target and water pump in standby; either field may be left out. Writes `type 20` with the block exactly as the heater last gave it except those two bytes, then reads it back, so `heater_info.settings` shows what the heater now holds. Needs a settings block first (`heater_read`, or the controller's own read at power-up); `refused` without one or with a value out of range. **This writes the heater's own memory.**
+
+`heater_info.report.faults` (1.43): the heater's fault history, newest first, empty entries left out:
+
+```json
+"faults":[{"code":13,"name":"No ignition","repeats":3,"mode":"Ignition 1","run_s":256,"mode_s":12,"voltage":12.5,
+  "flame_temp":40,"liquid_temp":40,"overheat_temp":41,"board_temp":22,"second_attempts":1,"flame_breaks":0}]
+```
+
+Ten entries of 17 bytes from report byte 55; the report's last fault column says which is newest. The layout is the vendor profile's fault table and, like the rest of the report, not yet checked on a real heater.
 
 `heater_info` in `GET /api/status` (and so in the cloud `state`) appears once anything has been read or overheard (the controller reads the settings block itself at power-up):
 

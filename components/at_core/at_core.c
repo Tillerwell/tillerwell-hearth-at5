@@ -671,10 +671,23 @@ bool at_cmd_stop_manual(at_core_t *c, uint32_t now)
     return true;
 }
 
-bool at_cmd_start_pump(at_core_t *c, uint32_t now)
+bool at_cmd_start_pump(at_core_t *c, int minutes, uint32_t now)
 {
-    static const uint8_t m[2] = {0x00, 0x28};
+    if (minutes < 1) minutes = 1;
+    if (minutes > 1440) minutes = 1440;
+    uint8_t m[2] = {(uint8_t)(minutes >> 8), (uint8_t)(minutes & 0xFF)};
     return send_panel_frame(c, AT_TYPE_PUMP, m, 2, 0, "pump", false, now);
+}
+
+bool at_cmd_fuel_prime(at_core_t *c, uint32_t now)
+{
+    return send_panel_frame(c, AT_TYPE_FUEL_PUMP, NULL, 0, 0, "fuel-prime", false, now);
+}
+
+bool at_cmd_fan_test(at_core_t *c, uint32_t now)
+{
+    static const uint8_t speed = 0x60; /* what the tool sends */
+    return send_panel_frame(c, AT_TYPE_FAN_TEST, &speed, 1, 0, "fan-test", false, now);
 }
 
 bool at_cmd_send_pubr0(at_core_t *c, uint32_t now)
@@ -717,6 +730,25 @@ bool at_cmd_diag_stream(at_core_t *c, bool on, uint32_t now)
 {
     uint8_t b = on ? 1 : 0;
     return send_panel_frame(c, AT_TYPE_DIAG, &b, 1, 0, on ? "diag-on" : "diag-off", false, now);
+}
+
+bool at_cmd_write_heater_settings(at_core_t *c, int wait_temp, int pump_standby, uint32_t now)
+{
+    if (!c->info.have_settings || c->info.settings_len < AT_SETTINGS_MIN || c->bypass || AT_QUEUE_LEN - c->q_count < 2) {
+        return false;
+    }
+    if (wait_temp != -1 && (wait_temp < AT_SETTINGS_WAIT_TEMP_MIN || wait_temp > AT_SETTINGS_WAIT_TEMP_MAX)) {
+        return false;
+    }
+    /* the block as the heater last gave it, so every other setting goes back unchanged */
+    uint8_t blk[sizeof(c->info.settings)];
+    memcpy(blk, c->info.settings, c->info.settings_len);
+    if (wait_temp != -1) blk[0] = (uint8_t)wait_temp;
+    if (pump_standby != -1) blk[7] = pump_standby ? 0 : 1; /* 0 on, 1 off */
+    send_panel_frame(c, AT_TYPE_SETTINGS, blk, c->info.settings_len, 0, "hi-write", false, now);
+    send_panel_frame(c, AT_TYPE_SETTINGS, NULL, 0, 500, "hi-settings", false, now);
+    c->info.pending += 2;
+    return true;
 }
 
 void at_core_heater_info(const at_core_t *c, at_heater_info_t *out)

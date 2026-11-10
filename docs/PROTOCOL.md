@@ -672,7 +672,7 @@ off, which PUBR0 cannot.
 | Control: Start | `type01 <u16 BE>` | Default `00 28`. For device types 6 and 10 the tool puts the minutes box into the payload, and **anything that is not a number becomes `ff ff`**, the tool's "no time limit" |
 | Control: Stop | `type03` | |
 | WaterPump | `type21 00 28` | circulation pump only |
-| FuelPump | `type12` (`aa 03 00 00 12 51 bc`) | fuel pump |
+| FuelPump | `type12` (`aa 03 00 00 12 51 bc`) | fuel pump priming, Hearth's `fuel_prime` (1.43) |
 | Fan | `type08 60` | Fan test, value 96. The Air profiles have Fan off as `type08 00`. |
 | Faults | `type0f` | the ordinary status request |
 | Unlock | `type0d` (`aa 03 00 00 0d 99 fd`) | Clears the heater's lockout (state `1.1` "locked", entered after repeated failed starts or overheats). The nearest thing to a reset; **there is no reboot command**. |

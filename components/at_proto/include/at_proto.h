@@ -41,7 +41,12 @@ extern "C" {
 #define AT_TYPE_DIAG        0x07  /* 01 starts the periodic parameter stream, 00 stops it */
 #define AT_TYPE_EEPROM      0x0B  /* read the operation report: 00 <address> 40 = 64 bytes */
 #define AT_TYPE_UNLOCK      0x0D  /* clear the heater's lockout (state 1.1, "locked") */
-#define AT_TYPE_SETTINGS    0x20  /* the heater's settings block, read by the controller at power-up */
+#define AT_TYPE_SETTINGS    0x20  /* the heater's settings block: empty reads it (the controller does at power-up),
+                                     the block itself writes it */
+#define AT_TYPE_FAN_TEST    0x08  /* spin the blower without lighting; the tool sends 60 */
+#define AT_TYPE_FUEL_PUMP   0x12  /* run the fuel pump without lighting: priming after the tank ran dry */
+#define AT_SETTINGS_WAIT_TEMP_MIN 20
+#define AT_SETTINGS_WAIT_TEMP_MAX 95
 
 uint16_t at_crc16(const uint8_t *data, size_t len);
 
@@ -156,6 +161,24 @@ typedef struct {
 } at_heater_report_t;
 
 void at_decode_heater_report(const uint8_t *eeprom, at_heater_report_t *out);
+
+/* The fault history in the same report: 10 entries of 17 bytes from byte 55, and the report's "last fault column"
+ * (1-10) is the newest. Layout from the vendor profile's fault table; not yet checked on a real heater. */
+#define AT_FAULT_HISTORY_N 10
+typedef struct {
+    uint8_t code;
+    uint8_t repeats;
+    uint8_t state, substate;    /* the stage and mode it happened in, as in the status frame */
+    uint16_t run_s;             /* total work time, s */
+    uint16_t mode_s;            /* time in that mode, s */
+    float voltage;
+    int flame_temp, liquid_temp, overheat_temp, board_temp;
+    uint8_t second_attempts;
+    uint8_t flame_breaks;
+} at_heater_fault_t;
+
+/* Fills out newest first, skipping empty entries (code 0); returns how many. */
+int at_decode_heater_faults(const uint8_t *eeprom, at_heater_fault_t *out, int max);
 
 #ifdef __cplusplus
 }

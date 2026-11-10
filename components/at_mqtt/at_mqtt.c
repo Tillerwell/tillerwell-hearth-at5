@@ -114,7 +114,7 @@ static void handle_cmd(const char *suffix, const char *payload)
     if (!strcmp(suffix, "start_preheat")) at_app_start_preheat(0);
     else if (!strcmp(suffix, "start_thermostat")) at_app_start_thermostat();
     else if (!strcmp(suffix, "stop")) at_app_stop();
-    else if (!strcmp(suffix, "start_pump")) at_app_start_pump();
+    else if (!strcmp(suffix, "start_pump")) at_app_start_pump(0);
     else if (!strcmp(suffix, "send_debug_handshake")) at_app_send_pubr0();
     else if (!strcmp(suffix, "preheat_minutes/set")) at_app_set_preheat_minutes((int)atof(payload));
     else if (!strcmp(suffix, "auto_mode/set")) at_app_set_auto(!strcasecmp(payload, "heat"));

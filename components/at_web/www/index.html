@@ -81,7 +81,11 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:
       <input type="number" id="pre" min="1" max="600" style="width:90px" aria-label="Preheat minutes">
       <span class="k">min</span>
       <button class="b grow" onclick="cmd({cmd:'start_preheat',minutes:+pre.value},'Start a preheat for '+pre.value+' minutes?')">Start preheat</button>
-      <button class="b" onclick="cmd({cmd:'start_pump'},'Run the fuel pump / ventilation only?')">Pump only</button>
+    </div>
+    <div class="row">
+      <button class="b grow" onclick="cmd({cmd:'start_pump'},'Run the water pump only, without heating?')">Water pump only</button>
+      <button class="b grow" onclick="cmd({cmd:'fuel_prime'},'Prime the fuel pump? It pushes diesel through without lighting, to clear air after running dry. Press Stop when done.')">Prime fuel</button>
+      <button class="b grow" onclick="cmd({cmd:'fan_test'},'Spin the fan without lighting? Press Stop when done.')">Fan test</button>
     </div>
   </div>
 

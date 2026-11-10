@@ -192,6 +192,7 @@ static void ops_stop(void *ctx) { (void)ctx; core_cmd(at_cmd_stop); }
 static const at_ctl_ops_t s_ops = {ops_start, ops_stop, NULL};
 
 static volatile float s_preheat_temp = AT_PREHEAT_TEMP_DEFAULT;
+static volatile int s_pump_minutes = AT_PUMP_MINUTES_DEFAULT; /* water pump run time, minutes */
 static uint32_t s_last_preheat_stop_ms;
 
 static void ctl_task(void *arg)
@@ -270,6 +271,10 @@ esp_err_t at_app_start(void)
         at_ctl_set_hysteresis(&s_ctl, 2.0f, 1.0f);   /* defaults: the range is at least 3 C wide */
     }
     s_preheat_temp = at_settings_preheat_temp_load();
+    uint16_t pump_min;
+    if (at_settings_blob_load("pump_min", &pump_min, sizeof(pump_min)) && pump_min >= 1 && pump_min <= 1440) {
+        s_pump_minutes = pump_min;
+    }
     s_ctl.use_external = cfg.use_external_temp;
     s_ctl.autot.enabled = cfg.auto_enabled; /* no immediate action at boot, the loop decides */
     s_ctl.freeze.enabled = cfg.freeze_enabled;
@@ -363,7 +368,55 @@ bool at_app_stop(void)
     }
     return core_cmd(at_cmd_stop_manual);
 }
-bool at_app_start_pump(void) { return core_cmd(at_cmd_start_pump); }
+int at_app_pump_minutes(void) { return s_pump_minutes; }
+
+void at_app_set_pump_minutes(int minutes)
+{
+    if (minutes < 1) minutes = 1;
+    if (minutes > 1440) minutes = 1440;
+    s_pump_minutes = minutes;
+    uint16_t v = (uint16_t)minutes;
+    at_settings_blob_save("pump_min", &v, sizeof(v));
+}
+
+bool at_app_start_pump(int minutes)
+{
+    if (minutes <= 0) minutes = s_pump_minutes;
+    xSemaphoreTake(s_core_lock, portMAX_DELAY);
+    bool ok = at_cmd_start_pump(&s_core, minutes, at_now_ms());
+    xSemaphoreGive(s_core_lock);
+    return ok;
+}
+
+/* Fuel priming and the fan test run the heater's parts by hand: only from idle, and never with the box's own
+ * thermostat armed, which would start the heater on top of them. */
+static bool idle_for_service(void)
+{
+    at_settings_t cfg;
+    at_settings_get(&cfg);
+    at_snapshot_t s;
+    at_core_snapshot(&s_core, at_now_ms(), &s);
+    return !cfg.auto_enabled && s.have_status && !s.stale && s.status.state_raw == 0 && !s.hearth_run;
+}
+
+static bool service_cmd(bool (*fn)(at_core_t *, uint32_t))
+{
+    xSemaphoreTake(s_core_lock, portMAX_DELAY);
+    bool ok = idle_for_service() && fn(&s_core, at_now_ms());
+    xSemaphoreGive(s_core_lock);
+    return ok;
+}
+
+bool at_app_fuel_prime(void) { return service_cmd(at_cmd_fuel_prime); }
+bool at_app_fan_test(void) { return service_cmd(at_cmd_fan_test); }
+
+bool at_app_write_heater_settings(int wait_temp, int pump_standby)
+{
+    xSemaphoreTake(s_core_lock, portMAX_DELAY);
+    bool ok = at_cmd_write_heater_settings(&s_core, wait_temp, pump_standby, at_now_ms());
+    xSemaphoreGive(s_core_lock);
+    return ok;
+}
 bool at_app_send_pubr0(void) { return core_cmd(at_cmd_send_pubr0); }
 
 bool at_app_read_heater_info(void) { return core_cmd(at_cmd_read_heater_info); }

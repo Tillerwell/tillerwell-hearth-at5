@@ -43,7 +43,7 @@ static int cmd_status(int argc, char **argv)
 
 static int cmd_start(int argc, char **argv) { printf(at_app_start_thermostat() ? "queued\n" : "not sent\n"); return 0; }
 static int cmd_stop(int argc, char **argv) { printf(at_app_stop() ? "queued\n" : "not sent\n"); return 0; }
-static int cmd_pump(int argc, char **argv) { printf(at_app_start_pump() ? "queued\n" : "not sent\n"); return 0; }
+static int cmd_pump(int argc, char **argv) { printf(at_app_start_pump(0) ? "queued\n" : "not sent\n"); return 0; }
 static int cmd_preheat(int argc, char **argv)
 {
     printf(at_app_start_preheat(argc > 1 ? atoi(argv[1]) : 0) ? "queued\n" : "not sent\n");

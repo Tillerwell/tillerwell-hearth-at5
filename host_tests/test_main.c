@@ -210,6 +210,9 @@ typedef struct {
     uint8_t got_types[32];
     int heater_cabin; /* payload of the last cabin temperature report the heater received */
     uint8_t last_start[AT_MAX_FRAME]; /* the last start (type 0x01) frame, byte for byte */
+    uint8_t last_frame[AT_MAX_FRAME];  /* the last frame that isn't a routine poll */
+    size_t last_frame_len;
+    uint8_t settings[9];               /* the heater's settings block */
     size_t last_start_len;
     int heater_state;
     int ack_delay_ms;
@@ -239,6 +242,7 @@ static void heater_cb(at_ev_kind_t k, const uint8_t *d, size_t n, bool ok, void 
     if (s->got_frames < 32) s->got_types[s->got_frames] = d[4];
     s->got_frames++;
     if (d[4] == 0x01 && n <= sizeof(s->last_start)) { memcpy(s->last_start, d, n); s->last_start_len = n; }
+    if (d[4] != 0x0F && d[4] != 0x11 && n <= sizeof(s->last_frame)) { memcpy(s->last_frame, d, n); s->last_frame_len = n; }
     if (d[4] == 0x11 && n == 8) s->heater_cabin = d[5];
     if (s->heater_silent) return;
     uint8_t out[AT_MAX_FRAME];
@@ -264,7 +268,13 @@ static void heater_cb(at_ev_kind_t k, const uint8_t *d, size_t n, bool ok, void 
         break;
     case 0x21: on = at_build_frame(2, 0x21, (const uint8_t[]){0, 0x28, 0}, 3, out); break;
     case 0x06: on = at_build_frame(4, 0x06, (const uint8_t[]){10, 1, 3, 7}, 4, out); break;
-    case 0x20: on = at_build_frame(4, 0x20, (const uint8_t[]){0x58, 0, 0x55, 1, 0x28, 0, 0, 0, 0}, 9, out); break;
+    case 0x20:
+        if (!s->settings[0]) memcpy(s->settings, (const uint8_t[]){0x58, 0, 0x55, 1, 0x28, 0, 0, 0, 0}, 9);
+        if (n == 7 + 9) memcpy(s->settings, d + 5, 9); /* a write: the block itself */
+        on = at_build_frame(4, 0x20, s->settings, 9, out);
+        break;
+    case 0x12: on = at_build_frame(4, 0x12, NULL, 0, out); break;
+    case 0x08: on = at_build_frame(4, 0x08, d + 5, 1, out); break;
     case 0x0B: {
         /* the address echoed, then 64 bytes whose every byte is its own EEPROM address */
         uint8_t pg[66];
@@ -449,8 +459,8 @@ static void test_injection(void)
     CHECK(seen_marker_at >= 0 && seen_dur_at >= 0);
     CHECK(seen_dur_at - seen_marker_at >= 1500);
 
-    /* pump */
-    CHECK(at_cmd_start_pump(&c, s.now));
+    /* water pump: the run time is the payload, 40 min the tool's default */
+    CHECK(at_cmd_start_pump(&c, 40, s.now));
     sim_run(&s, &c, 3000);
     CHECK(count_type(&s, 0x21) == 1);
 }
@@ -479,6 +489,19 @@ static void test_heater_info(void)
     CHECK(r.product_code == 0x1234 && r.serial == 0x010203 && r.starts == 300);
     CHECK(r.total_s == 65536 && r.last_fault_column == 5 && r.water_pump_runs == 9);
 
+    /* fault history: newest is column e[48]+1 (here 5, entry index 4), then backwards round the ten */
+    memset(e + 55, 0, 170);
+    uint8_t *f4 = e + 55 + 17 * 4, *f3 = e + 55 + 17 * 3, *f9 = e + 55 + 17 * 9;
+    f4[0] = 13; f4[1] = 3; f4[2] = 2; f4[3] = 3; f4[4] = 0x01; f4[5] = 0x00; f4[8] = 0x00; f4[9] = 0x7D; f4[12] = 40; f4[15] = 1;
+    f3[0] = 78;
+    f9[0] = 25;
+    at_heater_fault_t hf[AT_FAULT_HISTORY_N];
+    int nf = at_decode_heater_faults(e, hf, AT_FAULT_HISTORY_N);
+    CHECK(nf == 3);
+    CHECK(hf[0].code == 13 && hf[0].repeats == 3 && hf[0].state == 2 && hf[0].substate == 3 && hf[0].run_s == 256);
+    CHECK(fabsf(hf[0].voltage - 12.5f) < 0.01f && hf[0].liquid_temp == 40 && hf[0].second_attempts == 1);
+    CHECK(hf[1].code == 78 && hf[2].code == 25); /* 4, 3, then round to 9 */
+
     static sim_t s;
     static at_core_t c;
     bus_setup(&s, &c);
@@ -504,6 +527,26 @@ static void test_heater_info(void)
     at_core_heater_info(&c, &hi);
     CHECK(hi.have_unlock && hi.unlock_replied && count_type(&s, 0x0D) == 1);
 
+    /* the heater's own settings: coolant target and water pump in standby, everything else written back as read */
+    CHECK(!at_cmd_write_heater_settings(&c, 19, -1, s.now)); /* out of range */
+    CHECK(at_cmd_write_heater_settings(&c, 75, 0, s.now));
+    sim_run(&s, &c, 5000);
+    static const uint8_t written[] = {75, 0, 0x55, 1, 0x28, 0, 0, 1, 0};
+    CHECK(memcmp(s.settings, written, 9) == 0);
+    at_core_heater_info(&c, &hi);
+    CHECK(hi.pending == 0 && hi.settings[0] == 75 && hi.settings[7] == 1);
+
+    /* prime and fan test: the tool's frames */
+    CHECK(at_cmd_fuel_prime(&c, s.now));
+    sim_run(&s, &c, 3000);
+    CHECK(s.last_frame_len == 7 && s.last_frame[4] == 0x12);
+    CHECK(at_cmd_fan_test(&c, s.now));
+    sim_run(&s, &c, 3000);
+    CHECK(s.last_frame_len == 8 && s.last_frame[4] == 0x08 && s.last_frame[5] == 0x60);
+    CHECK(at_cmd_start_pump(&c, 1440, s.now));
+    sim_run(&s, &c, 3000);
+    CHECK(s.last_frame_len == 9 && s.last_frame[4] == 0x21 && s.last_frame[5] == 0x05 && s.last_frame[6] == 0xa0);
+
     /* overheard: the controller reads the settings block itself at power-up */
     static sim_t s2;
     static at_core_t c2;
@@ -518,7 +561,7 @@ static void test_heater_info(void)
     static sim_t s3;
     static at_core_t c3;
     bus_setup(&s3, &c3);
-    for (int i = 0; i < AT_QUEUE_LEN - 5; i++) CHECK(at_cmd_start_pump(&c3, s3.now));
+    for (int i = 0; i < AT_QUEUE_LEN - 5; i++) CHECK(at_cmd_start_pump(&c3, 40, s3.now));
     CHECK(!at_cmd_read_heater_info(&c3, s3.now));
     at_core_snapshot(&c3, s3.now, &sn);
     CHECK(sn.queue_len == AT_QUEUE_LEN - 5);

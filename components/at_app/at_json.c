@@ -208,6 +208,7 @@ char *at_app_backup_json(void)
     cJSON_AddBoolToObject(o, "use_external_temp", v.use_external_temp);
     cJSON_AddNumberToObject(o, "preheat_temp", round3(v.preheat_temp));
     cJSON_AddNumberToObject(o, "preheat_minutes", v.preheat_minutes);
+    cJSON_AddNumberToObject(o, "pump_minutes", at_app_pump_minutes());
     cJSON_AddBoolToObject(o, "freeze_enabled", v.freeze_enabled);
     cJSON_AddNumberToObject(o, "freeze_target", round3(v.freeze_target));
     cJSON_AddStringToObject(o, "timezone", ts.timezone);
@@ -318,6 +319,27 @@ static void add_heater_info(cJSON *o)
         cJSON_AddNumberToObject(rp, "pump_only_s", r.pump_only_s);
         cJSON_AddNumberToObject(rp, "last_fault_column", r.last_fault_column);
         cJSON_AddNumberToObject(rp, "age_s", (now - hi->eeprom_ms) / 1000);
+        at_heater_fault_t f[AT_FAULT_HISTORY_N];
+        int nf = at_decode_heater_faults(hi->eeprom, f, AT_FAULT_HISTORY_N);
+        cJSON *fa = cJSON_AddArrayToObject(rp, "faults");
+        for (int i = 0; i < nf; i++) {
+            cJSON *e = cJSON_CreateObject();
+            const char *name = at_fault_name(f[i].code);
+            cJSON_AddNumberToObject(e, "code", f[i].code);
+            cJSON_AddStringToObject(e, "name", name ? name : "unknown");
+            cJSON_AddNumberToObject(e, "repeats", f[i].repeats);
+            cJSON_AddStringToObject(e, "mode", at_mode_name(f[i].state, f[i].substate));
+            cJSON_AddNumberToObject(e, "run_s", f[i].run_s);
+            cJSON_AddNumberToObject(e, "mode_s", f[i].mode_s);
+            cJSON_AddNumberToObject(e, "voltage", round3(f[i].voltage));
+            cJSON_AddNumberToObject(e, "flame_temp", f[i].flame_temp);
+            cJSON_AddNumberToObject(e, "liquid_temp", f[i].liquid_temp);
+            cJSON_AddNumberToObject(e, "overheat_temp", f[i].overheat_temp);
+            cJSON_AddNumberToObject(e, "board_temp", f[i].board_temp);
+            cJSON_AddNumberToObject(e, "second_attempts", f[i].second_attempts);
+            cJSON_AddNumberToObject(e, "flame_breaks", f[i].flame_breaks);
+            cJSON_AddItemToArray(fa, e);
+        }
     }
     if (hi->have_unlock) {
         cJSON_AddNumberToObject(h, "unlock_age_s", (now - hi->unlock_ms) / 1000);
@@ -376,6 +398,7 @@ static char *build_state_json(void)
     cJSON_AddStringToObject(o, "prevent_freezing_note", v.freeze_note);
     cJSON_AddNumberToObject(o, "preheat_minutes", v.preheat_minutes);
     cJSON_AddBoolToObject(o, "auto_update", at_settings_auto_update());
+    cJSON_AddNumberToObject(o, "pump_minutes", at_app_pump_minutes());
     add_heater_info(o);
 
     cJSON_AddBoolToObject(o, "bypass_mode", s->bypass);

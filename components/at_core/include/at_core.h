@@ -214,7 +214,11 @@ bool at_cmd_set_preheat_duration(at_core_t *c, int minutes, uint32_t now_ms);
 bool at_cmd_start_thermostat(at_core_t *c, uint32_t now_ms);
 bool at_cmd_stop(at_core_t *c, uint32_t now_ms);
 bool at_cmd_stop_manual(at_core_t *c, uint32_t now_ms);
-bool at_cmd_start_pump(at_core_t *c, uint32_t now_ms);
+/* The water (circulation) pump alone for minutes (1-1440); the tool's default is 40. */
+bool at_cmd_start_pump(at_core_t *c, int minutes, uint32_t now_ms);
+/* Prime the fuel pump (the tool's FuelPump button) and the fan test; Stop ends either. The caller decides when. */
+bool at_cmd_fuel_prime(at_core_t *c, uint32_t now_ms);
+bool at_cmd_fan_test(at_core_t *c, uint32_t now_ms);
 bool at_cmd_send_pubr0(at_core_t *c, uint32_t now_ms);
 /* Experiments for a heater that does not start streaming after the plain handshake. Each only varies the PUBR0
  * frame or the bus around it, nothing else is ever sent. 1: CRC most-significant byte first. 2: bus silent for
@@ -228,6 +232,9 @@ bool at_cmd_read_heater_info(at_core_t *c, uint32_t now_ms);
 bool at_cmd_unlock(at_core_t *c, uint32_t now_ms);
 /* The vendor tool's periodic parameter stream (the 58-byte extended frame) on or off. */
 bool at_cmd_diag_stream(at_core_t *c, bool on, uint32_t now_ms);
+/* Write the heater's settings block back with the coolant target (20-95, or -1 to keep) and the water pump in
+ * standby (1 on, 0 off, -1 keep) changed, then read it again. Needs a block read before; false otherwise. */
+bool at_cmd_write_heater_settings(at_core_t *c, int wait_temp, int pump_standby, uint32_t now_ms);
 void at_core_heater_info(const at_core_t *c, at_heater_info_t *out);
 
 /* Plain-data snapshot for the UI / MQTT / Matter layers. */
