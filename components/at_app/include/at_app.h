@@ -149,6 +149,15 @@ bool at_app_stop(void);
 bool at_app_start_pump(void);
 bool at_app_send_pubr0(void);
 bool at_app_send_pubr0_variant(int variant); /* see at_cmd_send_pubr0_variant */
+/* Read the heater's version, settings block and operation report (docs/PROTOCOL.md, "Vendor test utility
+ * decoded"). The replies land in at_app_heater_info over the next few seconds. */
+bool at_app_read_heater_info(void);
+/* Clear the heater's lockout. Refused unless the heater is idle or locked and no Hearth run is going. */
+bool at_app_unlock(void);
+/* The heater's periodic parameter stream (the extended frame) on or off, the vendor tool's way. */
+bool at_app_diag_stream(bool on);
+/* A copy of what the heater has told us; now_ms is the clock its times are measured against. */
+void at_app_heater_info(at_heater_info_t *out, uint32_t *now_ms);
 
 /* ---- fuel estimate (at_app_fuel.c) ---------------------------------------- */
 

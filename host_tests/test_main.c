@@ -263,6 +263,18 @@ static void heater_cb(at_ev_kind_t k, const uint8_t *d, size_t n, bool ok, void 
         on = at_build_frame(4, 0x03, NULL, 0, out);
         break;
     case 0x21: on = at_build_frame(2, 0x21, (const uint8_t[]){0, 0x28, 0}, 3, out); break;
+    case 0x06: on = at_build_frame(4, 0x06, (const uint8_t[]){10, 1, 3, 7}, 4, out); break;
+    case 0x20: on = at_build_frame(4, 0x20, (const uint8_t[]){0x58, 0, 0x55, 1, 0x28, 0, 0, 0, 0}, 9, out); break;
+    case 0x0B: {
+        /* the address echoed, then 64 bytes whose every byte is its own EEPROM address */
+        uint8_t pg[66];
+        pg[0] = d[5];
+        pg[1] = d[6];
+        for (int i = 0; i < 64; i++) pg[2 + i] = (uint8_t)(d[6] + i);
+        on = at_build_frame(4, 0x0B, pg, sizeof(pg), out);
+        break;
+    }
+    case 0x0D: on = at_build_frame(4, 0x0D, NULL, 0, out); break;
     default: break;
     }
     if (on) {
@@ -441,6 +453,75 @@ static void test_injection(void)
     CHECK(at_cmd_start_pump(&c, s.now));
     sim_run(&s, &c, 3000);
     CHECK(count_type(&s, 0x21) == 1);
+}
+
+static void test_heater_info(void)
+{
+    printf("heater info and unlock\n");
+    /* the controller's settings reply captured 2026-10-27 */
+    static const uint8_t blk[] = {0x58, 0x00, 0x55, 0x01, 0x28, 0x00, 0x00, 0x00, 0x00};
+    at_heater_settings_t hs;
+    CHECK(at_decode_heater_settings(blk, sizeof(blk), &hs));
+    CHECK(hs.wait_temp == 88 && hs.warmup_mode == 0 && hs.warmup_wait_temp == 85 && !hs.relay_auto);
+    CHECK(hs.relay_on_temp == 40 && !hs.pump_impulse && !hs.pump_with_engine && hs.pump_standby && hs.signal_channel);
+    CHECK(hs.extra == -1);
+    CHECK(!at_decode_heater_settings(blk, 8, &hs));
+
+    uint8_t e[AT_EEPROM_LEN] = {0};
+    e[2] = 0x12; e[3] = 0x34;
+    e[4] = 0x01; e[5] = 0x02; e[6] = 0x03;
+    e[12] = 0x01; e[13] = 0x2C;                 /* 300 starts */
+    e[22] = 0x00; e[23] = 0x01; e[24] = 0x00; e[25] = 0x00; /* 65536 s */
+    e[48] = 4;
+    e[231] = 0; e[232] = 9;
+    at_heater_report_t r;
+    at_decode_heater_report(e, &r);
+    CHECK(r.product_code == 0x1234 && r.serial == 0x010203 && r.starts == 300);
+    CHECK(r.total_s == 65536 && r.last_fault_column == 5 && r.water_pump_runs == 9);
+
+    static sim_t s;
+    static at_core_t c;
+    bus_setup(&s, &c);
+    sim_run(&s, &c, 3000);
+    CHECK(at_cmd_read_heater_info(&c, s.now));
+    at_heater_info_t hi;
+    at_core_heater_info(&c, &hi);
+    CHECK(hi.pending == 6 && hi.have_read);
+    sim_run(&s, &c, 15000);
+    at_core_heater_info(&c, &hi);
+    CHECK(hi.pending == 0);
+    CHECK(hi.have_version && hi.version[0] == 10 && hi.version[3] == 7);
+    CHECK(hi.have_settings && hi.settings_len == 9 && hi.settings[0] == 0x58);
+    CHECK(hi.pages == 0x0F && hi.page_len[0] == 66 && hi.page_len[3] == 66);
+    CHECK(hi.eeprom[0] == 0 && hi.eeprom[63] == 63 && hi.eeprom[64] == 64 && hi.eeprom[255] == 255);
+    at_snapshot_t sn;
+    at_core_snapshot(&c, s.now, &sn);
+    CHECK(sn.inject_fail == 0 && sn.inject_ok == 6); /* the version reply counted as ours */
+    CHECK(s.panel_status_replies >= 6);            /* the controller kept being served (a status poll every 2 s) */
+
+    CHECK(at_cmd_unlock(&c, s.now));
+    sim_run(&s, &c, 3000);
+    at_core_heater_info(&c, &hi);
+    CHECK(hi.have_unlock && hi.unlock_replied && count_type(&s, 0x0D) == 1);
+
+    /* overheard: the controller reads the settings block itself at power-up */
+    static sim_t s2;
+    static at_core_t c2;
+    bus_setup(&s2, &c2);
+    sim_run(&s2, &c2, 1500);
+    panel_control(&s2, 0x20, NULL, 0);
+    sim_run(&s2, &c2, 1500);
+    at_core_heater_info(&c2, &hi);
+    CHECK(hi.have_settings && hi.settings[2] == 0x55);
+
+    /* no room in the queue: nothing queued at all */
+    static sim_t s3;
+    static at_core_t c3;
+    bus_setup(&s3, &c3);
+    for (int i = 0; i < AT_QUEUE_LEN - 5; i++) CHECK(at_cmd_start_pump(&c3, s3.now));
+    CHECK(!at_cmd_read_heater_info(&c3, s3.now));
+    at_core_snapshot(&c3, s3.now, &sn);
+    CHECK(sn.queue_len == AT_QUEUE_LEN - 5);
 }
 
 static void test_injection_no_reply(void)
@@ -1765,6 +1846,7 @@ int main(void)
     test_passthrough();
     test_log_snapshot();
     test_injection();
+    test_heater_info();
     test_injection_no_reply();
     test_manual_stop_panel_handoff();
     test_run_mode();

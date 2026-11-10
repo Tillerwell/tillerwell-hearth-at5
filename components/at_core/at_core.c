@@ -93,6 +93,16 @@ static void note_frame(at_core_t *c, uint32_t now, bool from_heater, const uint8
         c->cabin_temp = p[0];
         c->have_cabin = true;
         c->cabin_ms = now;
+    } else if (from_heater && type == AT_TYPE_SETTINGS && plen >= AT_SETTINGS_MIN && plen <= sizeof(c->info.settings)) {
+        /* ours, or the controller's own read at power-up */
+        memcpy(c->info.settings, p, plen);
+        c->info.settings_len = (uint8_t)plen;
+        c->info.have_settings = true;
+        c->info.settings_ms = now;
+    } else if (from_heater && type == AT_TYPE_VERSION && plen >= 4) {
+        memcpy(c->info.version, p, 4);
+        c->info.have_version = true;
+        c->info.version_ms = now;
     } else if (dev == 0x02 && type == 0x01 && plen >= 2) {
         if (at_decode_ext(p, plen, &c->ext)) {
             if (!c->ext_frames++) c->ext_first_ms = now;
@@ -248,8 +258,16 @@ static void set_last_cmd(at_core_t *c, uint32_t now, const char *note)
     c->last_cmd_replied = false;
 }
 
+static bool is_info_note(const char *note)
+{
+    return !strncmp(note, "hi-", 3);
+}
+
 static void q_pop(at_core_t *c, uint32_t now)
 {
+    if (is_info_note(c->q[c->q_head].note) && c->info.pending > 0) {
+        c->info.pending--;
+    }
     c->q_head = (c->q_head + 1) % AT_QUEUE_LEN;
     c->q_count--;
     c->last_done_ms = now;
@@ -286,6 +304,7 @@ void at_core_set_bypass(at_core_t *c, bool on)
         if (c->q_count > keep) {
             c->q_count = keep;
         }
+        c->info.pending = keep && is_info_note(c->q[c->q_head].note) ? 1 : 0;
     }
 }
 
@@ -343,9 +362,13 @@ static void heater_reply_cb(at_ev_kind_t kind, const uint8_t *data, size_t len, 
         note_frame(c, x->now, true, data, len);
     }
     size_t plen = len >= 7 ? len - 7 : 0;
+    const at_queue_item_t *it = c->q_count ? &c->q[c->q_head] : NULL;
+    uint8_t sent = it ? it->frame[4] : 0;
     /* A non-empty frame of a display query type can only be the reply to a
-     * query the panel itself sent just before the divert: not ours. */
-    if (crc_ok && plen > 0 && len > 4 && is_known_query_type(data[4])) {
+     * query the panel itself sent just before the divert: not ours, unless
+     * we asked the same question (the version request). */
+    bool asked = crc_ok && len > 4 && data[4] == sent && sent != AT_TYPE_STATUS;
+    if (!asked && crc_ok && plen > 0 && len > 4 && is_known_query_type(data[4])) {
         log_add(c, x->now, 'F', data, len, true);
         return;
     }
@@ -356,7 +379,20 @@ static void heater_reply_cb(at_ev_kind_t kind, const uint8_t *data, size_t len, 
          * let it see the heater's echo of ours, as it would after its own.
          * Not for starts: seeing the echo of a start it did not send, it
          * stopped the heater a second later (and showed preheat without). */
-        uint8_t sent = c->q_count ? c->q[c->q_head].frame[4] : 0;
+        if (sent == AT_TYPE_UNLOCK) {
+            c->info.unlock_replied = true;
+        }
+        /* One page of the operation report; any bytes before the 64 are taken to be the address echoed. */
+        if (asked && sent == AT_TYPE_EEPROM && plen >= AT_EEPROM_PAGE_LEN) {
+            int page = it->frame[AT_HEADER_LEN + 1] / AT_EEPROM_PAGE_LEN;
+            if (page >= 0 && page < AT_EEPROM_PAGES) {
+                memcpy(c->info.eeprom + page * AT_EEPROM_PAGE_LEN, data + AT_HEADER_LEN + plen - AT_EEPROM_PAGE_LEN,
+                       AT_EEPROM_PAGE_LEN);
+                c->info.page_len[page] = (uint8_t)plen;
+                c->info.pages |= (uint8_t)(1u << page);
+                c->info.eeprom_ms = x->now;
+            }
+        }
         if (len > 4 && data[4] == sent && sent == AT_TYPE_STOP) {
             c->panel.write(c->panel.ctx, data, len);
             log_add(c, x->now, 'E', data, len, true);
@@ -646,6 +682,46 @@ bool at_cmd_send_pubr0(at_core_t *c, uint32_t now)
     uint8_t f[AT_PUBR0_LEN];
     at_build_pubr0(f);
     return at_core_enqueue(c, f, sizeof(f), 0, true, "PUBR0", now);
+}
+
+/* The vendor tool's requests, each a short divert of its own like any command. */
+bool at_cmd_read_heater_info(at_core_t *c, uint32_t now)
+{
+    if (c->bypass || AT_QUEUE_LEN - c->q_count < 2 + AT_EEPROM_PAGES) {
+        return false;
+    }
+    send_panel_frame(c, AT_TYPE_VERSION, NULL, 0, 0, "hi-version", false, now);
+    send_panel_frame(c, AT_TYPE_SETTINGS, NULL, 0, 300, "hi-settings", false, now);
+    for (int i = 0; i < AT_EEPROM_PAGES; i++) {
+        uint8_t req[3] = {0x00, (uint8_t)(i * AT_EEPROM_PAGE_LEN), AT_EEPROM_PAGE_LEN};
+        send_panel_frame(c, AT_TYPE_EEPROM, req, sizeof(req), 300, "hi-eeprom", false, now);
+    }
+    c->info.pending += 2 + AT_EEPROM_PAGES;
+    c->info.have_read = true;
+    c->info.read_ms = now;
+    return true;
+}
+
+bool at_cmd_unlock(at_core_t *c, uint32_t now)
+{
+    if (!send_panel_frame(c, AT_TYPE_UNLOCK, NULL, 0, 0, "unlock", false, now)) {
+        return false;
+    }
+    c->info.have_unlock = true;
+    c->info.unlock_ms = now;
+    c->info.unlock_replied = false;
+    return true;
+}
+
+bool at_cmd_diag_stream(at_core_t *c, bool on, uint32_t now)
+{
+    uint8_t b = on ? 1 : 0;
+    return send_panel_frame(c, AT_TYPE_DIAG, &b, 1, 0, on ? "diag-on" : "diag-off", false, now);
+}
+
+void at_core_heater_info(const at_core_t *c, at_heater_info_t *out)
+{
+    *out = c->info;
 }
 
 /* ---- snapshot ------------------------------------------------------------- */

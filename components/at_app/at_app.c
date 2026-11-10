@@ -366,6 +366,36 @@ bool at_app_stop(void)
 bool at_app_start_pump(void) { return core_cmd(at_cmd_start_pump); }
 bool at_app_send_pubr0(void) { return core_cmd(at_cmd_send_pubr0); }
 
+bool at_app_read_heater_info(void) { return core_cmd(at_cmd_read_heater_info); }
+
+bool at_app_unlock(void)
+{
+    xSemaphoreTake(s_core_lock, portMAX_DELAY);
+    at_snapshot_t s;
+    at_core_snapshot(&s_core, at_now_ms(), &s);
+    /* 0 idle, 1 locked / waiting: never in the middle of a run or its cooldown */
+    bool ok = s.have_status && !s.stale && s.status.state_raw <= 1 && !s.hearth_run &&
+              at_cmd_unlock(&s_core, at_now_ms());
+    xSemaphoreGive(s_core_lock);
+    return ok;
+}
+
+bool at_app_diag_stream(bool on)
+{
+    xSemaphoreTake(s_core_lock, portMAX_DELAY);
+    bool ok = at_cmd_diag_stream(&s_core, on, at_now_ms());
+    xSemaphoreGive(s_core_lock);
+    return ok;
+}
+
+void at_app_heater_info(at_heater_info_t *out, uint32_t *now_ms)
+{
+    xSemaphoreTake(s_core_lock, portMAX_DELAY);
+    at_core_heater_info(&s_core, out);
+    *now_ms = at_now_ms();
+    xSemaphoreGive(s_core_lock);
+}
+
 bool at_app_send_pubr0_variant(int variant)
 {
     xSemaphoreTake(s_core_lock, portMAX_DELAY);

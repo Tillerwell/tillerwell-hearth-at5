@@ -108,8 +108,8 @@ Levels are ordered: `view` < `control` < `manager` < `admin` (cloud plan Q8).
 
 | Needs | Commands |
 |---|---|
-| control | `start_preheat`, `stop`, `auto`, `auto_target`, `auto_range`, `preheat_duration`, `set_time`, `tank_level`, `tank_filled` |
-| manager | `hysteresis`, `preheat_temp`, `preheat_minutes`, `timezone`, `display_name`, `fuel_price`, `fuel_factor`, `fuel_rates`, `tank_capacity` |
+| control | `start_preheat`, `stop`, `auto`, `auto_target`, `auto_range`, `preheat_duration`, `set_time`, `tank_level`, `tank_filled`, `heater_read` |
+| manager | `heater_unlock`, `hysteresis`, `preheat_temp`, `preheat_minutes`, `timezone`, `display_name`, `fuel_price`, `fuel_factor`, `fuel_rates`, `tank_capacity` |
 | admin | `factory_reset`, `reboot`, `auto_update`, `ota` (cloud only, §9.7), and **any command not listed** (fail closed) |
 
 `GET /api/hello` (public) tells a phone what it is talking to before it holds a key: `{"device_id","name","version","claimed":true|false,"fingerprint"}`.
@@ -284,6 +284,28 @@ Both are admin commands in the §9.1 envelope. A phone away from the box's netwo
   - Otherwise the box acks `done` (meaning accepted), says `offline` and drops the cloud link to free the memory for the download's own TLS session, downloads, checks the image's version string against the command, its size and its SHA-256 (read back from flash before the image can be chosen to boot), then boots it. There is no ack at the end: the app sees `state.firmware` change when the box reconnects.
   - If the update fails the box stays on the old image, reconnects, includes `"ota_error":"<code>"` in `state` until the next restart and sends the `event` `{"kind":"ota_failed","name":"<code>"}`. Codes: `download_failed`, `wrong_version`, `size_mismatch`, `bad_hash`, `bad_image`, `no_memory`.
   - The local route `POST /api/ota` (§5.2) is unchanged and is still how a phone on the same network sends an image.
+
+### 9.8 Heater information and unlock (firmware 1.42)
+
+Requests the vendor's test tool makes (docs/PROTOCOL.md, "Vendor test utility decoded"). Plain `POST /api/cmd` bodies, so they also go through the cloud as §9.1 commands.
+
+- `{"cmd":"heater_read"}` (control): asks the heater for its version (`type 06`), its settings block (`type 20`) and its operation report (`type 0b`, four 64-byte pages). Six short diverts, about 3 s in all. The box acks at once; the answers show up in `heater_info` as they arrive, with `reading` true until the last one is in. Refused (`refused`) with Bypass on or the command queue too full for all six.
+- `{"cmd":"heater_unlock"}` (manager): `type 0d`, which clears the heater's lockout (state `1.1`, "locked", after repeated failed starts or overheats). Only while the heater is idle or locked, its status is fresh and no Hearth run is going; otherwise `refused`. It does not clear a fault code, which stays until the next good ignition. There is no command that restarts the heater.
+- `{"cmd":"diag_stream","enabled":true|false}` (admin): the vendor tool's switch for the extended frame. Experimental.
+
+`heater_info` in `GET /api/status` (and so in the cloud `state`) appears once anything has been read or overheard (the controller reads the settings block itself at power-up):
+
+```json
+"heater_info":{"reading":false,"read_age_s":12,"version":"10.1.3.7","device_type":10,
+ "settings":{"wait_temp":88,"warmup":"off","warmup_wait_temp":85,"relay":"off","relay_on_temp":40,
+   "pump_signal":"constant","pump_with_engine":false,"pump_standby":true,"signal_channel":true,"age_s":12},
+ "report":{"product_code":0,"serial":0,"starts":0,"starts_ok":0,"starts_fault":0,"first_attempt":0,
+   "second_attempt":0,"no_ignition":0,"power_cuts":0,"water_pump_runs":0,"warmup_runs":0,"total_s":0,
+   "high_s":0,"middle_s":0,"low_s":0,"wait_s":0,"pump_only_s":0,"last_fault_column":0,"age_s":12},
+ "unlock_age_s":40,"unlock_replied":true}
+```
+
+Every member is optional: `version` only once the heater has answered, `settings` once a settings block is known, `report` once all four pages are in, `unlock_*` after an unlock. `settings.wait_temp` is the heater's own coolant target (in preheat it stops burning there and waits). The report's field offsets come from the tool's profile and are **not yet checked against a real heater**; `GET /api/info` carries `heater_raw` (`settings` hex, `page_len`, the 256 `eeprom` bytes as hex) for that check. Read only: nothing here writes to the heater.
 
 ## 10. Test vectors
 

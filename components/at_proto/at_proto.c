@@ -258,3 +258,46 @@ bool at_decode_ext(const uint8_t *p, size_t len, at_ext_t *o)
     o->output_pct = (int)lroundf(pct < 0 ? 0 : (pct > 100 ? 100 : pct));
     return true;
 }
+
+bool at_decode_heater_settings(const uint8_t *p, size_t len, at_heater_settings_t *o)
+{
+    if (len < AT_SETTINGS_MIN) {
+        return false;
+    }
+    o->wait_temp = p[0];
+    o->warmup_mode = p[1];
+    o->warmup_wait_temp = p[2];
+    o->relay_auto = p[3] == 0;
+    o->relay_on_temp = p[4];
+    o->pump_impulse = p[5] != 0;
+    o->pump_with_engine = p[6] != 0;
+    o->pump_standby = p[7] == 0;
+    o->signal_channel = p[8] == 0;
+    o->extra = len > 9 ? p[9] : -1;
+    return true;
+}
+
+static uint16_t be16(const uint8_t *p) { return (uint16_t)((p[0] << 8) | p[1]); }
+static uint32_t be32(const uint8_t *p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
+
+void at_decode_heater_report(const uint8_t *e, at_heater_report_t *o)
+{
+    o->product_code = be16(e + 2);
+    o->serial = ((uint32_t)e[4] << 16) | ((uint32_t)e[5] << 8) | e[6];
+    o->starts = be16(e + 12);
+    o->starts_ok = be16(e + 16);
+    o->starts_fault = be16(e + 18);
+    o->power_cuts = e[21];
+    o->total_s = be32(e + 22);
+    o->high_s = be32(e + 26);
+    o->middle_s = be32(e + 30);
+    o->low_s = be32(e + 34);
+    o->wait_s = be32(e + 38);
+    o->first_attempt = be16(e + 42);
+    o->second_attempt = be16(e + 44);
+    o->no_ignition = be16(e + 46);
+    o->last_fault_column = (uint8_t)(e[48] + 1);
+    o->pump_only_s = be32(e + 227);
+    o->water_pump_runs = be16(e + 231);
+    o->warmup_runs = be16(e + 233);
+}

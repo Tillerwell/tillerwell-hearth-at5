@@ -575,6 +575,12 @@ and per-model status.
 
 ## New confirmed command: pump-only start
 
+**Correction (2026-11-09, from the vendor tool, below):** this is the
+**water (coolant circulation) pump** button, "WaterPump", not the fuel pump.
+`00 28` is the tool's default of 40, most likely minutes, the same default
+it uses for a heater start. State `3.7` is "water pump only mode" in the
+operation report. The fuel pump has its own commands (`0x12`, `0x13`).
+
 ```
 dev 0x03, type 0x21, payload = 00 28
 ```
@@ -619,6 +625,159 @@ Calibrate once, with real fuel:
 
 `{"cmd":"ml_per_pulse","value":0.03}` sets it directly, and 0 goes back to the estimate. The count is sampled
 at the 3 s fuel tick, so it is only as good as the pump frequency is steady between ticks.
+
+## Vendor test utility decoded (Autoterm Test v1.15, 2026-11-09)
+
+Read from the tool itself (`Autoterm Test v1_15/` in the Tillerwell folder):
+the Windows-1251 `.pfl` profiles, the `^`-separated `language.res` string
+table (string N is the Nth field, 0-based), and a disassembly of
+`AutotermTest_v1_15.exe` (Delphi, TComPort). Nothing below has been sent to a
+heater yet. The `BINAR-5S.pfl` and `AUTOTERM FLOW 5.pfl` profiles are
+byte-identical.
+
+### Frame building in the tool
+
+Every frame the tool sends is `AA 03 <len> <page> <type> <payload> <crc>`
+(CRC as above). The tool's own frames are the reference: its generic button
+handler and its `sendCommand(cmd16, ...)` both write byte 3 as the high byte
+of a 16-bit command (`page`), not as the length's high byte. Every heater
+command uses page `00`, so for us it reads the same either way. Page `04`
+writes configuration (below), and page `01` is used by forms for other
+products. The computed frame for `type01 00 22` matches the captured
+`aa 03 02 00 01 00 22 20 b9` exactly.
+
+The tool also sends `aa 02 00 00 00 a0 3d` (dev `0x02`, type `0x00`, empty) on
+a timer, apparently a connection check, and plain `AA 03 00 00 <type>`
+requests for polling.
+
+**PUBR0 is not in v1.15.** None of the bytes `50 55 42 52 30`, as a string or
+built byte by byte, appear in the executable. The capture that showed PUBR0
+came from something else, perhaps another version of the tool or the sniffer
+setup. In v1.15 the diagnostics tab's Start/Stop buttons send `type07 01` and
+`type07 00`, and the profile names what follows "periodic reception of
+parameters" (`Периодический приём параметров`). This is very likely the
+proper switch for the 58-byte extended frame, and it can also turn the stream
+off, which PUBR0 cannot.
+
+### Commands for the Binar-5S / Flow 5 (profile section 5)
+
+| Button (string) | Frame | Notes |
+|---|---|---|
+| Diagnostics: Start | `type07 01` (`aa 03 01 00 07 01 1d 9e`) | start periodic parameter stream |
+| Diagnostics: Stop | `type07 00` (`aa 03 01 00 07 00 dd 5f`) | stop it |
+| Version | `type06` (`aa 03 00 00 06 5e bc`) | reply is `a1.a2.a3.a4`. `a1` is the device type: 6 or 10 = Binar family. The profile accepts `10.*.3.*`, `10.*.4.0-2`, `10.*.5.*`, `10.*.6.0`, `10.*.0.*`, `6.*.0.*`, `6.*.2.*`, `6.*.5.*`, `6.*.6.*`. |
+| Settings | `type20` (`aa 03 00 00 20 84 3d`) | read the settings block, below |
+| (no label) | `type14 01` | Binar-5S/Flow 5 profile only. Meaning unknown. |
+| Report | `type0b` × 4 | EEPROM read: `0b 00 00 40`, `00 40 40`, `00 80 40`, `00 c0 40` = 4 pages of 64 bytes |
+| Control: Start | `type01 <u16 BE>` | Default `00 28`. For device types 6 and 10 the tool puts the minutes box into the payload, and **anything that is not a number becomes `ff ff`**, the tool's "no time limit" |
+| Control: Stop | `type03` | |
+| WaterPump | `type21 00 28` | circulation pump only |
+| FuelPump | `type12` (`aa 03 00 00 12 51 bc`) | fuel pump |
+| Fan | `type08 60` | Fan test, value 96. The Air profiles have Fan off as `type08 00`. |
+| Faults | `type0f` | the ordinary status request |
+| Unlock | `type0d` (`aa 03 00 00 0d 99 fd`) | Clears the heater's lockout (state `1.1` "locked", entered after repeated failed starts or overheats). The nearest thing to a reset; **there is no reboot command**. |
+
+A timer also sends `type13 <1 byte>` repeatedly, where the byte is the fuel
+pump picked from buttons tagged 40, 44, 65, 68 and 100 ("Select fuel pump").
+Section 7's `Насос пуск` ("pump start") is `type13 1e`. This looks like a
+fuel pump run or test at a chosen rate. Untested, and a fuel pump left
+running floods the burner, so it is not one to try casually.
+
+### No set temperature, no power level (confirmed by the tool)
+
+The tool offers no setpoint or power level for the Binar-5S/Flow 5 anywhere.
+For the air heaters (`AUTOTERM AIR 2D`, Planar) the same `type02` frame holds
+a settings block:
+
+| byte | Air 2D field | range |
+|---|---|---|
+| a1 a2 | work time, minutes | 10-65535 |
+| a3 | work mode | not defined / by board temperature / by panel temperature / by external sensor / by power |
+| a4 | temperature setpoint | 1-30 °C |
+| a5 | wait mode | not defined / enabled / disabled |
+| a6 | power | 0-9 |
+
+For the Binar the tool writes `type02` as a plain u16 work time only, which
+is what Hearth already does. A liquid heater sets its own power from its
+coolant temperature. Its operation report counts time in high, middle, low
+and wait modes, all chosen by the heater.
+
+### The settings block (`type20`), decoded
+
+This is what the controller reads at power-up. The `58 00 55 01 28 00 00 00 00`
+reply captured on 2026-10-27 decodes as:
+
+| byte | value | Field (vendor string) | range / options |
+|---|---|---|---|
+| a1 | `58` = 88 | Preheater. Wait mode temperature, °C | 20-95 |
+| a2 | `00` | Warming up | off / auto / manual |
+| a3 | `55` = 85 | Warm up. Wait mode temperature, °C | 80-95 |
+| a4 | `01` | Relay | auto / **off** |
+| a5 | `28` = 40 | Relay on temperature, °C | 30-60 |
+| a6 | `00` | Water pump signal | constant / impulse |
+| a7 | `00` | Water pump if engine started | off / on |
+| a8 | `00` | Pump in standby mode | on / off |
+| a9 | `00` | Signalling channel | on / off |
+| a10 | (not sent) | unlabelled | off / on (Flow 5 profile only) |
+
+**a1 is the heater's own coolant thermostat.** In preheat the heater burns
+until the coolant reaches this temperature, then drops into wait mode
+(state `3.5`) and relights as it cools. That is the 88 °C Hearth uses as
+`preheat_temp`. This is the only real control the heater offers over how
+hard it works. Lowering it should make the heater back off and wait sooner.
+
+The tool's Apply writes the block back as `type20 <the 9-10 bytes>`. For a
+Binar (device type 6 or 10) it then waits 0.5 s and sends `type02 <u16
+minutes>`. **That write goes to the heater's EEPROM. Not tested; don't try it
+without a capture running and the controller's original block noted for
+putting back.**
+
+### Configuration writes (page 04)
+
+The setup form writes nominal voltage like this:
+
+```
+cmd 0x0400 payload 01            enter configuration
+cmd 0x0404 payload 11 00 0c      address 0x11 = 12 (12 V); 0x18 for 24 V
+cmd 0x0400 payload 00            leave
+```
+
+Read-back is the same with `0x0404 payload 11`. This is a factory or service
+setting. Hearth must never send it.
+
+### The operation report (EEPROM pages 1-4, 256 bytes)
+
+Read-only lifetime data, offsets 1-based into the 256 bytes as the profile
+writes them (`aN`):
+
+| Field | Formula |
+|---|---|
+| product code | a3·256+a4 |
+| serial number | a5·65536+a6·256+a7 |
+| starts, total / without faults / with faults | a13a14 / a17a18 / a19a20 |
+| first-attempt / second-attempt ignitions | a43a44 / a45a46 |
+| water-pump-only / warm-up runs | a232a233 / a234a235 |
+| no ignition (attempts used up) | a47a48 |
+| power lost while running | a22 |
+| total work time, s (u32) | a23..a26 |
+| time in high / middle / low / wait, s | a27..a30 / a31..a34 / a35..a38 / a39..a42 |
+| time water pump only, s | a228..a231 |
+| last fault column | a49+1, then a fault history table |
+
+This could become a read-only heater "health" page in Hearth (starts,
+failed ignitions, hours per power level).
+
+### Fault codes (profile section 9)
+
+The Flow 5 profile maps codes to strings: 0 no faults, 1 overheat, 2 possible
+overheat, 3 overheat, 4 liquid temperature sensor, 5 flame temperature
+sensor, 6 board temperature sensor, 9 glow plug, 10 turnover mismatch,
+12 increased supply voltage, 13 no ignition, 14 faulty water pump, 15 low
+voltage, 16 blowing time exceeded, 17 faulty fuel pump, 20 no connection,
+22 faulty fuel pump, 24 temperature sensor off-scale, 25 temperature growing
+too fast, 26 fan overloaded, 27 fan no rotation, 28 fan autorotation, 29 flame
+breaks too often, 30 no connection, 37 overheat locking, 78 flame break during
+running.
 
 ## What's still open
 

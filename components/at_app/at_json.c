@@ -258,6 +258,74 @@ char *at_app_fuel_json(void)
     return str;
 }
 
+/* "heater_info" in the status: what the heater said about itself, decoded (docs/API_SPEC.md §9.8). Only once
+ * something has been read or overheard, so a box that never asked sends nothing extra. */
+static void add_heater_info(cJSON *o)
+{
+    at_heater_info_t *hi = malloc(sizeof(*hi));
+    if (!hi) return;
+    uint32_t now;
+    at_app_heater_info(hi, &now);
+    bool report = hi->pages == (1u << AT_EEPROM_PAGES) - 1;
+    if (!hi->have_version && !hi->have_settings && !report && !hi->have_read && !hi->have_unlock) {
+        free(hi);
+        return;
+    }
+    cJSON *h = cJSON_AddObjectToObject(o, "heater_info");
+    cJSON_AddBoolToObject(h, "reading", hi->pending > 0);
+    add_num_or_null(h, "read_age_s", hi->have_read, (now - hi->read_ms) / 1000);
+    if (hi->have_version) {
+        char v[24];
+        snprintf(v, sizeof(v), "%u.%u.%u.%u", hi->version[0], hi->version[1], hi->version[2], hi->version[3]);
+        cJSON_AddStringToObject(h, "version", v);
+        cJSON_AddNumberToObject(h, "device_type", hi->version[0]);
+    }
+    at_heater_settings_t hs;
+    if (hi->have_settings && at_decode_heater_settings(hi->settings, hi->settings_len, &hs)) {
+        static const char *const warm[] = {"off", "auto", "manual"};
+        cJSON *st = cJSON_AddObjectToObject(h, "settings");
+        cJSON_AddNumberToObject(st, "wait_temp", hs.wait_temp);
+        cJSON_AddStringToObject(st, "warmup", hs.warmup_mode >= 0 && hs.warmup_mode <= 2 ? warm[hs.warmup_mode] : "unknown");
+        cJSON_AddNumberToObject(st, "warmup_wait_temp", hs.warmup_wait_temp);
+        cJSON_AddStringToObject(st, "relay", hs.relay_auto ? "auto" : "off");
+        cJSON_AddNumberToObject(st, "relay_on_temp", hs.relay_on_temp);
+        cJSON_AddStringToObject(st, "pump_signal", hs.pump_impulse ? "impulse" : "constant");
+        cJSON_AddBoolToObject(st, "pump_with_engine", hs.pump_with_engine);
+        cJSON_AddBoolToObject(st, "pump_standby", hs.pump_standby);
+        cJSON_AddBoolToObject(st, "signal_channel", hs.signal_channel);
+        cJSON_AddNumberToObject(st, "age_s", (now - hi->settings_ms) / 1000);
+    }
+    if (report) {
+        at_heater_report_t r;
+        at_decode_heater_report(hi->eeprom, &r);
+        cJSON *rp = cJSON_AddObjectToObject(h, "report");
+        cJSON_AddNumberToObject(rp, "product_code", r.product_code);
+        cJSON_AddNumberToObject(rp, "serial", r.serial);
+        cJSON_AddNumberToObject(rp, "starts", r.starts);
+        cJSON_AddNumberToObject(rp, "starts_ok", r.starts_ok);
+        cJSON_AddNumberToObject(rp, "starts_fault", r.starts_fault);
+        cJSON_AddNumberToObject(rp, "first_attempt", r.first_attempt);
+        cJSON_AddNumberToObject(rp, "second_attempt", r.second_attempt);
+        cJSON_AddNumberToObject(rp, "no_ignition", r.no_ignition);
+        cJSON_AddNumberToObject(rp, "power_cuts", r.power_cuts);
+        cJSON_AddNumberToObject(rp, "water_pump_runs", r.water_pump_runs);
+        cJSON_AddNumberToObject(rp, "warmup_runs", r.warmup_runs);
+        cJSON_AddNumberToObject(rp, "total_s", r.total_s);
+        cJSON_AddNumberToObject(rp, "high_s", r.high_s);
+        cJSON_AddNumberToObject(rp, "middle_s", r.middle_s);
+        cJSON_AddNumberToObject(rp, "low_s", r.low_s);
+        cJSON_AddNumberToObject(rp, "wait_s", r.wait_s);
+        cJSON_AddNumberToObject(rp, "pump_only_s", r.pump_only_s);
+        cJSON_AddNumberToObject(rp, "last_fault_column", r.last_fault_column);
+        cJSON_AddNumberToObject(rp, "age_s", (now - hi->eeprom_ms) / 1000);
+    }
+    if (hi->have_unlock) {
+        cJSON_AddNumberToObject(h, "unlock_age_s", (now - hi->unlock_ms) / 1000);
+        cJSON_AddBoolToObject(h, "unlock_replied", hi->unlock_replied);
+    }
+    free(hi);
+}
+
 static char *build_state_json(void)
 {
     at_view_t v;
@@ -308,6 +376,7 @@ static char *build_state_json(void)
     cJSON_AddStringToObject(o, "prevent_freezing_note", v.freeze_note);
     cJSON_AddNumberToObject(o, "preheat_minutes", v.preheat_minutes);
     cJSON_AddBoolToObject(o, "auto_update", at_settings_auto_update());
+    add_heater_info(o);
 
     cJSON_AddBoolToObject(o, "bypass_mode", s->bypass);
     cJSON_AddBoolToObject(o, "debug_mode", v.debug_mode);

@@ -69,7 +69,7 @@ typedef struct {
     uint8_t data[AT_LOG_BYTES];
 } at_log_entry_t;
 
-#define AT_QUEUE_LEN 6
+#define AT_QUEUE_LEN 10
 #define AT_CACHE_N   4
 #define AT_CACHE_MAX 64
 
@@ -87,6 +87,20 @@ typedef struct {
 } at_queue_item_t;
 
 typedef enum { AT_ST_RELAY = 0, AT_ST_AWAIT_REPLY } at_state_t;
+
+/* What the heater has told us about itself, with the vendor tool's requests or overheard when the controller asks
+ * at power-up (docs/PROTOCOL.md, "Vendor test utility decoded"). Times are now_ms of the reply. */
+typedef struct {
+    bool have_version;  uint8_t version[4];  uint32_t version_ms;  /* version[0] is the device type: 6, 10 Binar */
+    bool have_settings; uint8_t settings[12]; uint8_t settings_len; uint32_t settings_ms;
+    uint8_t pages;                          /* bit n: EEPROM page n received */
+    uint8_t page_len[AT_EEPROM_PAGES];      /* payload length of each page's reply, to check the layout */
+    uint8_t eeprom[AT_EEPROM_LEN];
+    uint32_t eeprom_ms;                     /* when the last page arrived */
+    int pending;                            /* requests of a read still queued or in flight */
+    bool have_read;     uint32_t read_ms;   /* last read asked for */
+    bool have_unlock;   uint32_t unlock_ms; bool unlock_replied;
+} at_heater_info_t;
 
 typedef struct {
     at_port_t heater;       /* UART wired to the heater */
@@ -152,6 +166,8 @@ typedef struct {
     uint8_t out_p[AT_MAX_FRAME * 2];
     size_t out_p_len;
 
+    at_heater_info_t info;
+
     at_log_entry_t log[AT_LOG_ENTRIES];
     uint32_t log_seq;       /* total entries ever written */
 } at_core_t;
@@ -204,6 +220,15 @@ bool at_cmd_send_pubr0(at_core_t *c, uint32_t now_ms);
  * frame or the bus around it, nothing else is ever sent. 1: CRC most-significant byte first. 2: bus silent for
  * 10 s before, 20 s after. 3: five sends 150 ms apart. 4: no pause in our own polls after. Else: plain. */
 bool at_cmd_send_pubr0_variant(at_core_t *c, int variant, uint32_t now_ms);
+
+/* Read the heater's version, settings block and operation report (6 requests, each its own short divert). False
+ * if the queue has no room for all of them; nothing is queued then. */
+bool at_cmd_read_heater_info(at_core_t *c, uint32_t now_ms);
+/* Clear the heater's lockout. The caller decides when that is allowed. */
+bool at_cmd_unlock(at_core_t *c, uint32_t now_ms);
+/* The vendor tool's periodic parameter stream (the 58-byte extended frame) on or off. */
+bool at_cmd_diag_stream(at_core_t *c, bool on, uint32_t now_ms);
+void at_core_heater_info(const at_core_t *c, at_heater_info_t *out);
 
 /* Plain-data snapshot for the UI / MQTT / Matter layers. */
 typedef struct {

@@ -391,6 +391,25 @@ static esp_err_t h_info(httpd_req_t *req)
     cJSON_AddNumberToObject(cj, "commands_refused", cl.commands_refused);
     cJSON_AddNumberToObject(cj, "heap_at_connect", cl.heap_at_connect);
     cJSON_AddNumberToObject(cj, "heap_min", cl.heap_min_online);
+    /* the heater's raw replies to the vendor tool's requests, to check the decoded heater_info in the status */
+    at_heater_info_t *hi = malloc(sizeof(*hi));
+    if (hi) {
+        uint32_t now;
+        at_app_heater_info(hi, &now);
+        char *hex = (hi->have_settings || hi->pages) ? malloc(AT_EEPROM_LEN * 2 + 1) : NULL;
+        if (hex) {
+            cJSON *hj = cJSON_AddObjectToObject(o, "heater_raw");
+            for (int i = 0; i < hi->settings_len; i++) snprintf(hex + i * 2, 3, "%02x", hi->settings[i]);
+            hex[hi->settings_len * 2] = 0;
+            cJSON_AddStringToObject(hj, "settings", hex);
+            cJSON *pl = cJSON_AddArrayToObject(hj, "page_len");
+            for (int i = 0; i < AT_EEPROM_PAGES; i++) cJSON_AddItemToArray(pl, cJSON_CreateNumber(hi->page_len[i]));
+            for (int i = 0; i < AT_EEPROM_LEN; i++) snprintf(hex + i * 2, 3, "%02x", hi->eeprom[i]);
+            cJSON_AddStringToObject(hj, "eeprom", hex);
+            free(hex);
+        }
+        free(hi);
+    }
     at_matter_info_t mi;
     at_matter_get_info(&mi);
     if (mi.transport && mi.transport[0]) {
@@ -439,6 +458,12 @@ static bool run_cmd(const cJSON *j)
         ok = at_app_start_pump();
     } else if (!strcmp(c, "send_pubr0")) {
         ok = at_app_send_pubr0();
+    } else if (!strcmp(c, "heater_read")) {
+        ok = at_app_read_heater_info();
+    } else if (!strcmp(c, "heater_unlock")) {
+        ok = at_app_unlock();
+    } else if (!strcmp(c, "diag_stream")) {
+        ok = at_app_diag_stream(jbool(j, "enabled", false));
     } else if (!strcmp(c, "send_pubr0_variant")) {
         ok = at_app_send_pubr0_variant((int)jnum(j, "variant", 0));
     } else if (!strcmp(c, "auto")) {
