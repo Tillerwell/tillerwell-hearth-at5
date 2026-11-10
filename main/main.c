@@ -68,6 +68,8 @@ static void button_task(void *arg)
 
 void app_main(void)
 {
+    at_crash_init();   /* first: a crash record left by the restart that brought us here */
+    at_app_boot_mark("start");
     ESP_ERROR_CHECK(at_settings_init());
     at_access_start(); /* who may use the box: the user table in NVS */
     at_cloud_start();  /* its cloud key and certificate, if the owner links an account */
@@ -76,6 +78,7 @@ void app_main(void)
     /* The relay comes first: the controller must keep working whatever the
      * network, Matter or MQTT are doing. */
     ESP_ERROR_CHECK(at_app_start());
+    at_app_boot_mark("heater");
 
     at_settings_t cfg;
     at_settings_get(&cfg);
@@ -86,20 +89,25 @@ void app_main(void)
     /* Wi-Fi mode: we run Wi-Fi (and the setup access point). Matter mode: Matter owns
      * Wi-Fi and the web page / MQTT start once it has an address. */
     ESP_ERROR_CHECK(at_net_start(on_ip, !use_matter));
+    at_app_boot_mark("network");
     if (!use_matter) {
         at_web_start(); /* also serves the setup page on the setup access point */
+        at_app_boot_mark("web");
         if (at_ble_start() != ESP_OK) {
             ESP_LOGE(TAG, "Bluetooth setup failed to start");
         }
+        at_app_boot_mark("bluetooth");
     }
     if (use_matter) {
         ESP_ERROR_CHECK(at_matter_start());
+        at_app_boot_mark("matter");
     }
 
     /* The cloud link sleeps until an account is linked (a certificate is installed), then waits for Wi-Fi and network
      * time on its own, in either mode. It runs below every heater task and the heater never waits on it. */
     at_cloudlink_start(at_web_exec_cmd);
     at_autoupdate_start(); /* installs a newer release by itself when an admin has turned that on and the heater is idle */
+    at_app_boot_mark("cloud");
 
 #if CONFIG_AUTOTERM_CONSOLE
     at_console_start();
@@ -111,7 +119,8 @@ void app_main(void)
         /* The broker listens on every interface and our client dials it over loopback, so neither needs an
          * address: start them now rather than when Wi-Fi comes up, so MQTT is ready the moment it does (and the
          * event task is not held up starting them). Matter mode still waits for Wi-Fi: over Thread alone it
-         * may never come, and Matter needs the memory more. */
+         * may never come, and Matter needs the memory more. Off unless an admin has turned MQTT on (1.0046). */
         at_mqtt_start();
+        at_app_boot_mark("mqtt");
     }
 }

@@ -271,6 +271,7 @@ char *at_app_backup_json(void)
     cJSON_AddNumberToObject(o, "freeze_target", round3(v.freeze_target));
     cJSON_AddStringToObject(o, "timezone", ts.timezone);
     cJSON_AddBoolToObject(o, "auto_update", at_settings_auto_update());
+    cJSON_AddBoolToObject(o, "mqtt", at_settings_mqtt());
     cJSON_AddNumberToObject(o, "fuel_price", round3(fv.cfg.price));
     cJSON_AddNumberToObject(o, "fuel_factor", round3(fv.cfg.factor));
     cJSON *rates = cJSON_AddObjectToObject(o, "fuel_rates");
@@ -456,6 +457,7 @@ static cJSON *build_state_tree(void)
     cJSON_AddStringToObject(o, "prevent_freezing_note", v.freeze_note);
     cJSON_AddNumberToObject(o, "preheat_minutes", v.preheat_minutes);
     cJSON_AddBoolToObject(o, "auto_update", at_settings_auto_update());
+    cJSON_AddBoolToObject(o, "mqtt", at_settings_mqtt());
     cJSON_AddNumberToObject(o, "pump_minutes", at_app_pump_minutes());
     add_heater_info(o);
 
@@ -597,7 +599,7 @@ static cJSON *build_state_tree(void)
  * bigger one alongside it once heater_info pushed the document past 3 KB, then a copy per caller: on a fragmented
  * heap (largest block 2 to 8 KB with the cloud link retrying) those failed and /api/status answered 500. The tree's
  * small nodes still come from the heap, but they fit in the gaps. */
-#define STATE_FRESH_US 500000
+#define STATE_FRESH_US 1000000  /* the apps poll every 2 s: one build serves them and the cloud link (1.0046) */
 #define STATE_STALE_OK_US 10000000 /* if a build fails for lack of memory, a copy this old is better than a 500 */
 #define STATE_BUF_MAX 6144         /* about 2.7 KB normally, 4 KB with heater_info and ten faults */
 

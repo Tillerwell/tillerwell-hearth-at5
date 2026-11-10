@@ -10,6 +10,7 @@
  */
 #pragma once
 
+#include <stdbool.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -17,6 +18,8 @@ extern "C" {
 #endif
 
 esp_err_t at_ble_start(void);
+/* Bluetooth is up (it holds about 30 KB of heap while it is). */
+bool at_ble_running(void);
 
 #ifdef __cplusplus
 }

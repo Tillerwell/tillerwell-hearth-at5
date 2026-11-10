@@ -9,6 +9,7 @@
 #include "at_app.h"
 #include "at_auth.h"
 #include "at_version.h"
+#include "at_ble.h"
 #include "at_mqtt.h"
 #include "at_net.h"
 #include "cJSON.h"
@@ -384,6 +385,42 @@ static esp_err_t h_info(httpd_req_t *req)
     cJSON_AddStringToObject(o, "reset_reason", (size_t)rr < sizeof(why) / sizeof(why[0]) && why[rr] ? why[rr] : "other");
     cJSON_AddNumberToObject(o, "uptime_s", (double)(esp_timer_get_time() / 1000000));
     /* bytes: free now, lowest since boot, largest single block (falling over days = a leak or fragmentation) */
+    /* what each start-up step left free, and the two parts that come and go (1.0046) */
+    at_boot_mark_t marks[AT_BOOT_MARKS];
+    int nm = at_app_boot_marks(marks, AT_BOOT_MARKS);
+    cJSON *bh = cJSON_AddArrayToObject(o, "boot_heap");
+    for (int i = 0; i < nm; i++) {
+        cJSON *m = cJSON_CreateObject();
+        cJSON_AddStringToObject(m, "stage", marks[i].stage);
+        cJSON_AddNumberToObject(m, "free", marks[i].free);
+        cJSON_AddNumberToObject(m, "largest", marks[i].largest);
+        cJSON_AddItemToArray(bh, m);
+    }
+    /* where the box last crashed, until the power goes (1.0046); decode against the release's .elf */
+    at_crash_t cr;
+    if (at_crash_last(&cr)) {
+        char hx[12];
+        cJSON *c = cJSON_AddObjectToObject(o, "last_crash");
+        cJSON_AddStringToObject(c, "why", cr.why);
+        cJSON_AddStringToObject(c, "task", cr.task);
+#define HEX(key, v) do { snprintf(hx, sizeof(hx), "0x%08lx", (unsigned long)(v)); cJSON_AddStringToObject(c, key, hx); } while (0)
+        HEX("pc", cr.pc);
+        HEX("ra", cr.ra);
+        HEX("sp", cr.sp);
+        HEX("mcause", cr.cause);
+        HEX("mtval", cr.mtval);
+        cJSON *st = cJSON_AddArrayToObject(c, "stack");
+        for (int i = 0; i < cr.stack_n; i++) {
+            snprintf(hx, sizeof(hx), "0x%08lx", (unsigned long)cr.stack[i]);
+            cJSON_AddItemToArray(st, cJSON_CreateString(hx));
+        }
+#undef HEX
+        cJSON_AddNumberToObject(c, "uptime_s", cr.uptime_s);
+        cJSON_AddNumberToObject(c, "crashes", cr.crashes);
+        cJSON_AddNumberToObject(c, "boots_since", cr.boots_since);
+    }
+    cJSON_AddBoolToObject(o, "bluetooth_on", at_ble_running());
+    cJSON_AddBoolToObject(o, "mqtt_on", at_settings_mqtt());
     cJSON *hp = cJSON_AddObjectToObject(o, "heap");
     cJSON_AddNumberToObject(hp, "free", heap_caps_get_free_size(MALLOC_CAP_8BIT));
     cJSON_AddNumberToObject(hp, "min_free", heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
@@ -505,6 +542,12 @@ static bool run_cmd(const cJSON *j)
         ok = v && set_display_name(v);
     } else if (!strcmp(c, "auto_update")) {
         ok = at_settings_auto_update_set(jbool(j, "enabled", false)) == ESP_OK;
+    } else if (!strcmp(c, "mqtt")) {
+        /* the built-in broker and client: off by default since 1.0046, they cost 20 KB or more of heap */
+        bool on = jbool(j, "enabled", false);
+        ok = at_settings_mqtt_set(on) == ESP_OK;
+        if (ok && on) ok = at_mqtt_start() == ESP_OK;
+        if (ok && !on) at_mqtt_stop();
     } else if (!strcmp(c, "factory_reset")) {
         at_settings_factory_reset_soon(); /* wipes Wi-Fi and settings, restarts into setup mode */
     } else if (!strcmp(c, "reboot")) {
@@ -1147,6 +1190,7 @@ static esp_err_t h_backup_put(httpd_req_t *req)
     SKIP_IF(backup_cmd("freeze", b, "freeze_enabled", "enabled"), "freeze_enabled");
     SKIP_IF(backup_cmd("timezone", b, "timezone", "value"), "timezone");
     SKIP_IF(backup_cmd("auto_update", b, "auto_update", "enabled"), "auto_update");
+    SKIP_IF(backup_cmd("mqtt", b, "mqtt", "enabled"), "mqtt");
     SKIP_IF(backup_cmd("fuel_price", b, "fuel_price", "value"), "fuel_price");
     SKIP_IF(backup_cmd("fuel_factor", b, "fuel_factor", "value"), "fuel_factor");
     const cJSON *rates = cJSON_GetObjectItemCaseSensitive(b, "fuel_rates");

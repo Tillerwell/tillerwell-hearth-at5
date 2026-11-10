@@ -295,3 +295,17 @@ esp_err_t at_settings_auto_update_set(bool on)
     uint8_t v = on ? 1 : 0;
     return at_settings_blob_save(AUTO_UPDATE_KEY, &v, sizeof(v));
 }
+
+#define MQTT_KEY "mqtt_on"
+
+bool at_settings_mqtt(void)
+{
+    uint8_t v = 0;
+    return at_settings_blob_load(MQTT_KEY, &v, sizeof(v)) && v == 1;
+}
+
+esp_err_t at_settings_mqtt_set(bool on)
+{
+    uint8_t v = on ? 1 : 0;
+    return at_settings_blob_save(MQTT_KEY, &v, sizeof(v));
+}

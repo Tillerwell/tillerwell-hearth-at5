@@ -328,6 +328,7 @@ static void test_cloud_cmds(void)
     CHECK(at_auth_cmd_json_perm("{\"cmd\":\"stop\"}") == AT_PERM_CONTROL, "stop needs control");
     CHECK(at_auth_cmd_json_perm("{\"cmd\":\"fuel_price\",\"value\":1}") == AT_PERM_MANAGER, "fuel_price needs manager");
     CHECK(at_auth_cmd_json_perm("{\"cmd\":\"factory_reset\"}") == AT_PERM_ADMIN, "factory_reset needs admin");
+    CHECK(at_auth_cmd_json_perm("{\"cmd\":\"mqtt\",\"enabled\":true}") == AT_PERM_ADMIN, "turning MQTT on needs admin: it is an unsigned control channel");
     CHECK(at_auth_cmd_json_perm("{\"cmd\":\"never_heard_of_it\"}") == AT_PERM_ADMIN, "unknown command needs admin");
     CHECK(at_auth_cmd_json_perm("{\"cmd\":\"something_new\"}") == AT_PERM_ADMIN, "unlisted commands fail closed");
     CHECK(at_auth_cmd_json_perm("nonsense") == AT_PERM_ADMIN && at_auth_cmd_json_perm(NULL) == AT_PERM_ADMIN, "unparseable: admin");

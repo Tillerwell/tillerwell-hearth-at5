@@ -264,20 +264,33 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
 }
 
-void at_mqtt_reload(void)
+static void client_stop(void)
 {
     if (s_client) {
+        s_connected = false;   /* the publishing task stops touching the client first */
         esp_mqtt_client_stop(s_client);
         esp_mqtt_client_destroy(s_client);
         s_client = NULL;
-        s_connected = false;
     }
+}
+
+void at_mqtt_reload(void)
+{
+    client_stop();
     at_mqtt_start();
+}
+
+void at_mqtt_stop(void)
+{
+    client_stop();
+    broker_stop();
 }
 
 esp_err_t at_mqtt_start(void)
 {
-    if (s_client) {
+    /* Off unless asked for: the broker, the client and a state document every 2 s cost 20 KB or more of heap and
+     * churned it into pieces, for something Home Assistant no longer uses (it talks HTTP). 1.0046. */
+    if (s_client || !at_settings_mqtt()) {
         return ESP_OK;
     }
     at_settings_t cfg;

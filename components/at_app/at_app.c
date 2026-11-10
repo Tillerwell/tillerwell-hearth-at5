@@ -6,6 +6,7 @@
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
 #include "driver/uart.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -237,6 +238,23 @@ static void ctl_task(void *arg)
             core_cmd(at_cmd_send_pubr0);
         }
     }
+}
+
+static at_boot_mark_t s_marks[AT_BOOT_MARKS];
+static int s_mark_count;
+
+void at_app_boot_mark(const char *stage)
+{
+    if (s_mark_count >= AT_BOOT_MARKS) return;
+    s_marks[s_mark_count++] = (at_boot_mark_t){stage, (uint32_t)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                                               (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)};
+}
+
+int at_app_boot_marks(at_boot_mark_t *out, int max)
+{
+    int n = s_mark_count < max ? s_mark_count : max;
+    memcpy(out, s_marks, sizeof(*out) * (size_t)n);
+    return n;
 }
 
 esp_err_t at_app_start(void)

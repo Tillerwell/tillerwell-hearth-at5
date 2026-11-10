@@ -93,6 +93,33 @@ void at_settings_hostname(char *out, size_t len);
 /* Automatic firmware updates (at_autoupdate): off until an admin turns them on. Own NVS entry, like the display name. */
 bool at_settings_auto_update(void);
 esp_err_t at_settings_auto_update_set(bool on);
+/* Free heap after each start-up step (1.0046), for GET /api/info: what each part of the firmware holds. Called from
+ * app_main only, in order; the stage names must be string literals. */
+#define AT_BOOT_MARKS 10
+typedef struct {
+    const char *stage;
+    uint32_t free, largest;
+} at_boot_mark_t;
+void at_app_boot_mark(const char *stage);
+int at_app_boot_marks(at_boot_mark_t *out, int max);
+/* The last crash, kept across the restart in RTC memory (at_crash.c, 1.0046). Lost when the power goes. */
+#define AT_CRASH_STACK 12
+typedef struct {
+    uint32_t pc, ra, sp, cause, mtval; /* the RISC-V exception frame: mepc, ra, sp, mcause, mtval */
+    uint32_t uptime_s;                 /* how long the box had been up */
+    uint32_t crashes;                  /* crashes since the power was last connected */
+    uint32_t boots_since;              /* restarts since this crash; 0 = the last restart was this crash */
+    char task[16];                     /* the task that was running */
+    char why[96];                      /* the abort() or assert message, else the exception name */
+    uint32_t stack[AT_CRASH_STACK];    /* code addresses found on that task's stack, nearest first */
+    uint8_t stack_n;
+} at_crash_t;
+/* Called once at start-up, before anything else reads it. */
+void at_crash_init(void);
+bool at_crash_last(at_crash_t *out);
+/* The built-in MQTT broker and client (1.0046+: off unless an admin turns them on; Home Assistant uses HTTP). */
+bool at_settings_mqtt(void);
+esp_err_t at_settings_mqtt_set(bool on);
 
 esp_err_t at_settings_init(void);
 void at_settings_get(at_settings_t *out);

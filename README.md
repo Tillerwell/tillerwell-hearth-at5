@@ -50,7 +50,7 @@ If the saved network can't be reached for two minutes the setup network comes ba
 
 ## Home Assistant
 
-Install the Tillerwell integration in Home Assistant (HACS). The box announces itself on the network as `_hearth-ha._tcp` all the time, so Home Assistant finds it on its own (Settings → Devices & services), or you can add it by address. There is nothing to switch on in the box's page. The integration talks to the box over HTTP and does not use MQTT.
+Install the Tillerwell integration in Home Assistant (HACS). The box announces itself on the network as `_hearth-ha._tcp` all the time, so Home Assistant finds it on its own (Settings → Devices & services), or you can add it by address. There is nothing to switch on in the box's page. The integration talks to the box over HTTP and does not use MQTT. The box's own MQTT broker and topics are off from 1.0046; an admin turns them on with `{"cmd":"mqtt","enabled":true}` (docs/API_SPEC.md §9.7).
 
 ## Setup, Matter images
 

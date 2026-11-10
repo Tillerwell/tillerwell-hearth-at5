@@ -9,6 +9,7 @@
 #include "cJSON.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi_types.h"
 #include "freertos/FreeRTOS.h"
@@ -391,14 +392,25 @@ static void monitor_task(void *arg)
     }
 }
 
+bool at_ble_running(void) { return s_running; }
+
 esp_err_t at_ble_start(void)
 {
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     snprintf(s_ble_name, sizeof(s_ble_name), "Hearth-%02x%02x%02x", mac[3], mac[4], mac[5]);
-    s_open_until_us = esp_timer_get_time() + OPEN_AFTER_BOOT_US;
+    /* The window is for someone at the box: switching it off and on, or a box with no Wi-Fi yet. Not after an
+     * update, a reboot command or a crash: Bluetooth holds about 30 KB, and ten minutes of that straight after an
+     * update starved the 1.0045 box (12 bytes free at its lowest). Wi-Fi gone for 30 s still opens it (monitor_task). */
+    at_settings_t cfg;
+    at_settings_get(&cfg);
+    esp_reset_reason_t why = esp_reset_reason();
+    bool at_the_box = why == ESP_RST_POWERON || why == ESP_RST_BROWNOUT || why == ESP_RST_EXT;
+    s_open_until_us = at_the_box || !cfg.wifi_ssid[0] ? esp_timer_get_time() + OPEN_AFTER_BOOT_US : 0;
 
-    esp_err_t err = ble_up();
-    if (err != ESP_OK) return err;
+    if (s_open_until_us) {
+        esp_err_t err = ble_up();
+        if (err != ESP_OK) return err;
+    }
     return xTaskCreate(monitor_task, "ble_mon", 4096, NULL, 2, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
