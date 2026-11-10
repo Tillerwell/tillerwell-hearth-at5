@@ -59,6 +59,10 @@ bool at_autoupdate_idle(bool clock_ok, bool heater_off, bool timer_active, bool 
 // -1 = the JSON is unusable or lists no image with a checksum.
 int at_autoupdate_pick(const char *release_json, const char *running, char *cmd, size_t cmd_len);
 
+// GitHub lists a release's assets before its notes, which can run to many KB. True when "tarball_url" (the first key
+// after "assets") is in buf: buf is then cut there and closed, leaving JSON with everything at_autoupdate_pick needs.
+bool at_autoupdate_cut_release(char *buf);
+
 #ifdef __cplusplus
 }
 #endif

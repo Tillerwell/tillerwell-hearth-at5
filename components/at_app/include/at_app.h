@@ -290,6 +290,9 @@ void at_app_clock_sntp_start(void);
 /* The state document shared by the web UI (/api/status) and the MQTT state
  * topic. Returns a malloc'd JSON string; the caller frees it. */
 char *at_app_state_json(void);
+/* The same document without a copy: fn gets it while the build lock is held (keep fn short, and do not ask for
+ * the state again inside it). ESP_ERR_NO_MEM when there is no document to give, else what fn returned. */
+esp_err_t at_app_state_json_with(esp_err_t (*fn)(const char *js, void *ctx), void *ctx);
 /* Called once by at_app_start, before anything asks for the state. */
 void at_app_state_json_init(void);
 /* GET /api/fuel: the daily fuel log, newest first. Caller frees. */

@@ -7,6 +7,7 @@
 #include "esp_app_desc.h"
 #include "sdkconfig.h"
 #include "cJSON.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -405,7 +406,7 @@ static void add_heater_info(cJSON *o)
     free(hi);
 }
 
-static char *build_state_json(void)
+static cJSON *build_state_tree(void)
 {
     at_view_t v;
     at_app_view(&v);
@@ -584,21 +585,25 @@ static char *build_state_json(void)
         }
     }
 
-    /* one buffer the size of a typical document, rather than doubling from 256 bytes as it prints */
-    char *str = cJSON_PrintBuffered(o, 3072, false);
-    cJSON_Delete(o);
-    return str;
+    return o;
 }
 
 /* The status document is ~110 cJSON nodes, 10 KB or more of heap while it is built. The web API, the app, Home
  * Assistant and MQTT all ask for it, often in the same second; each building its own tree at once is what ran the
  * heap out and turned /api/status into a 500. So it is built by one caller at a time, and callers within
- * STATE_FRESH_US share that build. */
+ * STATE_FRESH_US share that build.
+ *
+ * It is printed into one buffer reserved at boot (1.0045). Printing into the heap needed a 3 KB block, then a
+ * bigger one alongside it once heater_info pushed the document past 3 KB, then a copy per caller: on a fragmented
+ * heap (largest block 2 to 8 KB with the cloud link retrying) those failed and /api/status answered 500. The tree's
+ * small nodes still come from the heap, but they fit in the gaps. */
 #define STATE_FRESH_US 500000
 #define STATE_STALE_OK_US 10000000 /* if a build fails for lack of memory, a copy this old is better than a 500 */
+#define STATE_BUF_MAX 6144         /* about 2.7 KB normally, 4 KB with heater_info and ten faults */
 
 static SemaphoreHandle_t s_state_lock;
-static char *s_state_cache;
+static char s_state_buf[STATE_BUF_MAX];
+static bool s_state_ok;
 static int64_t s_state_us;
 
 void at_app_state_json_init(void)
@@ -606,22 +611,40 @@ void at_app_state_json_init(void)
     if (!s_state_lock) s_state_lock = xSemaphoreCreateMutex();
 }
 
+/* With the lock held: make s_state_buf current, or leave the last good copy while it is not too old. */
+static void refresh_state(void)
+{
+    int64_t now = esp_timer_get_time();
+    if (s_state_ok && now - s_state_us < STATE_FRESH_US) return;
+    cJSON *o = build_state_tree();
+    if (o) {
+        /* cJSON asks for 5 bytes of slack past the longest document it may write */
+        s_state_ok = cJSON_PrintPreallocated(o, s_state_buf, STATE_BUF_MAX - 5, false);
+        cJSON_Delete(o);
+        if (s_state_ok) {
+            s_state_us = now;
+            return;
+        }
+        ESP_LOGW("at_json", "status document longer than %d bytes", STATE_BUF_MAX - 5);
+    } else if (s_state_ok && now - s_state_us > STATE_STALE_OK_US) {
+        s_state_ok = false;
+    }
+}
+
+esp_err_t at_app_state_json_with(esp_err_t (*fn)(const char *js, void *ctx), void *ctx)
+{
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    refresh_state();
+    esp_err_t e = s_state_ok ? fn(s_state_buf, ctx) : ESP_ERR_NO_MEM;
+    xSemaphoreGive(s_state_lock);
+    return e;
+}
+
 char *at_app_state_json(void)
 {
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    int64_t now = esp_timer_get_time();
-    if (!s_state_cache || now - s_state_us >= STATE_FRESH_US) {
-        char *fresh = build_state_json();
-        if (fresh) {
-            free(s_state_cache);
-            s_state_cache = fresh;
-            s_state_us = now;
-        } else if (s_state_cache && now - s_state_us > STATE_STALE_OK_US) {
-            free(s_state_cache);
-            s_state_cache = NULL;
-        }
-    }
-    char *out = s_state_cache ? strdup(s_state_cache) : NULL;
+    refresh_state();
+    char *out = s_state_ok ? strdup(s_state_buf) : NULL;
     xSemaphoreGive(s_state_lock);
     return out;
 }

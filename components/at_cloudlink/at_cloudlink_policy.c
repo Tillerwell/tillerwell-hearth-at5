@@ -11,3 +11,8 @@ int at_cloudlink_endpoint_for(uint32_t failures, int n)
 {
     return n > 0 ? (int)((failures / AT_CLOUDLINK_ATTEMPTS_PER_ENDPOINT) % (uint32_t)n) : 0;
 }
+
+bool at_cloudlink_heap_ok(uint32_t free_bytes, uint32_t largest_block)
+{
+    return free_bytes >= AT_CLOUDLINK_DIAL_FREE_MIN && largest_block >= AT_CLOUDLINK_DIAL_LARGEST_MIN;
+}

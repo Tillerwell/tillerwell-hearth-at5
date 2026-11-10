@@ -91,3 +91,14 @@ int at_autoupdate_pick(const char *release_json, const char *running, char *cmd,
     cJSON_Delete(j);
     return result;
 }
+
+bool at_autoupdate_cut_release(char *buf)
+{
+    char *t = buf ? strstr(buf, "\"tarball_url\"") : NULL;
+    if (!t) return false;
+    while (t > buf && t[-1] != ',') t--;
+    if (t == buf) return false;   // no key before it: not a release
+    t[-1] = '}';
+    t[0] = 0;
+    return true;
+}

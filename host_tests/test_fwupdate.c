@@ -89,6 +89,19 @@ int main(void)
     CHECK(at_autoupdate_pick("{\"assets\":[{\"name\":\"hearth-1.0033.bin\",\"size\":2400000,\"browser_download_url\":\"x\"}]}", "1.0032", cmd, sizeof(cmd)) == -1,
           "no checksum listed");
     CHECK(at_autoupdate_pick("{\"assets\":[]}", "1.0032", cmd, sizeof(cmd)) == -1, "no image");
+
+    // Cut after the assets: the rest is the notes, not needed and not worth holding.
+    char full[1024];
+    snprintf(full, sizeof(full), "%.*s,\"tarball_url\":\"t\",\"zipball_url\":\"z\",\"body\":\"long notes with \\\"quotes\\\", commas, and ]}\"}",
+             (int)strlen(rel) - 1, rel);
+    CHECK(at_autoupdate_cut_release(full) && !strcmp(full, rel), "cut back to the assets: %s", full);
+    CHECK(at_autoupdate_pick(full, "1.0032", cmd, sizeof(cmd)) == 1, "the cut JSON still picks the image");
+    char spaced[64] = "{\"assets\":[] , \"tarball_url\":\"t\"";
+    CHECK(at_autoupdate_cut_release(spaced) && !strcmp(spaced, "{\"assets\":[] }"), "spaces before the key: %s", spaced);
+    char partial[64] = "{\"assets\":[{\"name\":\"hearth-1.0033.bin\"";
+    CHECK(!at_autoupdate_cut_release(partial), "not read far enough yet");
+    char bare[32] = "\"tarball_url\":1";
+    CHECK(!at_autoupdate_cut_release(bare) && !at_autoupdate_cut_release(NULL), "no key before it, or nothing");
     printf("%s: %d checks, %d failures\n", failures ? "FAILED" : "OK", checks, failures);
     return failures != 0;
 }

@@ -332,14 +332,14 @@ static esp_err_t h_index(httpd_req_t *req)
     return httpd_resp_send(req, index_html_start, index_html_end - index_html_start - 1);
 }
 
+static esp_err_t send_state(const char *js, void *req) { return send_json_str(req, js); }
+
 static esp_err_t h_status(httpd_req_t *req)
 {
     REQUIRE_AUTH(req);
-    char *s = at_app_state_json();
-    if (!s) return httpd_resp_send_500(req);
-    esp_err_t e = send_json_str(req, s);
-    free(s);
-    return e;
+    /* straight from the shared buffer: no 3 to 5 KB copy per request (1.0045) */
+    esp_err_t e = at_app_state_json_with(send_state, req);
+    return e == ESP_ERR_NO_MEM ? httpd_resp_send_500(req) : e;
 }
 
 static esp_err_t h_info(httpd_req_t *req)
@@ -374,6 +374,15 @@ static esp_err_t h_info(httpd_req_t *req)
     cJSON_AddStringToObject(o, "mode", own_wifi ? "wifi" : "matter");
     cJSON_AddBoolToObject(o, "wifi_setup", own_wifi);
     cJSON_AddBoolToObject(o, "web_password_set", cfg.web_password[0] != 0);
+    /* why the box last started, so a restart nobody asked for can be told from a power cut (1.0045) */
+    static const char *const why[] = {
+        [ESP_RST_UNKNOWN] = "unknown", [ESP_RST_POWERON] = "power_on", [ESP_RST_EXT] = "external",
+        [ESP_RST_SW] = "software", [ESP_RST_PANIC] = "panic", [ESP_RST_INT_WDT] = "int_watchdog",
+        [ESP_RST_TASK_WDT] = "task_watchdog", [ESP_RST_WDT] = "watchdog", [ESP_RST_DEEPSLEEP] = "deep_sleep",
+        [ESP_RST_BROWNOUT] = "brownout", [ESP_RST_SDIO] = "sdio"};
+    esp_reset_reason_t rr = esp_reset_reason();
+    cJSON_AddStringToObject(o, "reset_reason", (size_t)rr < sizeof(why) / sizeof(why[0]) && why[rr] ? why[rr] : "other");
+    cJSON_AddNumberToObject(o, "uptime_s", (double)(esp_timer_get_time() / 1000000));
     /* bytes: free now, lowest since boot, largest single block (falling over days = a leak or fragmentation) */
     cJSON *hp = cJSON_AddObjectToObject(o, "heap");
     cJSON_AddNumberToObject(hp, "free", heap_caps_get_free_size(MALLOC_CAP_8BIT));

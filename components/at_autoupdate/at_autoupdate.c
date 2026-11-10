@@ -21,19 +21,24 @@
 static const char *TAG = "autoupdate";
 
 #define RELEASE_URL "https://api.github.com/repos/Tillerwell/tillerwell-hearth-at5/releases/latest"
-#define RELEASE_MAX 20480           // bytes of release JSON we are willing to hold; more and it is treated as unusable
+#define RELEASE_MAX 8192            // release JSON held, up to the end of "assets": 3.2 KB for one image
 #define CHECK_EVERY_S (6 * 3600)
 #define RETRY_FAILED_S (30 * 60)    // GitHub or the network let us down
 #define WAIT_IDLE_S 60              // an update is known but the heater or a timer is in the way
 #define FIRST_CHECK_S 300           // after boot: Wi-Fi, network time and the cloud link settle first
-#define TLS_HEADROOM 45000          // largest free block wanted for a second TLS session
+// Memory wanted for the GitHub TLS session, with the cloud link's own session already freed. It was one 65 KB block
+// (TLS_HEADROOM 45000 + 20 KB of JSON), which a box with Wi-Fi, Bluetooth and the web server up never has: its
+// largest block is 14 to 45 KB (bench 1.0031, the 1.0044 box), so the check gave up before it began.
+#define TLS_FREE_MIN 40000          // TLS buffers are taken only as the session needs them (MBEDTLS_DYNAMIC_BUFFER)
+#define TLS_LARGEST_MIN 18432       // one full 16 KB TLS record, which GitHub sends, plus its header and some margin
 
 static int64_t now_s(void) { return esp_timer_get_time() / 1000000; }
 
 // Fetches the latest release JSON into a malloc'd, NUL-terminated buffer; NULL on any failure.
 static char *fetch_release(void)
 {
-    if (heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < TLS_HEADROOM + RELEASE_MAX) {
+    if (heap_caps_get_free_size(MALLOC_CAP_8BIT) < TLS_FREE_MIN + RELEASE_MAX ||
+        heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < TLS_LARGEST_MIN) {
         ESP_LOGW(TAG, "not enough free memory to check for updates");
         return NULL;
     }
@@ -51,19 +56,24 @@ static char *fetch_release(void)
     esp_http_client_set_header(c, "Accept", "application/vnd.github+json");
     esp_http_client_set_header(c, "User-Agent", "Tillerwell-Hearth");
     int len = 0;
+    bool cut = false;
     bool ok = esp_http_client_open(c, 0) == ESP_OK;
     if (ok) {
         esp_http_client_fetch_headers(c);
         ok = esp_http_client_get_status_code(c) == 200;
-        for (int r; ok && (r = esp_http_client_read(c, buf + len, RELEASE_MAX - len)) > 0;) {
+        // Read only until the assets are in: the notes after them are not needed.
+        for (int r; ok && !cut && len < RELEASE_MAX && (r = esp_http_client_read(c, buf + len, RELEASE_MAX - len)) > 0;) {
             len += r;
-            if (len >= RELEASE_MAX) ok = false;   // truncated JSON would not parse anyway
+            buf[len] = 0;
+            cut = at_autoupdate_cut_release(buf);
         }
     }
     esp_http_client_close(c);
     esp_http_client_cleanup(c);
-    if (!ok || len <= 0) { free(buf); return NULL; }
-    buf[len] = 0;
+    if (!ok || !cut) {   // no end of the assets within RELEASE_MAX: truncated JSON would not parse anyway
+        free(buf);
+        return NULL;
+    }
     return buf;
 }
 

@@ -126,23 +126,24 @@ static void publish_event(const char *kind, uint32_t code, const char *name, con
 }
 
 // The same JSON as GET /api/status with "firmware" added at the front.
+static esp_err_t publish_state_from(const char *js, void *arg)
+{
+    if (js[0] != '{') return ESP_OK;
+    const char *ver = esp_app_get_description()->version;
+    const char *oe = at_fwupdate_last_error();
+    size_t n = strlen(js) + strlen(ver) + strlen(oe) + 40;
+    char *out = malloc(n);
+    if (!out) return ESP_ERR_NO_MEM;
+    if (oe[0]) snprintf(out, n, "{\"firmware\":\"%s\",\"ota_error\":\"%s\",%s", ver, oe, js + 1);
+    else snprintf(out, n, "{\"firmware\":\"%s\",%s", ver, js + 1);
+    publish(s_t_state, out, true);
+    free(out);
+    return ESP_OK;
+}
+
 static void publish_state(void)
 {
-    char *js = at_app_state_json();
-    if (!js) return;
-    if (js[0] == '{') {
-        const char *ver = esp_app_get_description()->version;
-        const char *oe = at_fwupdate_last_error();
-        size_t n = strlen(js) + strlen(ver) + strlen(oe) + 40;
-        char *out = malloc(n);
-        if (out) {
-            if (oe[0]) snprintf(out, n, "{\"firmware\":\"%s\",\"ota_error\":\"%s\",%s", ver, oe, js + 1);
-            else snprintf(out, n, "{\"firmware\":\"%s\",%s", ver, js + 1);
-            publish(s_t_state, out, true);
-            free(out);
-        }
-    }
-    free(js);
+    at_app_state_json_with(publish_state_from, NULL);   // one copy, not two: the shared document is read in place
     s_state_s = now_s();
 }
 
@@ -428,6 +429,13 @@ static void supervisor(void *arg)
             // Network time first: the TLS dates cannot be checked without it, and commands are refused without it.
             if (!at_net_connected() || !at_app_clock_synced()) { s_state = "waiting"; continue; }
             if (now_s() < s_next_try_s) continue;
+            // Not a failure: nothing was tried, so the backoff and the endpoint stay as they are.
+            if (!at_cloudlink_heap_ok((uint32_t)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                                      (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT))) {
+                if (strcmp(s_state, "low_memory") != 0) ESP_LOGW(TAG, "not dialling: too little free memory for TLS");
+                s_state = "low_memory";
+                continue;
+            }
             s_state = "connecting";
             if (!client_start()) fail_and_wait();
             continue;

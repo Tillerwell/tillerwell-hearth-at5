@@ -22,6 +22,14 @@ int main(void)
     for (uint32_t f = 0; f < 12; f++)
         CHECK(at_cloudlink_endpoint_for(f, 2) == (int)((f / 3) % 2), "two endpoints, %u failures", f);
     CHECK(at_cloudlink_endpoint_for(5, 0) == 0 && at_cloudlink_endpoint_for(5, 1) == 0, "degenerate lists");
+
+    // Memory to dial: both the total and the largest block, at and either side of each limit.
+    CHECK(at_cloudlink_heap_ok(44744, 14336), "healthy 1.0044 box after a restart dials");
+    CHECK(!at_cloudlink_heap_ok(26908, 2496), "the 1.0044 box that answered 500 does not");
+    CHECK(!at_cloudlink_heap_ok(38056, 7808), "plenty free but broken up does not");
+    CHECK(at_cloudlink_heap_ok(AT_CLOUDLINK_DIAL_FREE_MIN, AT_CLOUDLINK_DIAL_LARGEST_MIN), "exactly at both limits");
+    CHECK(!at_cloudlink_heap_ok(AT_CLOUDLINK_DIAL_FREE_MIN - 1, 60000), "one byte short of the total");
+    CHECK(!at_cloudlink_heap_ok(90000, AT_CLOUDLINK_DIAL_LARGEST_MIN - 1), "one byte short of the block");
     printf("%s: %d checks, %d failures\n", failures ? "FAILED" : "OK", checks, failures);
     return failures != 0;
 }
