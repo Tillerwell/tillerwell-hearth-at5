@@ -22,6 +22,7 @@ typedef struct {
     uint32_t last_ext;
     bool cabin_ok;             /* the controller reports its cabin reading */
     int fault;
+    int drop_stops;            /* the next this many stops are lost on the bus */
     uint32_t last_start_ms, last_stop_ms;
 } hsim_t;
 
@@ -77,6 +78,10 @@ static void hsim_step(hsim_t *m)
         m->since = m->now;
     }
     m->want_start = false;
+    if (m->want_stop && m->drop_stops > 0) {
+        m->drop_stops--;
+        m->want_stop = false;
+    }
     if (m->want_stop && (m->state == 2 || m->state == 3)) {
         m->state = 4;
         m->since = m->now;
@@ -985,6 +990,10 @@ static void test_learn_decide(void)
         r.burn_min = 60;
         feed1(&L, AT_SENS_EXT, 1.0f, &now, r);
         CHECK(L.st.width == 1.5f);
+        /* the external sensor learned 1.5: 1.5 C on it, 3 C on the controller's (2 in whole degrees, plus 1) */
+        CHECK(at_learn_working_width(L.st.width, 1.0f, false) == 1.5f);
+        CHECK(at_learn_working_width(L.st.width, 1.0f, true) == 3.0f);
+        CHECK(L.st.hist[L.st.nhist - 1].sensor == AT_SENS_EXT && L.st.hist[L.st.nhist - 1].work_w == 1.5f);
     }
     /* at the bottom with slow runs: "min", one entry */
     {
@@ -1002,29 +1011,38 @@ static void test_learn_decide(void)
         at_learn_init(&L);
         L.st.width = 1.0f;
         CHECK(at_learn_working_width(1.0f, 1.0f, true) == 2.0f);
-        run_spec_t r = spec(20.4f, 0.03f);
-        r.burn_min = 80;
+        run_spec_t r = spec(20.4f, 0.015f);   /* a real swing of 1 C in ~67 min: slow */
+        r.burn_min = 100;
         feed1(&L, AT_SENS_CTL, 1.0f, &now, r);
         feed1(&L, AT_SENS_CTL, 1.0f, &now, r);
         CHECK(L.st.width == 1.0f && L.st.s[1].limit == AT_LIMIT_MIN);
         CHECK(at_learn_working_width(L.st.width, 1.0f, false) == 1.0f);
-        /* learned 1.5, slow on the controller: stays 1.5, working 2 */
+        /* learned 1.5 (working 3 on the controller: 2 C + 1 C), slow runs there asking for ~0.4: down to 1 C, a whole
+         * degree and no lower, working 2 */
         L.st.width = 1.5f;
         L.st.s[1].limit = 0;
+        CHECK(at_learn_working_width(1.5f, 1.0f, true) == 3.0f);
         feed1(&L, AT_SENS_CTL, 1.0f, &now, r);
         feed1(&L, AT_SENS_CTL, 1.0f, &now, r);
-        CHECK(L.st.width == 1.5f && at_learn_working_width(1.5f, 1.0f, true) == 2.0f);
+        CHECK(L.st.width == 1.0f && at_learn_working_width(L.st.width, 1.0f, true) == 2.0f);
+        CHECK(count_ev(&L, AT_EV_NARROWED) == 1 && L.st.hist[L.st.nhist - 1].work_w == 2.0f);
+        /* and from there, slow runs leave it: "min" */
+        feed1(&L, AT_SENS_CTL, 1.0f, &now, r);
+        feed1(&L, AT_SENS_CTL, 1.0f, &now, r);
+        CHECK(L.st.width == 1.0f && L.st.s[1].limit == AT_LIMIT_MIN && count_ev(&L, AT_EV_NARROWED) == 1);
     }
-    /* learned 3 C, the controller's runs ask for 1.2: 2 C, not 1.5 */
+    /* learned 3 C (working 4 on the controller), the controller's runs ask for ~1.2 (0.04/min, ~8.5 min delay, a
+     * real swing of 3 C in ~84 min: slow): 2 C, not 1.5, working 3 */
     {
         at_learn_t L;
         at_learn_init(&L);
         L.st.width = 3.0f;
         run_spec_t r = spec(20.4f, 0.04f);
         r.burn_min = 90;
+        at_learn_run_t a = feed1(&L, AT_SENS_CTL, 1.0f, &now, r);
+        CHECK(a.vote == AT_VOTE_SLOW && a.need > 1.0f && a.need < 1.5f);
         feed1(&L, AT_SENS_CTL, 1.0f, &now, r);
-        feed1(&L, AT_SENS_CTL, 1.0f, &now, r);
-        CHECK(L.st.width == 2.0f);
+        CHECK(L.st.width == 2.0f && L.st.hist[L.st.nhist - 1].work_w == 3.0f);
     }
     /* each sensor keeps its own window: a fast external run and a fast controller run make no decision */
     {
@@ -1049,17 +1067,45 @@ static void test_learn_decide(void)
         CHECK(L.st.width < 4.0f && L.st.s[0].limit == AT_LIMIT_NONE && count_ev(&L, AT_EV_LIMIT_CLEARED) == 1);
         CHECK(!(L.st.s[0].limit == AT_LIMIT_MAX && L.st.s[1].limit == AT_LIMIT_MIN));
     }
-    /* history on the controller's sensor: worked out ~3.3, learned 3.5 (0.5 C steps), working 4 (whole degrees) */
+    /* the controller's "max": its working width at the 4 C cap is a learned width of 3; fast runs there leave 3
+     * alone. The external sensor then narrowing to 2.5 drops it (the controller's working width is 4 still, from
+     * 3 whole degrees + 1, but the learned width is no longer at the controller's limit) */
     {
         at_learn_t L;
         at_learn_init(&L);
-        run_spec_t r = spec(20.4f, 0.1f);
+        L.st.width = 3.0f;
+        CHECK(at_learn_working_width(3.0f, 1.0f, true) == 4.0f);
+        run_spec_t c = spec(19.6f, 0.3f);
+        c.burn_min = 30;
+        feed1(&L, AT_SENS_CTL, 1.0f, &now, c);
+        feed1(&L, AT_SENS_CTL, 1.0f, &now, c);
+        CHECK(L.st.width == 3.0f && L.st.s[1].limit == AT_LIMIT_MAX && count_ev(&L, AT_EV_LIMIT) == 1);
+        CHECK(count_ev(&L, AT_EV_WIDENED) == 0);
+        at_learn_check_limits(&L, 1.0f);
+        CHECK(L.st.s[1].limit == AT_LIMIT_MAX);
+        L.st.width = 2.5f;
+        at_learn_check_limits(&L, 1.0f);
+        CHECK(L.st.s[1].limit == AT_LIMIT_NONE && count_ev(&L, AT_EV_LIMIT_CLEARED) == 1);
+        /* learned 2 from below, fast runs on the controller asking for more than 3: up to 3, not 3.5 or 4 */
+        at_learn_init(&L);
+        L.st.width = 2.0f;
+        feed1(&L, AT_SENS_CTL, 1.0f, &now, c);
+        feed1(&L, AT_SENS_CTL, 1.0f, &now, c);
+        CHECK(L.st.width == 3.0f && L.st.hist[L.st.nhist - 1].work_w == 4.0f);
+    }
+    /* history on the controller's sensor: worked out ~2.1 (the real swing), learned 2.5 (0.5 C steps), working 4
+     * (3 in whole degrees, plus 1 C) */
+    {
+        at_learn_t L;
+        at_learn_init(&L);
+        run_spec_t r = spec(20.4f, 0.065f);
         r.burn_min = 40;
         feed1(&L, AT_SENS_CTL, 1.0f, &now, r);
         feed1(&L, AT_SENS_CTL, 1.0f, &now, r);
         CHECK(count_ev(&L, AT_EV_WIDENED) == 1);
         const at_learn_event_t *e = &L.st.hist[L.st.nhist - 1];
-        CHECK(e->sensor == AT_SENS_CTL && e->raw_w > 3.0f && e->raw_w < 3.5f && e->new_w == 3.5f && e->work_w == 4.0f);
+        CHECK(e->sensor == AT_SENS_CTL && e->raw_w > 2.0f && e->raw_w < 2.5f && e->old_w == 0 && e->new_w == 2.5f &&
+              e->work_w == 4.0f);
     }
     /* cold-night guard: a slow run after an off period that cooled in under half the typical time is not counted */
     {
@@ -1104,8 +1150,17 @@ static void test_learn_widths(void)
     CHECK(at_learn_working_width(0, 1.0f, false) == 1.0f);
     CHECK(at_learn_working_width(0, 1.0f, true) == 2.0f);   /* fresh 20-21 on the controller: 19-21 */
     CHECK(at_learn_working_width(1.5f, 1.0f, false) == 1.5f);
-    CHECK(at_learn_working_width(1.5f, 1.0f, true) == 2.0f);
-    CHECK(at_learn_working_width(2.5f, 1.0f, true) == 3.0f);
+    /* on the controller's sensor: the learned width in whole degrees plus 1 C, at least 2, at most 4 */
+    CHECK(at_learn_working_width(1.0f, 1.0f, true) == 2.0f);
+    CHECK(at_learn_working_width(1.5f, 1.0f, true) == 3.0f);
+    CHECK(at_learn_working_width(2.0f, 1.0f, true) == 3.0f);
+    CHECK(at_learn_working_width(2.5f, 1.0f, true) == 4.0f);
+    CHECK(at_learn_working_width(3.0f, 1.0f, true) == 4.0f);
+    CHECK(at_learn_working_width(4.0f, 1.0f, true) == 4.0f);
+    CHECK(at_learn_working_width(1.5f, 5.0f, true) == 5.0f);    /* the user's own wider range stands */
+    CHECK(at_learn_working_width(1.0f, 3.0f, true) == 3.0f);
+    /* learned 0, user range 1 C: the controller still runs on 2 C */
+    CHECK(at_learn_working_width(0, 1.0f, true) == 2.0f && at_learn_working_width(0, 1.0f, false) == 1.0f);
     CHECK(at_learn_working_width(4.0f, 1.0f, false) == 4.0f);
     CHECK(at_learn_working_width(4.0f, 5.0f, false) == 5.0f);   /* the user's own wider range stands */
     CHECK(at_learn_working_width(0, 3.0f, false) == 3.0f);       /* a saved 18-21 loads unchanged */
@@ -1129,7 +1184,594 @@ static void test_learn_widths(void)
     at_ctl_status_t st;
     at_ctl_status(&t, 2000, &st);
     CHECK(!strcmp(st.reason, "widened") && st.learned_width == 2.0f && st.ceiling == 24.0f);
+    /* on the controller's sensor: learned 2 runs on 3 C (16-19), still "widened"; nothing learned, 2 C for the
+     * controller's sensor alone */
+    t.sensor = AT_SENS_CTL;
+    at_ctl_status(&t, 2000, &st);
+    CHECK(st.work_low == 16.0f && st.work_high == 19.0f && !strcmp(st.reason, "widened") && st.min_width == 2.0f);
+    t.learn.st.width = 0;
+    at_ctl_status(&t, 2000, &st);
+    CHECK(st.work_low == 17.0f && !strcmp(st.reason, "controller_sensor"));
+    t.learn.st.width = 1.0f;
+    at_ctl_status(&t, 2000, &st);
+    CHECK(st.work_low == 17.0f && !strcmp(st.reason, "controller_sensor"));
     CHECK(at_ctl_src_parse("home_assistant") == AT_SRC_HA && at_ctl_src_parse("x") == AT_SRC_UNKNOWN);
+}
+
+
+/* ---- review fixes (1.47 review) ------------------------------------------------------------------------------- */
+
+static void test_review_lost_stop(void)
+{
+    printf("Heater Care: a lost stop is sent again\n");
+    /* Hearth's stop at the top is lost: sent again 90 s later, and no more once the heater purges */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 19.9f);
+        m.rate_on = 0.1f;
+        hsim_arm(&m);
+        m.drop_stops = 1;
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 1, 60 * MIN_MS));
+        uint32_t first = m.last_stop_ms;
+        hsim_run(&m, 60000);
+        CHECK(m.l.stops == 1 && m.state == 3 && t.run.stopping);
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 2, 60000));
+        CHECK(m.last_stop_ms - first >= AT_CTL_MIN_ACTION_MS && m.last_stop_ms - first < AT_CTL_MIN_ACTION_MS + 6000);
+        CHECK(strstr(t.autot.note, "sending stop again") != NULL);
+        CHECK(HSIM_UNTIL(&m, m.state == 0, 10 * MIN_MS));
+        hsim_step(&m);
+        CHECK(m.l.stops == 2 && t.last_end == AT_END_TOP);
+    }
+    /* lost twice: keeps going every 90 s */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 19.9f);
+        m.rate_on = 0.1f;
+        hsim_arm(&m);
+        m.drop_stops = 3;
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 4, 70 * MIN_MS));
+        CHECK(HSIM_UNTIL(&m, m.state == 0, 10 * MIN_MS));
+        hsim_run(&m, 5 * MIN_MS);
+        CHECK(m.l.stops == 4);
+    }
+    /* the held stop (thermostat off, let it finish) is lost and the room races up: the ceiling sends it at once,
+     * without waiting for the 90 s retry */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 19.9f);
+        m.rate_on = 0.01f;
+        hsim_arm(&m);
+        CHECK(HSIM_UNTIL(&m, m.state == 3, 10 * MIN_MS));
+        hsim_run(&m, 5 * MIN_MS);
+        at_snapshot_t s = hsim_snap(&m);
+        at_ctl_auto_off(&t, true, AT_HOLD_THERMO_OFF, AT_SRC_APP, &s, m.now, &m.ops);
+        m.drop_stops = 100;
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 1, 40 * MIN_MS));
+        uint32_t first = m.last_stop_ms;
+        m.room = 25.5f;
+        m.rate_on = 4.0f;
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 2, 60000));
+        CHECK(m.last_stop_ms - first < AT_CTL_MIN_ACTION_MS && m.room >= 26.0f - 0.3f);
+        CHECK(t.run.end == AT_END_CEILING);
+        /* then every 90 s until the heater acts on one */
+        uint32_t second = m.last_stop_ms;
+        m.rate_on = 0;
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 3, 2 * MIN_MS));
+        CHECK(m.last_stop_ms - second >= AT_CTL_MIN_ACTION_MS);
+        m.drop_stops = 0;
+        CHECK(HSIM_UNTIL(&m, m.state == 0, 10 * MIN_MS));
+        hsim_step(&m);
+        CHECK(t.last_end == AT_END_CEILING);
+    }
+    /* frost protection's stop is lost: sent again */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 4.5f);
+        at_ctl_set_freeze(&t, true);
+        m.rate_on = 0.2f;
+        m.drop_stops = 1;
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 2, 60 * MIN_MS));
+        CHECK(m.last_stop_ms - m.last_start_ms > AT_CTL_FROST_RUN_MS);
+        CHECK(HSIM_UNTIL(&m, m.state == 0, 10 * MIN_MS));
+    }
+    /* someone starts it again while a stop is being retried: the retries end and the run carries on as Auto's run
+     * would, so with Auto still on it is stopped at the top again (a fresh stop, not the retry), and not counted */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 19.9f);
+        m.rate_on = 0.1f;
+        t.idle_known = true;
+        t.idle_since_ms = m.now - 30 * MIN_MS;
+        hsim_arm(&m);
+        m.drop_stops = 1;
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 1, 60 * MIN_MS));
+        uint32_t first = m.last_stop_ms;
+        at_ctl_user_start(&t, m.now);
+        CHECK(!t.run.stopping && !t.run.resend && !t.autot.stop_pending);
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 2, 5 * MIN_MS));
+        CHECK(m.last_stop_ms - first >= AT_CTL_MIN_ACTION_MS);
+        CHECK(strstr(t.autot.note, "-> stop") != NULL && strstr(t.autot.note, "again") == NULL);
+        CHECK(HSIM_UNTIL(&m, m.state == 0, 10 * MIN_MS));
+        hsim_step(&m);
+        CHECK(t.last_end == AT_END_TOP && t.learn.runs[t.learn.nruns - 1].why == AT_WHY_ENDED);
+    }
+}
+
+/* Auto on with the controller's whole-degree sensor only, idle 30 min before: the run's learning record */
+static at_learn_run_t slow_ctl_run(float rate_on)
+{
+    at_ctl_t t;
+    hsim_t m;
+    hsim_init(&m, &t, 19.4f);
+    m.feed_ext = false;
+    m.rate_on = rate_on;
+    t.idle_known = true;
+    t.idle_since_ms = m.now - 30 * MIN_MS;
+    at_snapshot_t s = hsim_snap(&m);
+    at_ctl_tick(&t, &s, m.now, &m.ops);
+    at_ctl_set_auto(&t, true, &s, m.now, &m.ops);
+    CHECK(HSIM_UNTIL(&m, t.learn.nruns > 0, 4 * 60 * MIN_MS));
+    CHECK(t.last_end == AT_END_TOP && t.sensor == AT_SENS_CTL);
+    at_learn_run_t r = {0};
+    if (t.learn.nruns) r = t.learn.runs[t.learn.nruns - 1];
+    return r;
+}
+
+static void test_review_stop_tick_and_carry_on(void)
+{
+    printf("Heater Care: the stop tick's reading counts, user stops are re-sent, a start after a stop carries on\n");
+    /* a slow run on the controller's sensor: the 21 that triggers the stop at the top is its second tick-over */
+    {
+        at_learn_run_t r = slow_ctl_run(0.025f);
+        CHECK(r.why == AT_WHY_COUNTED && r.have_rate);
+        CHECK(r.vote == AT_VOTE_SLOW || r.vote == AT_VOTE_OK);
+        CHECK(fabsf(r.rate - 0.025f) < 0.006f);
+        CHECK(r.burn_s > 30 * 60);
+        r = slow_ctl_run(0.04f);
+        CHECK(r.why == AT_WHY_COUNTED && fabsf(r.rate - 0.04f) < 0.01f);
+    }
+    /* a stop someone asked for is lost on the bus: sent again 90 s later while the heater still burns */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 19.9f);
+        hsim_arm(&m);
+        CHECK(HSIM_UNTIL(&m, m.state == 3, 10 * MIN_MS));
+        hsim_run(&m, 5 * MIN_MS);
+        m.drop_stops = 1;
+        at_ctl_user_stop(&t, AT_SRC_APP, m.now);
+        at_ctl_disarm_auto(&t, "manual Hearth stop");
+        m.ops.stop(m.ops.ctx);
+        uint32_t first = m.last_stop_ms;
+        hsim_run(&m, 60000);
+        CHECK(m.l.stops == 1 && m.state == 3 && t.run.stopping && t.run.resend);
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 2, 60000));
+        CHECK(m.last_stop_ms - first >= AT_CTL_MIN_ACTION_MS && m.last_stop_ms - first < AT_CTL_MIN_ACTION_MS + 6000);
+        CHECK(HSIM_UNTIL(&m, m.state == 0, 10 * MIN_MS));
+        hsim_step(&m);
+        CHECK(m.l.stops == 2 && !t.run.running && t.last_end == AT_END_USER && t.n_early == 1);
+        hsim_run(&m, 5 * MIN_MS);
+        CHECK(m.l.stops == 2);
+    }
+    /* a user stop, then a thermostat start during the purge: the heater relights without going idle, one run, the
+     * lock from the first flame, and Auto stops it at the top */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 19.9f);
+        t.idle_known = true;
+        t.idle_since_ms = m.now - 30 * MIN_MS;
+        hsim_arm(&m);
+        CHECK(HSIM_UNTIL(&m, m.state == 3, 10 * MIN_MS));
+        uint32_t on = t.run.on_ms, flame = t.run.flame_ms;
+        hsim_run(&m, 5 * MIN_MS);
+        at_ctl_user_stop(&t, AT_SRC_APP, m.now);
+        m.ops.stop(m.ops.ctx);
+        hsim_run(&m, 60000);
+        CHECK(m.state == 4 && t.run.stopping && at_ctl_min_run_left_ms(&t, m.now) == 0);
+        at_ctl_user_start(&t, m.now);
+        m.ops.start_thermostat(m.ops.ctx);
+        CHECK(!t.run.stopping && !t.run.resend && t.run.carry);
+        m.state = 2;   /* relit from the purge */
+        m.since = m.now;
+        hsim_step(&m);
+        CHECK(t.run.running && t.run.on_ms == on && t.run.flame_ms == flame && !t.run.stopping);
+        CHECK(!t.run.carry && t.run.end == AT_END_NONE && at_ctl_min_run_left_ms(&t, m.now) > 0);
+        int stops = m.l.stops;
+        CHECK(HSIM_UNTIL(&m, m.l.stops == stops + 1, 60 * MIN_MS));
+        CHECK(m.room >= 21.0f - 0.1f && m.last_stop_ms - flame >= AT_CTL_MIN_RUN_MS);
+        CHECK(t.run.hearth_stop && t.run.end == AT_END_TOP);
+        CHECK(HSIM_UNTIL(&m, m.state == 0, 10 * MIN_MS));
+        hsim_step(&m);
+        CHECK(t.last_end == AT_END_TOP && t.learn.runs[t.learn.nruns - 1].why == AT_WHY_ENDED);
+    }
+    /* the same start, but the heater purges to idle anyway: the run still ends as the user's stop */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 19.9f);
+        hsim_arm(&m);
+        CHECK(HSIM_UNTIL(&m, m.state == 3, 10 * MIN_MS));
+        hsim_run(&m, 5 * MIN_MS);
+        at_ctl_user_stop(&t, AT_SRC_WEB, m.now);
+        m.ops.stop(m.ops.ctx);
+        hsim_run(&m, 30000);
+        at_ctl_user_start(&t, m.now);
+        CHECK(HSIM_UNTIL(&m, m.state == 0, 10 * MIN_MS));
+        hsim_step(&m);
+        CHECK(!t.run.running && t.last_end == AT_END_USER);
+    }
+    /* a user stop keeps being lost; Auto turned on again takes the run over and stops it at the top */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 19.9f);
+        hsim_arm(&m);
+        CHECK(HSIM_UNTIL(&m, m.state == 3, 10 * MIN_MS));
+        hsim_run(&m, 5 * MIN_MS);
+        m.drop_stops = 100;
+        at_ctl_user_stop(&t, AT_SRC_APP, m.now);
+        at_ctl_disarm_auto(&t, "manual Hearth stop");
+        m.ops.stop(m.ops.ctx);
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 3, 4 * MIN_MS));
+        at_snapshot_t s = hsim_snap(&m);
+        at_ctl_set_auto(&t, true, &s, m.now, &m.ops);
+        CHECK(!t.run.stopping && !t.run.resend && t.run.owner == AT_OWNER_AUTO);
+        m.want_stop = false;   /* the last retry was lost too */
+        m.drop_stops = 0;
+        hsim_run(&m, 3 * MIN_MS);
+        CHECK(m.l.stops == 3 && m.state == 3);
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 4, 60 * MIN_MS));
+        CHECK(m.room >= 21.0f - 0.1f && t.run.end == AT_END_TOP);
+        CHECK(HSIM_UNTIL(&m, m.state == 0, 10 * MIN_MS));
+    }
+}
+
+static void test_review_frost_and_auto(void)
+{
+    printf("Heater Care: frost protection and Auto never both start\n");
+    /* both on, room below the frost floor: one start, Auto's run (to the top of Auto's range, not frost target + 1) */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 4.0f);
+        at_ctl_set_freeze(&t, true);
+        m.rate_on = 0.5f;
+        hsim_arm(&m);
+        CHECK(m.l.starts == 1);
+        hsim_run(&m, 3 * MIN_MS);
+        CHECK(m.l.starts == 1 && t.run.owner == AT_OWNER_AUTO);
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 1, 60 * MIN_MS));
+        CHECK(m.room >= 21.0f - 0.1f);
+        CHECK(m.last_stop_ms - t.run.flame_ms >= AT_CTL_MIN_RUN_MS);
+        CHECK(HSIM_UNTIL(&m, m.state == 0, 10 * MIN_MS));
+        hsim_step(&m);
+        CHECK(t.last_end == AT_END_TOP && m.l.starts == 1);
+    }
+    /* Auto paced by its 90 s spacing when the room drops: frost waits for it rather than sending its own start */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 22.0f);
+        at_ctl_set_freeze(&t, true);
+        m.rate_off = 0;
+        hsim_arm(&m);
+        CHECK(m.l.starts == 0);
+        hsim_step(&m);
+        m.room = 4.0f;
+        at_ctl_set_external(&t, 4.0f, m.now);
+        m.last_ext = m.now;
+        CHECK(HSIM_UNTIL(&m, m.l.starts == 1, 3 * MIN_MS));
+        hsim_run(&m, 3 * MIN_MS);
+        CHECK(m.l.starts == 1 && t.run.owner == AT_OWNER_AUTO);
+    }
+    /* Auto held back by its off lock: frost starts alone (and Auto, being on, owns the run) */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 4.0f);
+        at_ctl_set_freeze(&t, true);
+        t.off_lock = true;
+        t.off_until_ms = m.now + AT_CTL_MIN_OFF_MS;
+        hsim_arm(&m);
+        CHECK(m.l.starts == 0);
+        CHECK(HSIM_UNTIL(&m, m.l.starts == 1, 3 * MIN_MS));
+        hsim_run(&m, 3 * MIN_MS);
+        CHECK(m.l.starts == 1 && t.run.running && t.run.owner == AT_OWNER_AUTO);
+    }
+    /* Auto off: frost starts and owns its run as before */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 4.0f);
+        at_ctl_set_freeze(&t, true);
+        CHECK(HSIM_UNTIL(&m, m.l.starts == 1, 3 * MIN_MS));
+        hsim_step(&m);
+        CHECK(t.run.owner == AT_OWNER_FREEZE);
+    }
+    /* a frost run, then Auto turned on: Auto takes it over, frost does not stop it at target + 1 */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 4.0f);
+        at_ctl_set_freeze(&t, true);
+        m.rate_on = 0.3f;
+        CHECK(HSIM_UNTIL(&m, m.state == 3, 10 * MIN_MS));
+        CHECK(t.run.owner == AT_OWNER_FREEZE);
+        hsim_arm(&m);
+        CHECK(t.run.owner == AT_OWNER_AUTO && m.l.starts == 1);
+        hsim_run(&m, 25 * MIN_MS);
+        CHECK(m.l.stops == 0 && m.room > 6.5f);
+    }
+}
+
+static void test_review_restart_no_clock(void)
+{
+    printf("Heater Care: a stop with no clock still owes a rest after a restart\n");
+    const int64_t build = 1790000000;
+    /* the run ends with the clock not set: "stopped, time unknown" is what gets saved */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 19.9f);
+        at_ctl_set_clock(&t, false, 0);
+        m.rate_on = 0.3f;
+        hsim_arm(&m);
+        CHECK(HSIM_UNTIL(&m, t.save_stop, 60 * MIN_MS));
+        CHECK(t.save_stop_epoch == 0);
+    }
+    /* boot with a stop of unknown time: 20 min from boot, even once the clock is set */
+    for (int k = 0; k < 2; k++) {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 18.0f);
+        if (k == 1) at_ctl_set_clock(&t, false, 0);
+        at_ctl_saved_t sv = {false, true, 0};
+        at_ctl_boot(&t, &sv, build, m.now);
+        uint32_t boot = m.now;
+        hsim_arm(&m);
+        hsim_run(&m, MIN_MS);
+        if (k == 1) at_ctl_set_clock(&t, true, 1800000000);
+        CHECK(HSIM_UNTIL(&m, m.l.starts == 1, 30 * MIN_MS));
+        CHECK(m.last_start_ms - boot >= AT_CTL_MIN_OFF_MS);
+    }
+    /* a box that has never run owes no rest */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 18.0f);
+        at_ctl_set_clock(&t, false, 0);
+        at_ctl_saved_t sv = {false, false, 0};
+        at_ctl_boot(&t, &sv, build, m.now);
+        uint32_t boot = m.now;
+        hsim_arm(&m);
+        hsim_step(&m);
+        CHECK(at_ctl_min_off_left_ms(&t, m.now) == 0 && !t.off_lock);
+        CHECK(HSIM_UNTIL(&m, m.l.starts == 1, 3 * MIN_MS));
+        CHECK(m.last_start_ms - boot <= AT_CTL_MIN_ACTION_MS + 6000);
+    }
+}
+
+static void test_review_learning(void)
+{
+    printf("Heater Care learning: 2 tick-overs, and the cooling peak in the purge\n");
+    uint32_t now = 20000000;
+    /* the controller's sensor over its 2 C working range: the warm-up tick-over and one more, counted */
+    {
+        at_learn_t L;
+        at_learn_init(&L);
+        run_spec_t r = spec(19.4f, 0.05f);   /* 19 -> 20 at ~8 min, 21 at ~28 min */
+        r.burn_min = 29;
+        at_learn_run_t a = feed1(&L, AT_SENS_CTL, 1.0f, &now, r);
+        /* the real swing is 1 C (19.5 -> 20.5), done in ~28 min: fast, and it asks for a real swing of ~1.6 */
+        CHECK(a.why == AT_WHY_COUNTED && a.vote == AT_VOTE_FAST);
+        CHECK(a.rate > 0.04f && a.rate < 0.06f);
+        CHECK(a.climb_min > 20.0f && a.climb_min < 30.0f);
+        CHECK(a.need > 1.0f && a.need < 2.0f);
+        /* slow ones count too, and vote slow; at the 2 C floor the controller leaves the width ("min") */
+        r = spec(19.4f, 0.015f);             /* 21 at ~80 min */
+        r.burn_min = 81;
+        at_learn_run_t b = feed1(&L, AT_SENS_CTL, 1.0f, &now, r);
+        at_learn_run_t c = feed1(&L, AT_SENS_CTL, 1.0f, &now, r);
+        CHECK(b.why == AT_WHY_COUNTED && b.vote == AT_VOTE_SLOW && c.why == AT_WHY_COUNTED);
+        CHECK(b.rate > 0.01f && b.rate < 0.02f);
+        CHECK(L.st.width == 0 && L.st.s[1].limit == AT_LIMIT_MIN);
+        /* a single tick-over is still not enough */
+        r = spec(19.4f, 0.05f);
+        r.burn_min = 15;
+        CHECK(feed1(&L, AT_SENS_CTL, 1.0f, &now, r).why == AT_WHY_NOT_ENOUGH_DATA);
+    }
+    /* the room rises 0.6 C in the purge after the stop at the top: that is the peak the cooling time runs from */
+    {
+        at_learn_t L;
+        at_learn_init(&L);
+        run_spec_t r = spec(20.0f, 0.03f);
+        r.purge_rise = 0.6f;
+        at_learn_run_t a = feed(&L, AT_SENS_EXT, 1.0f, &now, r, 0.02f, 40);
+        CHECK(L.have_peak && fabsf(L.peak - a.peak_temp) < 0.006f);
+        CHECK((int32_t)(now - 40 * MIN_MS - L.peak_ms) > 0);   /* seen during the purge, before the run ended */
+        CHECK(L.reached_bottom && L.cool_ms >= 25 * MIN_MS);
+    }
+}
+
+/* The controller's whole-degree sensor, through at_ctl_tick: the room really swings the working width less 1 C */
+static void test_ctl_sensor_swing(void)
+{
+    printf("Heater Care learning: the controller's sensor judges the real swing (width - 1 C)\n");
+    at_ctl_t t;
+    hsim_t m;
+    hsim_init(&m, &t, 19.4f);
+    m.feed_ext = false;
+    m.rate_on = 0.04f;   /* 19.5 -> 20.5 in 25 min: the top inside 30 min of flame */
+    t.idle_known = true;
+    t.idle_since_ms = m.now - 30 * MIN_MS;
+    at_snapshot_t s = hsim_snap(&m);
+    at_ctl_tick(&t, &s, m.now, &m.ops);
+    at_ctl_set_auto(&t, true, &s, m.now, &m.ops);
+    float lo, hi;
+    at_ctl_working_range(&t, &lo, &hi);
+    CHECK(lo == 19.0f && hi == 21.0f);
+
+    /* run 1: the top inside 30 min of flame, held by the run lock; it votes fast */
+    CHECK(HSIM_UNTIL(&m, m.state == 3, 10 * MIN_MS));
+    uint32_t flame = m.now;
+    CHECK(HSIM_UNTIL(&m, lroundf(m.room) >= 21, 40 * MIN_MS));
+    CHECK(m.now - flame < 30 * MIN_MS && m.l.stops == 0);
+    CHECK(HSIM_UNTIL(&m, t.learn.nruns == 1, 60 * MIN_MS));
+    at_learn_run_t a = t.learn.runs[0];
+    CHECK(a.sensor == AT_SENS_CTL && a.why == AT_WHY_COUNTED && a.vote == AT_VOTE_FAST);
+    CHECK(a.climb_min > 20.0f && a.climb_min < 30.0f);
+    CHECK(a.need > 1.0f && a.need < 2.0f);   /* the real swing: 0.04 x (40 - 2.5) = 1.5 */
+    CHECK(count_ev(&t.learn, AT_EV_WIDENED) == 0);
+
+    /* run 2, the same room: fast again, and two fast runs widen the range (whole degrees on this sensor) */
+    CHECK(HSIM_UNTIL(&m, t.learn.nruns == 2, 4 * 60 * MIN_MS));
+    at_learn_run_t b = t.learn.runs[1];
+    CHECK(b.why == AT_WHY_COUNTED && b.vote == AT_VOTE_FAST);
+    CHECK(count_ev(&t.learn, AT_EV_WIDENED) == 1);
+    /* run 2 lights just as the reading is about to tick over, so its warm-up delay is ~0 and the typical delay
+     * (median of 2.5 and ~0) is ~1.3 min: it asks for 0.04 x 38.7 = ~1.55, which rounds up to a learned width of
+     * 2.0 (the real swing, in 0.5 C steps), worked on as 2 + 1 = 3 C on this sensor */
+    CHECK(b.need > 1.5f && b.need < 2.0f);
+    const at_learn_event_t *e = &t.learn.st.hist[t.learn.st.nhist - 1];
+    CHECK(t.learn.st.width == 2.0f && e->new_w == 2.0f && e->work_w == 3.0f && e->raw_w > 1.5f && e->raw_w < 2.0f);
+    hsim_step(&m);
+    at_ctl_working_range(&t, &lo, &hi);
+    CHECK(hi == 21.0f && lo == 18.0f);
+
+    /* run 3 at the same speed over the wider range: about 50 min of real swing, ok: it settles */
+    CHECK(HSIM_UNTIL(&m, t.learn.nruns == 3, 5 * 60 * MIN_MS));
+    at_learn_run_t c = t.learn.runs[2];
+    CHECK(c.why == AT_WHY_COUNTED && c.vote == AT_VOTE_OK);
+    CHECK(c.climb_min > 40.0f && c.climb_min < 60.0f);
+    CHECK(count_ev(&t.learn, AT_EV_WIDENED) == 1 && count_ev(&t.learn, AT_EV_NARROWED) == 0);
+}
+
+/* counted runs on sensor s in the run log from index `from` on; all of them voted ok */
+static int counted_on(const at_ctl_t *t, at_sensor_t s, int from, bool *all_ok)
+{
+    int n = 0;
+    *all_ok = true;
+    for (int i = from; i < t->learn.nruns; i++) {
+        const at_learn_run_t *r = &t->learn.runs[i];
+        if (r->sensor != s || r->why != AT_WHY_COUNTED) continue;
+        n++;
+        if (r->vote != AT_VOTE_OK) *all_ok = false;
+    }
+    return n;
+}
+
+/* The learned width is the real swing the space needs, the same number on both sensors: what the controller's
+ * sensor learned is right on the external sensor too, and back again (room 19.4, 0.04 C/min on and off, 20-21) */
+static void test_ctl_sensor_swap(void)
+{
+    printf("Heater Care learning: one learned width, right on both sensors\n");
+    at_ctl_t t;
+    hsim_t m;
+    hsim_init(&m, &t, 19.4f);
+    m.feed_ext = false;
+    m.rate_on = 0.04f;
+    m.rate_off = 0.04f;
+    t.idle_known = true;
+    t.idle_since_ms = m.now - 30 * MIN_MS;
+    at_snapshot_t s = hsim_snap(&m);
+    at_ctl_tick(&t, &s, m.now, &m.ops);
+    at_ctl_set_auto(&t, true, &s, m.now, &m.ops);
+
+    /* the controller's sensor learns: two fast runs, 19-21 widens to 18-21 */
+    CHECK(HSIM_UNTIL(&m, count_ev(&t.learn, AT_EV_WIDENED) == 1, 6 * 60 * MIN_MS));
+    const float w = t.learn.st.width;
+    CHECK(w == 2.0f);   /* as in test_ctl_sensor_swing: the real swing ~1.55, rounded up */
+    CHECK(m.state == 0 && !t.run.running);
+    float lo, hi;
+    at_ctl_working_range(&t, &lo, &hi);
+    CHECK(lo == 18.0f && hi == 21.0f);
+    const int nh = t.learn.st.nhist;
+
+    /* the external sensor comes back: it runs on the learned width as it is, and its runs vote ok, no change */
+    m.feed_ext = true;
+    int from = t.learn.nruns;
+    hsim_run(&m, 40000);
+    CHECK(t.sensor == AT_SENS_EXT);
+    at_ctl_working_range(&t, &lo, &hi);
+    CHECK(hi == 21.0f && lo == 21.0f - w);
+    bool ok = false;
+    CHECK(HSIM_UNTIL(&m, counted_on(&t, AT_SENS_EXT, from, &ok) >= 2, 8 * 60 * MIN_MS));
+    CHECK(ok && t.learn.st.width == w && t.learn.st.nhist == nh);
+
+    /* and back to the controller's sensor: 18-21 again, its runs vote ok, no change */
+    CHECK(HSIM_UNTIL(&m, m.state == 0 && !t.run.running, 2 * 60 * MIN_MS));
+    m.feed_ext = false;
+    from = t.learn.nruns;
+    hsim_run(&m, AT_CTL_EXT_STALE_MS + 10000);
+    CHECK(t.sensor == AT_SENS_CTL);
+    at_ctl_working_range(&t, &lo, &hi);
+    CHECK(lo == 18.0f && hi == 21.0f);
+    CHECK(HSIM_UNTIL(&m, counted_on(&t, AT_SENS_CTL, from, &ok) >= 2, 8 * 60 * MIN_MS));
+    CHECK(ok && t.learn.st.width == w && t.learn.st.nhist == nh);
+    CHECK(count_ev(&t.learn, AT_EV_WIDENED) == 1 && count_ev(&t.learn, AT_EV_NARROWED) == 0);
+}
+
+static void test_review_small(void)
+{
+    printf("Heater Care: frost hold shown, a timer's ceiling while held\n");
+    /* frost at target + 1 inside its 20 min: holding "top" while it waits, cleared after the stop */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 4.5f);
+        at_ctl_set_freeze(&t, true);
+        m.rate_on = 0.3f;
+        CHECK(HSIM_UNTIL(&m, t.held == AT_HOLD_TOP, 20 * MIN_MS));
+        CHECK(m.l.stops == 0 && t.run.owner == AT_OWNER_FREEZE);
+        at_ctl_status_t st;
+        at_ctl_status(&t, m.now, &st);
+        CHECK(st.holding == AT_HOLD_TOP && st.ceiling == 11.0f);
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 1, 30 * MIN_MS));
+        CHECK(t.held == AT_HOLD_NONE);
+    }
+    /* a timer for 24-25 ends 10 min in; the user's 20-21 comes back; the held run's ceiling is still 30, not 26 */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 23.9f);
+        at_ctl_set_auto_range(&t, 24.0f, 25.0f);
+        m.rate_on = 0.2f;
+        hsim_arm(&m);
+        CHECK(HSIM_UNTIL(&m, m.state == 3, 10 * MIN_MS));
+        uint32_t flame = m.now;
+        hsim_run(&m, 3 * MIN_MS);
+        at_snapshot_t s = hsim_snap(&m);
+        at_ctl_auto_off(&t, true, AT_HOLD_TIMER_ENDED, AT_SRC_TIMER, &s, m.now, &m.ops);
+        at_ctl_set_auto_range(&t, 20.0f, 21.0f);
+        at_ctl_status_t st;
+        at_ctl_status(&t, m.now, &st);
+        CHECK(t.held == AT_HOLD_TIMER_ENDED && st.ceiling == 30.0f);
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 1, 40 * MIN_MS));
+        CHECK(m.last_stop_ms - flame >= AT_CTL_MIN_RUN_MS && m.room > 26.0f);
+        CHECK(HSIM_UNTIL(&m, m.state == 0, 10 * MIN_MS));
+        hsim_step(&m);
+        CHECK(t.last_end == AT_END_TIMER);
+    }
+    /* a frost run that hits its ceiling (5 + 1 + 5 = 11): after the stop the status still says 11, not Auto's 26 */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 4.5f);
+        at_ctl_set_freeze(&t, true);
+        m.rate_on = 1.0f;
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 1, 30 * MIN_MS));
+        CHECK(HSIM_UNTIL(&m, m.state == 0, 10 * MIN_MS));
+        hsim_step(&m);
+        at_ctl_status_t st;
+        at_ctl_status(&t, m.now, &st);
+        CHECK(t.last_end == AT_END_CEILING && st.last_run_end == AT_END_CEILING && st.ceiling == 11.0f);
+    }
 }
 
 /* the old fault back-off still holds */
@@ -1160,6 +1802,156 @@ static void test_ctl_fault_backoff(void)
     CHECK(l3.starts == 2);
 }
 
+/* ---- §3.6 cases the first pass left out ------------------------------------------------------------------------- */
+
+/* the newest run in the learning log */
+static const at_learn_run_t *last_run(const at_ctl_t *t) { return &t->learn.runs[t->learn.nruns - 1]; }
+
+static void test_gaps(void)
+{
+    printf("Heater Care: fault runs, burner pause, spikes, dropouts, both limits, clock after a restored rest\n");
+    uint32_t now = 20000000;
+    /* a fault or a ceiling stop: the run is not counted and the window does not move */
+    {
+        at_learn_t L;
+        at_learn_init(&L);
+        run_spec_t r = spec(20.0f, 0.1f);
+        r.end = AT_END_FAULT;
+        CHECK(feed1(&L, AT_SENS_EXT, 1.0f, &now, r).why == AT_WHY_ENDED);
+        r.end = AT_END_CEILING;
+        CHECK(feed1(&L, AT_SENS_EXT, 1.0f, &now, r).why == AT_WHY_ENDED);
+        CHECK(L.st.s[0].n == 0 && L.st.width == 0);
+    }
+    /* the heater's own burner pause and relight: one run, the run lock from the first flame, and the pause stays in
+     * the rise-rate fit as real elapsed time (so the rate comes out below the burning rate) */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 19.9f);
+        m.rate_on = 0.05f;
+        hsim_arm(&m);
+        CHECK(HSIM_UNTIL(&m, m.state == 3, 10 * MIN_MS));
+        uint32_t flame = m.now;
+        int runs = t.learn.nruns;
+        hsim_run(&m, 10 * MIN_MS);
+        m.state = 4;               /* the heater pauses its burner ... */
+        m.since = m.now;
+        hsim_run(&m, MIN_MS);
+        m.state = 2;               /* ... and relights (5 min light-up) */
+        m.since = m.now;
+        hsim_run(&m, 30000);
+        CHECK(t.run.running && !t.run.stopping && t.run.flame && t.run.flame_ms == flame);
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 1, 60 * MIN_MS));
+        CHECK(m.l.starts == 1);
+        CHECK(m.last_stop_ms - flame >= AT_CTL_MIN_RUN_MS && m.last_stop_ms - flame < AT_CTL_MIN_RUN_MS + 10000);
+        CHECK(HSIM_UNTIL(&m, m.state == 0, 10 * MIN_MS));
+        hsim_step(&m);
+        CHECK(t.learn.nruns == runs + 1);
+        const at_learn_run_t *r = last_run(&t);
+        CHECK(r->burn_s >= 30 * 60 - 5 && r->have_rate && r->rate > 0.02f && r->rate < 0.046f);
+    }
+    /* one bad reading mid-run (6 C high): no stop, and the run still counts */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 19.9f);
+        m.rate_on = 0.05f;
+        hsim_arm(&m);
+        /* a first run, so the second has a known off period before it */
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 1, 60 * MIN_MS));
+        CHECK(HSIM_UNTIL(&m, m.l.starts == 2 && m.state == 3, 240 * MIN_MS));
+        hsim_run(&m, 15 * MIN_MS);
+        int stops = m.l.stops;
+        at_ctl_set_external(&t, m.room + 6.0f, m.now);
+        m.last_ext = m.now;
+        hsim_run(&m, 20000);
+        CHECK(m.l.stops == stops);
+        CHECK(HSIM_UNTIL(&m, m.l.stops == stops + 1, 60 * MIN_MS));
+        CHECK(HSIM_UNTIL(&m, m.state == 0, 10 * MIN_MS));
+        hsim_step(&m);
+        CHECK(t.last_end == AT_END_TOP && last_run(&t)->why == AT_WHY_COUNTED);
+    }
+    /* the external sensor drops out and returns several times: each run goes into its own sensor's window, and a
+     * decision only ever comes from one sensor's runs */
+    {
+        at_learn_t L;
+        at_learn_init(&L);
+        run_spec_t c = spec(19.6f, 0.1f);
+        c.burn_min = 40;
+        feed1(&L, AT_SENS_EXT, 1.0f, &now, spec(20.0f, 0.1f));
+        feed1(&L, AT_SENS_CTL, 1.0f, &now, c);
+        CHECK(L.st.width == 0 && L.st.s[0].n == 1 && L.st.s[1].n == 1);
+        feed1(&L, AT_SENS_EXT, 1.0f, &now, spec(20.0f, 0.1f));
+        CHECK(L.st.width > 0 && count_ev(&L, AT_EV_WIDENED) == 1 && L.st.hist[L.st.nhist - 1].sensor == AT_SENS_EXT);
+        feed1(&L, AT_SENS_CTL, 1.0f, &now, c);
+        CHECK(L.st.hist[L.st.nhist - 1].sensor == AT_SENS_EXT || L.st.hist[L.st.nhist - 1].sensor == AT_SENS_CTL);
+        CHECK(L.st.s[0].n == 0);   /* the external window was used by its decision; the controller's is its own */
+        /* through the loop: a dropout mid-run, twice, marks each of those runs "sensor changed" */
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 19.9f);
+        hsim_arm(&m);
+        /* a plain first run, so the off period before the next ones is known ("long off" would win otherwise) */
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 1 && m.state == 0, 90 * MIN_MS));
+        for (int k = 0; k < 2; k++) {
+            CHECK(HSIM_UNTIL(&m, m.state == 3, 120 * MIN_MS));
+            hsim_run(&m, 5 * MIN_MS);
+            m.feed_ext = false;
+            hsim_run(&m, AT_CTL_EXT_STALE_MS + 10000);
+            CHECK(t.sensor == AT_SENS_CTL);
+            m.feed_ext = true;
+            hsim_run(&m, 40000);
+            CHECK(t.sensor == AT_SENS_EXT);
+            CHECK(HSIM_UNTIL(&m, m.state == 0 && m.l.stops == k + 2, 60 * MIN_MS));
+            hsim_step(&m);
+            CHECK(last_run(&t)->why == AT_WHY_SENSOR_CHANGED);
+        }
+    }
+    /* both sensors reach "max" in turn: each kept, each with its own entry; the status shows the sensor in use */
+    {
+        at_learn_t L;
+        at_learn_init(&L);
+        run_spec_t e = spec(20.0f, 0.2f);
+        for (int i = 0; i < 4; i++) feed1(&L, AT_SENS_EXT, 1.0f, &now, e);
+        CHECK(L.st.width == 4.0f && L.st.s[0].limit == AT_LIMIT_MAX && count_ev(&L, AT_EV_LIMIT) == 1);
+        run_spec_t c = spec(19.6f, 0.3f);
+        c.burn_min = 30;
+        for (int i = 0; i < 3; i++) feed1(&L, AT_SENS_CTL, 1.0f, &now, c);
+        CHECK(L.st.s[0].limit == AT_LIMIT_MAX && L.st.s[1].limit == AT_LIMIT_MAX && count_ev(&L, AT_EV_LIMIT) == 2);
+        int ext_ev = 0, ctl_ev = 0;
+        for (int i = 0; i < L.st.nhist; i++)
+            if (L.st.hist[i].kind == AT_EV_LIMIT) *(L.st.hist[i].sensor == AT_SENS_EXT ? &ext_ev : &ctl_ev) += 1;
+        CHECK(ext_ev == 1 && ctl_ev == 1);
+        at_ctl_t t;
+        at_ctl_init(&t, 20.0f, 5.0f);
+        t.learn.st.s[0].limit = AT_LIMIT_MAX;
+        t.learn.st.s[1].limit = AT_LIMIT_NONE;
+        at_ctl_status_t st;
+        t.sensor = AT_SENS_EXT;
+        at_ctl_status(&t, 1000, &st);
+        CHECK(st.at_limit == AT_LIMIT_MAX);
+        t.sensor = AT_SENS_CTL;
+        at_ctl_status(&t, 1000, &st);
+        CHECK(st.at_limit == AT_LIMIT_NONE);
+    }
+    /* a rest restored from the saved stop time (stopped 15 min ago: 5 min left), then the wall clock jumps a day
+     * either way: the deadline does not move */
+    for (int k = 0; k < 2; k++) {
+        const int64_t build = 1790000000, now_e = 1800000000;
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 18.0f);
+        at_ctl_saved_t sv = {false, true, now_e - 15 * 60};
+        at_ctl_boot(&t, &sv, build, m.now);
+        uint32_t boot = m.now;
+        hsim_arm(&m);
+        hsim_run(&m, MIN_MS);
+        at_ctl_set_clock(&t, true, k == 0 ? now_e + 86400 : now_e - 86400);
+        CHECK(HSIM_UNTIL(&m, m.l.starts == 1, 30 * MIN_MS));
+        CHECK(m.last_start_ms - boot >= 5 * MIN_MS - 3000 && m.last_start_ms - boot < 5 * MIN_MS + 100000);
+    }
+}
+
 static void test_ctl(void)
 {
     test_ctl_locks();
@@ -1169,6 +1961,15 @@ static void test_ctl(void)
     test_ctl_sensors();
     test_ctl_restart();
     test_ctl_fault_backoff();
+    test_review_lost_stop();
+    test_review_stop_tick_and_carry_on();
+    test_review_frost_and_auto();
+    test_review_restart_no_clock();
+    test_review_small();
+    test_review_learning();
+    test_ctl_sensor_swing();
+    test_ctl_sensor_swap();
+    test_gaps();
     test_learn_widths();
     test_learn_measure();
     test_learn_decide();

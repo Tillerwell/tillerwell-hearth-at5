@@ -22,7 +22,11 @@ float at_learn_round_up(float w, bool whole_deg)
 
 float at_learn_working_width(float learned, float user_w, bool ctl)
 {
-    float l = ctl ? at_learn_round_up(learned, true) : learned;
+    /* the learned width is the real swing the space needs, on either sensor. On the controller's whole-degree sensor
+     * the room swings the working width less 1 C, so that sensor runs on it rounded up to a whole degree plus 1 C;
+     * the 1 C is applied here only, never saved (plan §2, §3.2) */
+    float l = learned;
+    if (ctl && learned > EPS) l = at_learn_round_up(learned, true) + AT_LEARN_CTL_SLACK;
     float w = user_w;
     if (l > w) w = l;
     if (ctl && w < AT_LEARN_CTL_FLOOR) w = AT_LEARN_CTL_FLOOR;
@@ -137,6 +141,10 @@ bool at_learn_rate(const at_learn_t *L, at_sensor_t s, float *rate)
 
 static float floor_w(float user_w, at_sensor_t s) { return at_learn_working_width(0, user_w, whole(s)); }
 
+/* The widest learned width a sensor can use: 4 C, or 3 C on the controller's sensor (its working width is then at
+ * the 4 C cap) */
+static float max_learned(at_sensor_t s) { return whole(s) ? AT_LEARN_MAX_W - AT_LEARN_CTL_SLACK : AT_LEARN_MAX_W; }
+
 static void set_limit(at_learn_t *L, at_sensor_t s, at_limit_t lim, float raw, float user_w)
 {
     at_learn_sensor_t *ss = &L->st.s[s];
@@ -169,7 +177,7 @@ void at_learn_check_limits(at_learn_t *L, float user_w)
         at_learn_sensor_t *ss = &L->st.s[s];
         bool still = true;
         if (ss->limit == AT_LIMIT_MAX) {
-            still = fabsf(L->st.width - AT_LEARN_MAX_W) < EPS;
+            still = L->st.width >= max_learned((at_sensor_t)s) - EPS;
         } else if (ss->limit == AT_LIMIT_MIN) {
             still = fabsf(at_learn_working_width(L->st.width, user_w, whole((at_sensor_t)s)) -
                           floor_w(user_w, (at_sensor_t)s)) < EPS;
@@ -236,9 +244,10 @@ static void decide(at_learn_t *L, at_sensor_t s, float user_w)
     float r1, r2;
     if (nf >= 2) {
         float raw = widest(ss, AT_VOTE_FAST, &r1, &r2);
-        /* the learned width keeps 0.5 C steps on either sensor; the controller's working width rounds it up again */
+        /* the learned width keeps 0.5 C steps on either sensor; the controller's working width rounds it up again.
+         * At 3 C the controller's working width is at the 4 C cap, so that is as far as its runs can take it */
         float target = at_learn_round_up(raw, false);
-        if (target > AT_LEARN_MAX_W) target = AT_LEARN_MAX_W;
+        if (target > max_learned(s)) target = max_learned(s);
         if (target <= L->st.width + EPS) {
             set_limit(L, s, AT_LIMIT_MAX, raw, user_w);
         } else {
@@ -248,18 +257,29 @@ static void decide(at_learn_t *L, at_sensor_t s, float user_w)
     }
     if (ns >= 2) {
         float raw = widest(ss, AT_VOTE_SLOW, &r1, &r2);
-        /* the coarser sensor cannot narrow below what it can see: at 2 C or under it leaves the width alone */
-        if (ctl && L->st.width <= AT_LEARN_CTL_FLOOR + EPS) {
+        /* the coarser sensor cannot narrow below what it can see: its 2 C working floor is a learned width of 1 C, so
+         * at 1 C or under it leaves the width alone */
+        if (ctl && L->st.width <= AT_LEARN_CTL_SLACK + EPS) {
             set_limit(L, s, AT_LIMIT_MIN, raw, user_w);
             return;
         }
-        float target = at_learn_round_up(raw, ctl);
-        float fl = floor_w(user_w, s);
-        if (target < fl) target = fl;
-        if (target >= cur - EPS) {
-            set_limit(L, s, AT_LIMIT_MIN, raw, user_w);
+        float target;
+        if (ctl) {
+            /* a whole degree, and never below 1 C (the controller's 2 C floor) */
+            target = at_learn_round_up(raw, true);
+            if (target < AT_LEARN_CTL_SLACK) target = AT_LEARN_CTL_SLACK;
         } else {
+            target = at_learn_round_up(raw, false);
+            float fl = floor_w(user_w, s);
+            if (target < fl) target = fl;
+        }
+        if (at_learn_working_width(target, user_w, ctl) < cur - EPS) {
             change_width(L, s, target, AT_EV_NARROWED, raw, r1, r2, user_w);
+        } else if (fabsf(cur - floor_w(user_w, s)) < EPS) {
+            set_limit(L, s, AT_LIMIT_MIN, raw, user_w);   /* the working width is at its floor */
+        } else if (ss->limit != AT_LIMIT_NONE) {
+            /* rounding keeps the working width where it is, above its floor: no change, and not a limit */
+            set_limit(L, s, AT_LIMIT_NONE, 0, user_w);
         }
         return;
     }
@@ -293,6 +313,7 @@ void at_learn_run_start(at_learn_t *L, uint32_t now, at_sensor_t sensor, bool by
     L->sx = L->sy = L->sxx = L->sxy = 0;
     L->n = 0;
     L->lost_heat = false;
+    L->resumed = false;
 }
 
 void at_learn_flame(at_learn_t *L, uint32_t now)
@@ -323,6 +344,22 @@ static void add_point(at_learn_t *L, uint32_t now, float temp)
 
 void at_learn_sample(at_learn_t *L, uint32_t now, float temp, at_sensor_t sensor, float work_low, bool off_lock)
 {
+    /* cooling: from Hearth's stop at the top, purge included (the room often still rises then), the peak, then the
+     * time from it down to the working bottom */
+    if (L->cool_on) {
+        if ((uint8_t)sensor != L->cool_sensor) L->cool_bad = true;
+        if (!L->reached_bottom) {
+            if (!L->have_peak || temp > L->peak) {
+                L->peak = temp;
+                L->peak_ms = now;
+                L->have_peak = true;
+            }
+            if (temp <= work_low + EPS) {
+                L->reached_bottom = true;
+                L->cool_ms = now - L->peak_ms;
+            }
+        }
+    }
     if (L->in_run) {
         if ((uint8_t)sensor != L->sensor) L->sensor_changed = true;
         if (!L->have_start_temp) {
@@ -353,20 +390,6 @@ void at_learn_sample(at_learn_t *L, uint32_t now, float temp, at_sensor_t sensor
         }
         return;
     }
-    if (L->cool_on) {
-        if ((uint8_t)sensor != L->cool_sensor) L->cool_bad = true;
-        if (!L->reached_bottom) {
-            if (!L->have_peak || temp > L->peak) {
-                L->peak = temp;
-                L->peak_ms = now;
-                L->have_peak = true;
-            }
-            if (temp <= work_low + EPS) {
-                L->reached_bottom = true;
-                L->cool_ms = now - L->peak_ms;
-            }
-        }
-    }
     if (off_lock && temp < work_low && work_low - temp > L->dip) L->dip = work_low - temp;
 }
 
@@ -385,6 +408,13 @@ void at_learn_stop(at_learn_t *L, uint32_t now, bool at_top)
         L->reached_bottom = false;
         L->cool_ms = 0;
     }
+}
+
+void at_learn_resume(at_learn_t *L)
+{
+    if (!L->in_run || !L->fit_frozen) return;
+    L->resumed = true;
+    L->cool_on = false;
 }
 
 void at_learn_run_end(at_learn_t *L, uint32_t now, at_run_end_t end, float user_w)
@@ -431,12 +461,14 @@ void at_learn_run_end(at_learn_t *L, uint32_t now, at_run_end_t end, float user_
         r.rate = (float)slope;
         r.have_rate = true;
     }
+    /* on the whole-degree sensor a run over a 2 C working range has 2 tick-overs (the warm-up end and one more):
+     * that is enough (plan §3.2: fewer than 2 is not) */
     bool enough = fit_ok && warm_ms <= AT_LEARN_MAX_WARM_MS &&
-                  (whole(s) ? L->n >= 3 : L->fit_last_ms - L->fit_first_ms >= AT_LEARN_MIN_FIT_MS);
+                  (whole(s) ? L->n >= 2 : L->fit_last_ms - L->fit_first_ms >= AT_LEARN_MIN_FIT_MS);
 
     if (!L->by_thermo) r.why = AT_WHY_NOT_THERMOSTAT;
     else if (!L->off_ok) r.why = AT_WHY_LONG_OFF;
-    else if (end != AT_END_TOP) r.why = AT_WHY_ENDED;
+    else if (end != AT_END_TOP || L->resumed) r.why = AT_WHY_ENDED;
     else if (L->sensor_changed) r.why = AT_WHY_SENSOR_CHANGED;
     else if (!L->flame || !enough) r.why = AT_WHY_NOT_ENOUGH_DATA;
     else if (L->lost_heat || r.rate < AT_LEARN_MIN_RATE) r.why = AT_WHY_LOST_HEAT;
@@ -448,8 +480,13 @@ void at_learn_run_end(at_learn_t *L, uint32_t now, at_run_end_t end, float user_
         float delay_min = delay_s / 60.0f;
         if (delay_min > AT_LEARN_MAX_WARM_MS / 60000.0f) delay_min = AT_LEARN_MAX_WARM_MS / 60000.0f;
         float cur = at_learn_working_width(L->st.width, user_w, whole(s));
+        /* on the controller's whole-degree sensor the start fires as the reading falls into the bottom degree and
+         * the stop as it enters the top one, so the room really swings the working width less 1 C: judge the run
+         * on that. The width needed is the real swing for the target time on either sensor; the controller's 1 C
+         * is added only where its working width is worked out (plan §3.2) */
+        const float slack = whole(s) ? AT_LEARN_CTL_SLACK : 0.0f;
         r.need = r.rate * (AT_LEARN_TARGET_MIN - delay_min);
-        r.climb_min = delay_min + cur / r.rate;
+        r.climb_min = delay_min + (cur - slack) / r.rate;
         r.vote = r.climb_min < AT_LEARN_FAST_MIN ? AT_VOTE_FAST : r.climb_min > AT_LEARN_SLOW_MIN ? AT_VOTE_SLOW : AT_VOTE_OK;
         /* cold-night guard: a slow run after an off period that cooled in under half the typical time */
         uint32_t typ;

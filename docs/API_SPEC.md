@@ -344,7 +344,8 @@ The box sends a fresh `backup` (§9.3) as soon as its list changes, so the websi
 
 Plan and reasons: `docs/ADAPTIVE_THERMOSTAT.md`. The user's range (`auto_low`..`auto_high`, at least 1 C) is what the
 apps show as the setting. The thermostat runs on a working range: the same top, with the bottom lowered by what
-Heater Care learned (and to at least 2 C below the top on the controller's whole-degree sensor). Hearth's own stops
+Heater Care learned (on the controller's whole-degree sensor the learned width rounded up to a whole degree plus 1 C,
+and at least 2 C below the top). Hearth's own stops
 wait until a run has burned 30 minutes from flame established (20 for frost protection); a thermostat start waits
 until the heater has been idle 20 minutes. A fault, the ceiling (top + 5 C) and a stop someone asks for always go at
 once.
@@ -366,10 +367,13 @@ once.
 
 - `sensor`: `"external"` or `"controller"`, the reading in use. `min_width` is the narrowest working range on it (1 or 2).
 - `at_limit`: `"max"` (the space heats faster than a 4 C range allows), `"min"` (at the narrowest; normal, say nothing) or null.
-- `reason`: `"user"` (working range = the user's), `"widened"`, `"narrowed"` (learning), `"controller_sensor"` (the 2 C floor or whole-degree rounding).
+- `learned_width`: the real swing the space needs, the same number on both sensors. On the controller's sensor the working range is it rounded up to a whole degree plus 1 C (the room there swings 1 C less than the range), at least 2 C.
+- `reason`: `"user"` (working range = the user's), `"widened"`, `"narrowed"` (the learned width is wider than the user's range), `"controller_sensor"` (wider than the user's range only because of the controller's sensor: its 2 C floor, or its whole degrees plus 1 C).
 - `min_run_left_s`: 0 when no run lock; the full 1800 (1200 for frost protection) all through light-up, then counting down from flame established. The apps' stop warning uses it.
 - `min_off_left_s`: 0 when no off lock. The manual start warning uses it.
-- `holding`: why a stop Hearth wants to send is waiting for the run lock: `"top"`, `"timer_ended"`, `"thermostat_off"`, `"no_reading"`, or null.
+- `holding`: why a stop Hearth wants to send is waiting for the run lock: `"top"`, `"timer_ended"`, `"thermostat_off"`, `"no_reading"`, or null (`"top"` also while frost protection waits for its 20 minutes).
+- `ceiling`: the stop point for the run going (frost protection's target + 1 + 5; while a timer's run finishes after the timer ended, the timer's top + 5). With no run going: the ceiling the last run stopped at when `last_run_end` is `"ceiling"`, otherwise the range's top + 5. It is always 5 C above where Hearth would have stopped that run.
+- A stop Hearth sends is sent again every 90 s while the heater still reports starting or burning, until it purges or goes idle.
 - `run_on_at`, `flame_on_at`: epochs of the current run's start and flame, null when not running, lighting up, or the clock is not set.
 - `sensor_stuck`: the external sensor has not changed for 15 minutes while heating and is set aside. `no_reading`: no usable temperature at all.
 - `rise_rate`, `warmup_typical_s`, `cool_typical_s`: for the sensor in use, null until known. `dip_below`: how far below the bottom the room fell during the current or last off lock.
@@ -390,8 +394,9 @@ once.
  "early_stops":[{"at":1762871940,"after_s":540,"source":"matter"}]}
 ```
 
-Newest first. `history` (kinds `widened`, `narrowed`, `limit_reached`, `limit_cleared`, `reset`) is kept across a
-restart; `runs` (the last 20) and `early_stops` (the last 8) are not. `why` is `counted`, `not_thermostat`,
+Newest first. In a `history` entry `old` and `new` are the learned width (the real swing) and `working` is the
+working width on that entry's sensor (on the controller's, the learned width in whole degrees plus 1 C). `history`
+(kinds `widened`, `narrowed`, `limit_reached`, `limit_cleared`, `reset`) is kept across a restart; `runs` (the last 20) and `early_stops` (the last 8) are not. `why` is `counted`, `not_thermostat`,
 `long_off`, `not_at_top`, `sensor_changed`, `lost_heat`, `not_enough_data` or `cold_spell`.
 
 Commands (`POST /api/cmd`, and the cloud `cmd`):

@@ -102,6 +102,7 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:
       <button class="b" onclick="range(0,.5)">+</button></div>
     <div class="note" id="hc"></div>
     <div class="note" id="hcexp" style="color:var(--fg)"></div>
+    <div class="row hide" id="hcokrow"><button class="b" onclick="earlySeen()">OK</button></div>
     <details id="why" ontoggle="if(this.open)loadWhy()"><summary class="note" style="cursor:pointer">Heater Care: why this range?</summary>
       <div id="whyb" class="note"></div>
       <div class="row"><button class="b d" onclick="resetLearning()">Reset learning</button></div>
@@ -234,7 +235,8 @@ function startClick(){
 function finishAsk(){
   const l=stopLeft();
   if(!l)return true;
-  return confirm('Stopping now is a short run. '+SHORT+' This one has '+mins(l)+' minutes left.\n\nOK: let it finish. Cancel: stop anyway.');
+  /* OK means "stop anyway" here too, as on the Stop button; Cancel still makes the change and lets the run finish */
+  return !confirm('Stopping now is a short run. '+SHORT+' This one has '+mins(l)+' minutes left.\n\nOK: stop anyway. Cancel: let it finish.');
 }
 function autoClick(el){
   if(el.checked){cmd({cmd:'auto',enabled:true});return}
@@ -253,14 +255,15 @@ function hcLine(){
   let out=[];
   if(t.reason&&t.reason!=='user'){
     out.push('Running '+f(t.work_low)+'–'+f(t.work_high)+' °C. '+(t.reason==='controller_sensor'
-      ?"The controller's sensor reads whole degrees, so Hearth needs a 2 °C range."
+      ?"The controller's sensor reads whole degrees, so Hearth needs a "+f(t.work_high-t.work_low)+" °C range on it."
+      :t.reason==='narrowed'?'This space heats more slowly now, so Hearth has brought the range back towards yours.'
       :'This space heats quickly, so Hearth widened the range to rest the heater longer.'));
   }
   if(t.holding==='timer_ended')out.push('Timer ended, finishing minimum run: '+mins(t.min_run_left_s)+' min left');
   else if(running()&&t.min_run_left_s>0)out.push(t.flame_on_at==null&&!s.burner_active&&s.state==='running'?'Heater Care: lighting up':'Heater Care: minimum run, '+mins(t.min_run_left_s)+' min left');
   else if(!running()&&t.min_off_left_s>0&&s.auto_enabled&&s.effective_temp!=null&&s.effective_temp<=t.work_low)out.push('Heater Care: resting, '+mins(t.min_off_left_s)+' min before the next start');
   if(t.dip_below>0&&s.effective_temp!=null)out.push('Losing heat fast. Dropped '+f(t.dip_below)+' °C below the range while the heater rested its minimum 20 minutes.');
-  if(t.last_run_end==='ceiling'&&!running())out.push('Stopped early: the room reached '+f(t.ceiling)+' °C, 5 °C over your range.');
+  if(t.last_run_end==='ceiling'&&!running())out.push('Stopped early: the room reached '+f(t.ceiling)+' °C, 5 °C above where Hearth stops the heater.');
   if(t.no_reading)out.push('No temperature reading. The heater will stop after its minimum run.');
   if(t.sensor_stuck)out.push("The room sensor has not changed for 15 minutes, so Hearth is using the controller's reading.");
   return out.join(' · ');
@@ -268,10 +271,11 @@ function hcLine(){
 const SRC={app:'the app',web:'the web page',matter:'HomeKit',mqtt:'MQTT',home_assistant:'Home Assistant',controller:'the Comfort Controller',console:'the console',timer:'a timer'};
 function earlyCard(){
   const t=th(),e=t.last_early_stop;
-  if(!t.early_stop_unseen||!e)return '';
-  if(!earlyCard.sent){earlyCard.sent=true;post('/api/cmd',{cmd:'early_stop_seen'}).catch(()=>{});}
+  if(!t.early_stop_unseen||!e||earlyCard.seen)return '';
   return 'The heater was stopped after '+mins(e.after_s)+' minutes (from '+(SRC[e.source]||'somewhere else')+'). Heaters like this last longer with fewer, longer runs, so Heater Care\'s own thermostat always runs at least 30 minutes.';
 }
+/* sent when the reader taps OK, as in the apps, not merely when the card is drawn */
+function earlySeen(){earlyCard.seen=true;$('hcexp').textContent='';$('hcokrow').classList.add('hide');post('/api/cmd',{cmd:'early_stop_seen'}).catch(()=>{});}
 async function loadWhy(){
   const b=$('whyb');b.textContent='loading…';
   try{
@@ -279,7 +283,7 @@ async function loadWhy(){
     const f=v=>(Math.round(v*100)/100).toString(),d=e=>e?new Date(e*1000).toLocaleString([], {day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'';
     let x='<p>Working range '+f(t.work_low)+'–'+f(t.work_high)+' °C. Learned width '+(h.learned_width?f(h.learned_width)+' °C':'none yet')+'.';
     if(t.rise_rate!=null)x+=' This space warms about '+f(t.rise_rate)+' °C a minute.';
-    if(t.work_high-t.work_low>h.learned_width+0.01&&t.reason==='controller_sensor')x+=' Running on '+f(t.work_high-t.work_low)+" °C, because the controller's sensor reads whole degrees.";
+    if(t.work_high-t.work_low>h.learned_width+0.01&&t.sensor==='controller'&&t.reason!=='user')x+=' Running on '+f(t.work_high-t.work_low)+" °C, because the controller's sensor reads whole degrees.";
     if(t.at_limit==='max')x+=' This space heats faster than the widest range (4 °C) allows. Recent runs, measured on '+(t.sensor==='controller'?"the controller's sensor":'the room sensor')+', suggest the room may rise above your range before Heater Care can stop the heater.';
     x+='</p><ul style="padding-left:18px">';
     h.history.forEach(e=>{
@@ -287,6 +291,7 @@ async function loadWhy(){
         :e.kind==='narrowed'?'heating is slower now ('+f(e.rate1)+' °C a minute), so the range is back to '+f(e.new)+' °C'
         :e.kind==='limit_reached'?(e.limit==='max'?'reached the widest range (4 °C)':'at the narrowest range')
         :e.kind==='limit_cleared'?'no longer at a limit':'learning reset';
+      if((e.kind==='widened'||e.kind==='narrowed')&&e.sensor==='controller'&&e.working>e.new+0.01)w+=" (running on "+f(e.working)+" °C on the controller's sensor)";
       x+='<li>'+d(e.at)+(e.at?': ':'')+w+'</li>';
     });
     if(!h.history.length)x+='<li>No changes yet.</li>';
@@ -327,7 +332,7 @@ function render(){
   if(document.activeElement!==$('pre'))$('pre').value=$('pre').value||s.preheat_minutes;
   $('auto').checked=s.auto_enabled;$('frz').checked=s.prevent_freezing_enabled;
   $('alo').textContent=fmt(s.auto_low,' °C');$('ahi').textContent=fmt(s.auto_high,' °C');
-  $('hc').textContent=hcLine();$('hcexp').textContent=earlyCard();$('ft').textContent=fmt(s.prevent_freezing_target,' °C');
+  $('hc').textContent=hcLine();{const c=earlyCard();$('hcexp').textContent=c;$('hcokrow').classList.toggle('hide',!c);if(!th().early_stop_unseen)earlyCard.seen=false;}$('ft').textContent=fmt(s.prevent_freezing_target,' °C');
   $('autonote').textContent=s.auto_note||'';$('frznote').textContent=s.prevent_freezing_note||'';
   $('byp').checked=s.bypass_mode;$('dbg').checked=s.debug_mode;
   $('d_h').textContent=s.heater_seen?s.frames_heater+' frames':'nothing yet';

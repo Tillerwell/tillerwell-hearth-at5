@@ -26,6 +26,7 @@ static at_core_t s_core;
 static SemaphoreHandle_t s_core_lock;   /* guards s_core */
 static at_ctl_t s_ctl;
 static SemaphoreHandle_t s_ctl_lock;    /* guards s_ctl; always taken before s_core_lock */
+static SemaphoreHandle_t s_persist_lock; /* guards s_rest, s_learn_save and their NVS writes; taken before s_ctl_lock */
 static bool s_started;
 static uint32_t s_last_debug_ms;
 
@@ -230,6 +231,9 @@ static int64_t build_epoch(void)
 static void persist_ctl(void)
 {
     bool w_learn = false, w_rest = false;
+    /* called from the thermostat task and the HTTP task (Reset learning, a backup restore): one at a time, so the
+     * copies are not overwritten while NVS is writing them */
+    xSemaphoreTake(s_persist_lock, portMAX_DELAY);
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
     if (s_ctl.learn.dirty) {
         s_learn_save = s_ctl.learn.st;
@@ -246,7 +250,8 @@ static void persist_ctl(void)
     if (s_ctl.save_stop) {
         s_ctl.save_stop = false;
         s_rest.run_mark = 0;
-        s_rest.have_stop = s_ctl.save_stop_epoch != 0;
+        /* stop_epoch 0: stopped while the clock was not set; the next boot still owes a rest, counted from boot */
+        s_rest.have_stop = 1;
         s_rest.stop_epoch = s_ctl.save_stop_epoch;
         w_rest = true;
     }
@@ -256,6 +261,7 @@ static void persist_ctl(void)
         s_rest.version = REST_VERSION;
         at_settings_blob_save(KEY_REST, &s_rest, sizeof(s_rest));
     }
+    xSemaphoreGive(s_persist_lock);
 }
 
 static bool wall_clock(int64_t *epoch)
@@ -343,6 +349,7 @@ esp_err_t at_app_start(void)
     }
     s_core_lock = xSemaphoreCreateMutex();
     s_ctl_lock = xSemaphoreCreateMutex();
+    s_persist_lock = xSemaphoreCreateMutex();
 
     at_settings_t cfg;
     at_settings_get(&cfg);
@@ -449,6 +456,9 @@ bool at_app_start_preheat(int minutes)
         at_settings_get(&cfg);
         minutes = cfg.preheat_minutes;
     }
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    at_ctl_user_start(&s_ctl, at_now_ms());
+    xSemaphoreGive(s_ctl_lock);
     xSemaphoreTake(s_core_lock, portMAX_DELAY);
     bool ok = at_cmd_start_preheat(&s_core, minutes, at_now_ms());
     xSemaphoreGive(s_core_lock);
@@ -463,7 +473,13 @@ bool at_app_set_preheat_duration(int minutes)
     return ok;
 }
 
-bool at_app_start_thermostat(void) { return core_cmd(at_cmd_start_thermostat); }
+bool at_app_start_thermostat(void)
+{
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    at_ctl_user_start(&s_ctl, at_now_ms());
+    xSemaphoreGive(s_ctl_lock);
+    return core_cmd(at_cmd_start_thermostat);
+}
 bool at_app_stop(void) { return at_app_stop_from(AT_SRC_UNKNOWN); }
 
 bool at_app_stop_from(at_src_t src)

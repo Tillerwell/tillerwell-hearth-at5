@@ -26,6 +26,8 @@ extern "C" {
 #define AT_LEARN_RUNS        20      /* run log, RAM only */
 #define AT_LEARN_MAX_W       4.0f    /* widest learned/working range, unless the user's own is wider */
 #define AT_LEARN_CTL_FLOOR   2.0f    /* narrowest working range on the controller's whole-degree sensor */
+#define AT_LEARN_CTL_SLACK   1.0f    /* whole-degree sensor: real swing = working width - this; its working width is
+                                        * the learned width in whole degrees + this (never saved) */
 #define AT_LEARN_TARGET_MIN  40.0f   /* climb time aimed at, from flame established */
 #define AT_LEARN_FAST_MIN    30.0f   /* a climb faster than this is "fast" */
 #define AT_LEARN_SLOW_MIN    60.0f   /* slower than this is "slow" */
@@ -74,7 +76,7 @@ typedef enum {
 } at_learn_why_t;
 
 typedef struct {
-    float need;              /* width needed for a 40 minute climb, C (before rounding) */
+    float need;              /* real swing needed for a 40 minute climb, C (before rounding), on either sensor */
     float rate;              /* rise rate, C per minute */
     uint8_t vote;            /* at_vote_t */
 } at_learn_vote_t;
@@ -84,7 +86,7 @@ typedef struct {
     uint8_t kind;            /* at_learn_ev_t */
     uint8_t sensor;          /* at_sensor_t */
     uint8_t limit;           /* AT_EV_LIMIT / AT_EV_LIMIT_CLEARED: which limit */
-    float old_w, new_w;      /* learned width before and after */
+    float old_w, new_w;      /* learned width (the real swing) before and after */
     float raw_w;             /* the width worked out, before rounding */
     float work_w;            /* the working width on that sensor afterwards */
     float rate1, rate2;      /* the rise rates of the two runs behind it, 0 if none */
@@ -104,7 +106,8 @@ typedef struct {
 typedef struct {
     uint16_t version;
     uint8_t last_change;                     /* AT_EV_WIDENED / AT_EV_NARROWED / 0: the last width change */
-    float width;                             /* 0 = nothing learned yet; else 1..4 in 0.5 steps */
+    float width;                             /* the real swing the space needs: 0 = nothing learned yet; else 1..4
+                                              * in 0.5 steps, the same number on both sensors */
     at_learn_sensor_t s[2];                  /* [AT_SENS_EXT], [AT_SENS_CTL] */
     uint8_t nhist;                           /* oldest first */
     at_learn_event_t hist[AT_LEARN_HIST];
@@ -158,6 +161,7 @@ typedef struct {
     uint32_t fit_first_ms, fit_last_ms;
     float maxv;
     bool lost_heat;
+    bool resumed;            /* stopped, then started again before it went idle: not counted */
 
     /* the off period since the last stop at the top */
     bool cool_on;
@@ -184,8 +188,9 @@ bool at_learn_restore(at_learn_t *L, const at_learn_store_t *st);
 /* Forget everything learned (Reset learning), with one history entry. */
 void at_learn_reset(at_learn_t *L);
 
-/* The working width: the user's range, widened by the learned width (a whole degree on the controller's sensor),
- * at least 2 C on the controller's sensor, capped at 4 C unless the user's own range is wider. */
+/* The working width: the user's range, widened by the learned width (on the controller's sensor the learned width
+ * rounded up to a whole degree plus 1 C, when anything is learned), at least 2 C on the controller's sensor, capped
+ * at 4 C unless the user's own range is wider. */
 float at_learn_working_width(float learned, float user_w, bool ctl_sensor);
 /* Round up to the next 0.5 C, or the next whole degree. */
 float at_learn_round_up(float w, bool whole);
@@ -200,6 +205,9 @@ void at_learn_sample(at_learn_t *L, uint32_t now_ms, float temp, at_sensor_t sen
 void at_learn_sensor_changed(at_learn_t *L);
 /* A stop was sent (by Hearth at_top, or by someone): the fit ends here; at the top the cooling record starts. */
 void at_learn_stop(at_learn_t *L, uint32_t now_ms, bool at_top);
+/* A start was asked for after that stop and the run carries on: it was broken by the stop, so it is never counted
+ * (logged "not_at_top"), and no cooling record follows it. */
+void at_learn_resume(at_learn_t *L);
 /* The heater is idle again: judge the run and decide. user_w is the user's range width now. */
 void at_learn_run_end(at_learn_t *L, uint32_t now_ms, at_run_end_t end, float user_w);
 /* Drop limit states that are no longer true (the user's range changed). */

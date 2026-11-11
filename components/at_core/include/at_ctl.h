@@ -8,6 +8,8 @@
  *          by the learned width (at_learn), at least 2 C on the controller's whole-degree sensor.
  * Freeze:  start whenever the temperature reaches the floor, regardless of Auto or a previous Stop, even inside
  *          the minimum off; only stops runs it started itself.
+ * Stops:   a stop Hearth or someone sent is sent again every 90 s while the heater still shows starting or
+ *          burning. A start asked for after a stop carries the run on (one run, locks and the top stop intact).
  * Locks:   Hearth's own stops (top of the range, a timer ending, the thermostat turned off with "let it finish",
  *          every reading lost) wait until the run has burned 30 minutes from flame established (20 for frost
  *          protection). A fault, the ceiling (top + 5 C) and a stop someone asked for always go at once. A
@@ -97,8 +99,8 @@ typedef struct {
 /* What at_app saves in NVS so the minimum off survives a restart. */
 typedef struct {
     bool run_mark;              /* a run started and its end was never seen */
-    bool have_stop;
-    int64_t stop_epoch;         /* wall clock of the last run's end (idle) */
+    bool have_stop;             /* a run's end was recorded */
+    int64_t stop_epoch;         /* wall clock of the last run's end (idle); 0: stopped, time unknown (no clock) */
 } at_ctl_saved_t;
 
 typedef struct {
@@ -110,6 +112,10 @@ typedef struct {
     bool stopping;              /* a stop was sent, or the heater is shutting down */
     uint32_t stop_ms;
     bool hearth_stop;           /* Hearth sent its own stop */
+    bool resend;                /* a stop Hearth or someone sent: send it again while the heater still shows 0x02/0x03 */
+    bool carry;                 /* a start was asked for after the stop: the run carries on once it shows 0x02/0x03 */
+    uint32_t resend_ms;         /* the last time it was sent */
+    uint32_t stop_seq;          /* the controller's control count when it was sent */
     uint8_t end;                /* at_run_end_t decided so far */
     bool user_stop;
     uint8_t user_src;
@@ -144,13 +150,16 @@ typedef struct {
 
     /* runs and locks */
     bool seen_status;
+    uint32_t panel_seq_seen;    /* the controller's control count on the last status (for stops sent between ticks) */
     at_ctl_run_t run;
     bool idle_known;            /* idle_since_ms is real (not boot) */
     uint32_t idle_since_ms;
     bool off_lock;
     uint32_t off_until_ms;
     uint8_t held;               /* at_hold_t */
+    float held_high;            /* AT_HOLD_TIMER_ENDED / AT_HOLD_THERMO_OFF: the top of the range the run was for */
     uint8_t last_end;           /* at_run_end_t of the last run */
+    float last_ceiling;         /* the ceiling the last ceiling stop fired at (frost's or Auto's), 0 if none */
     uint8_t pending_owner;      /* a start we sent, waiting to show */
     uint32_t pending_ms;
 
@@ -164,8 +173,8 @@ typedef struct {
     int64_t epoch;
     /* NVS writes asked of at_app (it clears them after saving) */
     bool save_run_mark;         /* true: set the mark */
-    bool save_stop;             /* write stop_epoch and clear the mark */
-    int64_t save_stop_epoch;
+    bool save_stop;             /* write have_stop = 1 with stop_epoch, and clear the mark */
+    int64_t save_stop_epoch;    /* 0: the clock was not set, the stop time is unknown */
 
     /* early stops (stops someone asked for before the minimum run was up) */
     at_ctl_early_t early[AT_CTL_EARLY_LOG];
@@ -233,8 +242,13 @@ void at_ctl_set_auto_range(at_ctl_t *t, float low, float high);
 void at_ctl_set_freeze(at_ctl_t *t, bool enabled);
 void at_ctl_set_freeze_target(at_ctl_t *t, float target);
 
-/* A stop someone asked for (the caller sends it): logged as an early stop if inside the minimum run. */
+/* A stop someone asked for (the caller sends it): logged as an early stop if inside the minimum run, and sent
+ * again every 90 s while the heater still shows starting or burning. */
 void at_ctl_user_stop(at_ctl_t *t, at_src_t src, uint32_t now_ms);
+/* Someone asked for a start (the caller sends it): a run flagged as stopping is no longer, Hearth stops sending
+ * the stop again, and if the heater relights from its purge it is the same run carrying on (locks, stop at the
+ * top). */
+void at_ctl_user_start(at_ctl_t *t, uint32_t now_ms);
 /* The apps showed the short-cycle explainer. */
 void at_ctl_early_seen(at_ctl_t *t);
 /* Would a stop now be inside the minimum run? (the "Stop anyway" question) */

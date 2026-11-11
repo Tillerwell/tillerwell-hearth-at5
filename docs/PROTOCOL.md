@@ -155,8 +155,9 @@ plan: `docs/ADAPTIVE_THERMOSTAT.md`; API: `docs/API_SPEC.md` §9.10.
 - **Working range.** The run starts at or below the bottom of the working range
   and always runs to the top (`auto_high`); it is never stopped inside the
   range. The bottom is the user's range (at least 1 C) lowered by the learned
-  width, at least 2 C below the top on the controller's whole-degree sensor,
-  and never more than 4 C unless the user's own range is wider.
+  width (on the controller's whole-degree sensor: the learned width rounded up
+  to a whole degree, plus 1 C), at least 2 C below the top on that sensor, and
+  never more than 4 C unless the user's own range is wider.
 - **Run lock.** Hearth's own stops (the top, a timer ending, the thermostat
   turned off with "let it finish", every reading lost) wait until the run has
   burned 30 minutes from flame established (20 minutes for frost protection).
@@ -182,9 +183,15 @@ plan: `docs/ADAPTIVE_THERMOSTAT.md`; API: `docs/API_SPEC.md` §9.10.
 - **Learning** (`at_learn.c`) measures each counted run's warm-up delay (flame
   established to the first 0.2 C rise, or the first whole-degree tick-over) and
   rise rate (a straight-line fit to Hearth's stop, never the purge after it),
-  and works out the width that would take about 40 minutes to climb. Two of the
-  last three counted runs on the same sensor agreeing changes the width in one
-  move.
+  and works out the width that would take about 40 minutes to climb. On the
+  controller's whole-degree sensor the room really swings the working width
+  less 1 C (the start fires as the reading falls into the bottom degree, the
+  stop as it enters the top one), so a run there is judged on that swing. The
+  width needed, and the learned width, is the real swing for 40 minutes on
+  either sensor, so it means the same whichever sensor set it; the controller's
+  extra 1 C is added only when its working range is worked out, never saved.
+  The 2 C floor, 4 C cap and whole-degree rounding still apply. Two of the last
+  three counted runs on the same sensor agreeing changes the width in one move.
 - **Room reading.** The thermostat, frost protection, the ceiling and the
   learning use the middle of the last three readings from the sensor in use,
   so one bad reading cannot start or stop a run. An external reading that has

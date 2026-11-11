@@ -268,6 +268,8 @@ static at_run_end_t end_for_src(at_src_t src)
     }
 }
 
+static void arm_resend(at_ctl_t *t, const at_snapshot_t *s, uint32_t now);
+
 void at_ctl_user_stop(at_ctl_t *t, at_src_t src, uint32_t now)
 {
     if (t->run.running && !t->run.stopping) {
@@ -277,15 +279,46 @@ void at_ctl_user_stop(at_ctl_t *t, at_src_t src, uint32_t now)
         t->run.end = (uint8_t)end_for_src(src);
         t->run.stopping = true;
         t->run.stop_ms = now;
+        t->run.carry = false;
         at_learn_stop(&t->learn, now, false);
+        /* sent again like Hearth's own if it is lost on the bus */
+        arm_resend(t, NULL, now);
     }
     t->held = AT_HOLD_NONE;
 }
 
 void at_ctl_early_seen(at_ctl_t *t) { t->early_unseen = 0; }
 
-/* Hearth's own stop (after the lock, or the ceiling / a fault). */
-static void hearth_stop(at_ctl_t *t, const at_ctl_ops_t *ops, uint32_t now, at_run_end_t end, bool at_top)
+/* A stop Hearth or someone sent: watch that the heater acts on it. Without a snapshot (a stop asked for between
+ * ticks) the controller's count is the one on the last status. */
+static void arm_resend(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
+{
+    if (!t->run.running) return;
+    t->run.resend = true;
+    t->run.resend_ms = now;
+    t->run.stop_seq = s ? s->panel_control_seq : t->panel_seq_seen;
+}
+
+/* A start was asked for after a stop (someone, the controller, or Auto taking the run over): the run is no longer
+ * stopping, the stop is not sent again, and the stops waiting on it are dropped. The end decided so far is kept
+ * until the heater shows starting or burning again (track_run), so a heater that purges anyway still ends as it
+ * was stopped. */
+static void carry_on(at_ctl_t *t, at_owner_t owner)
+{
+    t->run.resend = false;
+    t->run.stopping = false;
+    t->run.hearth_stop = false;
+    t->run.user_stop = false;
+    t->run.carry = true;
+    t->run.owner = (uint8_t)owner;
+    t->autot.stop_pending = false;
+    t->freeze.stop_pending = false;
+    t->freeze.started_by_me = false;
+    at_learn_resume(&t->learn);
+}
+
+static void hearth_stop(at_ctl_t *t, const at_ctl_ops_t *ops, const at_snapshot_t *s, uint32_t now, at_run_end_t end,
+                        bool at_top)
 {
     ops->stop(ops->ctx);
     t->held = AT_HOLD_NONE;
@@ -296,6 +329,37 @@ static void hearth_stop(at_ctl_t *t, const at_ctl_ops_t *ops, uint32_t now, at_r
         t->run.end = (uint8_t)end;
         at_learn_stop(&t->learn, now, at_top);
     }
+    arm_resend(t, s, now);
+}
+
+static bool starting_or_burning(const at_snapshot_t *s)
+{
+    return s->have_status && !s->stale && (s->status.state_raw == 0x02 || s->status.state_raw == 0x03);
+}
+
+/* A stop Hearth or someone sent that the heater did not act on (lost on the bus, or ignored): send it again every
+ * 90 s while the heater still shows starting or burning, until it purges or goes idle. A start someone asked for
+ * since (the controller, or at_ctl_user_start) ends the retries. */
+static void retry_stop(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const at_ctl_ops_t *ops)
+{
+    if (!t->run.running || !t->run.stopping || !t->run.resend || !s->have_status || s->stale) return;
+    if (s->panel_control_seq != t->run.stop_seq && s->panel_last_control_type != AT_TYPE_STOP) {
+        /* the controller started it again: its run now, carried on as one run */
+        carry_on(t, AT_OWNER_OTHER);
+        return;
+    }
+    if (!starting_or_burning(s) || now - t->run.resend_ms < AT_CTL_MIN_ACTION_MS) return;
+    at_ctl_loop_t *l = t->run.owner == AT_OWNER_FREEZE ? &t->freeze : &t->autot;
+    set_note(l, "heater still running %us after the stop -> sending stop again",
+             (unsigned)((now - t->run.resend_ms) / 1000u));
+    ops->stop(ops->ctx);
+    t->run.resend_ms = now;
+}
+
+void at_ctl_user_start(at_ctl_t *t, uint32_t now)
+{
+    (void)now;
+    if (t->run.running && (t->run.stopping || t->run.resend)) carry_on(t, AT_OWNER_OTHER);
 }
 
 /* ---- fault back-off ---------------------------------------------------------------------------------------- */
@@ -342,6 +406,33 @@ static void send_start(at_ctl_t *t, at_ctl_loop_t *l, const at_ctl_ops_t *ops, u
     l->has_acted = true;
 }
 
+/* A start we sent that has not shown yet. */
+static bool start_pending(const at_ctl_t *t, uint32_t now)
+{
+    return t->pending_owner != AT_OWNER_OTHER && now - t->pending_ms <= AT_CTL_START_GRACE_MS;
+}
+
+/* Auto is on and wants a run now: at or below the bottom of its working range, the minimum off over, and not given
+ * up on a fault. Frost protection leaves the start to it (Auto's own 90 s pacing may hold it a moment). */
+static bool auto_wants_start(const at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
+{
+    if (!t->autot.enabled || !t->room_ok || t->boot_pending) return false;
+    float lo, hi;
+    at_ctl_working_range(t, &lo, &hi);
+    if (t->room > lo + EPS || at_ctl_min_off_left_ms(t, now) > 0) return false;
+    if (s->have_status && s->status.fault && t->autot.retry_count >= N_RETRIES) return false;
+    return true;
+}
+
+/* A run frost protection started, wanted by Auto: Auto's from here (30 min lock, Auto's ceiling, stopped at the top
+ * of Auto's range, never at the frost target + 1). */
+static void take_from_frost(at_ctl_t *t)
+{
+    t->run.owner = AT_OWNER_AUTO;
+    t->freeze.started_by_me = false;
+    if (t->held == AT_HOLD_TOP) t->held = AT_HOLD_NONE;
+}
+
 /* ---- Auto on / off ----------------------------------------------------------------------------------------- */
 
 void at_ctl_set_auto(at_ctl_t *t, bool enabled, const at_snapshot_t *s, uint32_t now, const at_ctl_ops_t *ops)
@@ -364,6 +455,12 @@ void at_ctl_set_auto(at_ctl_t *t, bool enabled, const at_snapshot_t *s, uint32_t
     } else if (s->have_status && !is_idle(s)) {
         /* a run already going (a timer's overrun, the controller, a manual start): Auto takes it over */
         set_note(l, "Auto thermostat enabled -> run in progress, taking it over");
+        if (t->run.running && t->run.stopping && (t->run.hearth_stop || t->run.user_stop)) {
+            /* a stop is still going out (lost, or the heater purging): Auto's run from here, stopped at the top */
+            carry_on(t, AT_OWNER_AUTO);
+        } else if (t->run.running && t->run.owner == AT_OWNER_FREEZE) {
+            take_from_frost(t);
+        }
     } else if (!t->room_ok) {
         /* never start blind: with no reading nothing could stop the run */
         set_note(l, "Auto thermostat enabled -> no temperature reading yet, waiting");
@@ -392,15 +489,17 @@ void at_ctl_auto_off(at_ctl_t *t, bool finish, at_hold_t hold, at_src_t src, con
     bool fault = s->have_status && s->status.fault;
     if (finish && in_run && left > 0 && !fault) {
         t->held = (uint8_t)hold;
+        t->held_high = t->autot.high;   /* a timer's range is put back straight after: the ceiling stays the timer's */
         set_note(l, "%s -> finishing minimum run: %u min left",
                  hold == AT_HOLD_TIMER_ENDED ? "timer ended" : "Auto thermostat disabled", mins_up(left));
     } else if (in_run && left > 0 && !fault) {
         set_note(l, "Auto thermostat disabled -> stopping now (inside the minimum run)");
         at_ctl_user_stop(t, src, now);
         ops->stop(ops->ctx);
+        arm_resend(t, s, now);
     } else {
         set_note(l, "Auto thermostat disabled -> sending stop");
-        hearth_stop(t, ops, now, hold == AT_HOLD_TIMER_ENDED ? AT_END_TIMER : AT_END_THERMO_OFF, false);
+        hearth_stop(t, ops, s, now, hold == AT_HOLD_TIMER_ENDED ? AT_END_TIMER : AT_END_THERMO_OFF, false);
     }
     l->has_acted = true;
     l->last_action_ms = now;
@@ -428,7 +527,8 @@ static void off_lock_from(at_ctl_t *t, uint32_t start_ms, uint32_t now)
 /* The saved stop time, if it can be trusted now: seconds since it. */
 static bool saved_rest(const at_ctl_t *t, int64_t *since_s)
 {
-    if (!t->saved.have_stop || !t->clock_ok || t->epoch < t->build_epoch || t->saved.stop_epoch > t->epoch) return false;
+    /* stop_epoch 0: stopped while the clock was not set, so when is not known */
+    if (!t->saved.have_stop || t->saved.stop_epoch <= 0 || !t->clock_ok || t->epoch < t->build_epoch || t->saved.stop_epoch > t->epoch) return false;
     *since_s = t->epoch - t->saved.stop_epoch;
     return true;
 }
@@ -471,13 +571,15 @@ static void boot_decide(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
         t->save_stop_epoch = 0;
         return;
     }
-    if (!t->saved.have_stop) return;
+    if (!t->saved.have_stop) return;   /* never run: no rest owed */
     int64_t since;
     if (saved_rest(t, &since)) {
         apply_saved_rest(t, now);
     } else {
+        /* a stop was recorded but its time cannot be trusted: rest 20 min from boot (plan §3.1). A clock arriving
+         * later can only shorten it when the stop time itself is known. */
         off_lock_from(t, t->boot_ms, now);
-        t->clock_fix_pending = !t->clock_ok;
+        t->clock_fix_pending = !t->clock_ok && t->saved.stop_epoch > 0;
     }
 }
 
@@ -497,6 +599,7 @@ static void run_begin(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
     t->save_run_mark = true;
     at_learn_run_start(&t->learn, now, (at_sensor_t)t->sensor, t->run.owner == AT_OWNER_AUTO, t->run.off_known,
                        t->run.off_ms);
+    if (t->run.owner == AT_OWNER_FREEZE && t->autot.enabled) take_from_frost(t);
 }
 
 static void run_end(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
@@ -534,6 +637,7 @@ static void track_run(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
 {
     if (!s->have_status || s->stale) return;
     t->seen_status = true;
+    t->panel_seq_seen = s->panel_control_seq;
     if (t->boot_pending) {
         boot_decide(t, s, now);
         return;
@@ -559,8 +663,14 @@ static void track_run(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
         t->run.stopping = true;
         t->run.stop_ms = now;
     } else if (t->run.stopping && !t->run.hearth_stop && !t->run.user_stop && (st == 0x02 || st == 0x03)) {
-        /* the heater paused its own burner and relit: one run, the locks carry straight through */
+        /* the heater paused its own burner and relit, or relit from a purge on a start asked for after a stop:
+         * one run, the locks carry straight through */
         t->run.stopping = false;
+    }
+    if (t->run.carry && !t->run.stopping && (st == 0x02 || st == 0x03)) {
+        /* started again after a stop and showing it: the run's end is decided afresh */
+        t->run.carry = false;
+        t->run.end = AT_END_NONE;
     }
     if (idle) run_end(t, s, now);
 }
@@ -581,21 +691,35 @@ static bool ceiling_of(const at_ctl_t *t, float *c, at_ctl_loop_t **who)
         return true;
     }
     if (auto_run(t)) {
-        *c = t->autot.high + AT_CTL_CEILING_OVER;
+        bool held = !t->autot.enabled && (t->held == AT_HOLD_TIMER_ENDED || t->held == AT_HOLD_THERMO_OFF);
+        *c = (held ? t->held_high : t->autot.high) + AT_CTL_CEILING_OVER;
         *who = (at_ctl_loop_t *)&t->autot;
         return true;
     }
     return false;
 }
 
-static void check_ceiling(at_ctl_t *t, uint32_t now, const at_ctl_ops_t *ops)
+static void check_ceiling(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const at_ctl_ops_t *ops)
 {
     float c;
     at_ctl_loop_t *who;
-    if (!t->run.running || t->run.stopping || !t->room_ok || !ceiling_of(t, &c, &who)) return;
+    if (!t->run.running || !t->room_ok || !ceiling_of(t, &c, &who)) return;
+    if (t->run.stopping) {
+        /* a stop was sent but the heater is still starting or burning: the ceiling sends it again at once (once;
+         * after that retry_stop carries on every 90 s) */
+        if (t->run.end == AT_END_CEILING || !starting_or_burning(s) || t->room < c - EPS) return;
+        if (!t->run.hearth_stop && !t->run.user_stop) return;
+        set_note(who, "temperature %.1f reached the ceiling %.1f, heater still running -> stop", t->room, c);
+        ops->stop(ops->ctx);
+        t->run.end = AT_END_CEILING;
+        t->last_ceiling = c;
+        arm_resend(t, s, now);
+        return;
+    }
     if (t->room >= c - EPS) {
         set_note(who, "temperature %.1f reached the ceiling %.1f -> stop", t->room, c);
-        hearth_stop(t, ops, now, AT_END_CEILING, false);
+        hearth_stop(t, ops, s, now, AT_END_CEILING, false);
+        t->last_ceiling = c;
         who->last_action_ms = now;
         who->has_acted = true;
         who->stop_pending = true;
@@ -619,7 +743,7 @@ static void service_held(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, cons
         } else if (left == 0 || fault) {
             bool timer = t->held == AT_HOLD_TIMER_ENDED;
             set_note(&t->autot, "%s -> minimum run done, sending stop", timer ? "timer ended" : "Auto off");
-            hearth_stop(t, ops, now, timer ? AT_END_TIMER : AT_END_THERMO_OFF, false);
+            hearth_stop(t, ops, s, now, timer ? AT_END_TIMER : AT_END_THERMO_OFF, false);
         }
         break;
     case AT_HOLD_NO_READING:
@@ -628,7 +752,7 @@ static void service_held(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, cons
         } else if (left == 0 || fault) {
             at_ctl_loop_t *l = t->run.owner == AT_OWNER_FREEZE ? &t->freeze : &t->autot;
             set_note(l, "no temperature reading -> minimum run done, sending stop");
-            hearth_stop(t, ops, now, AT_END_NO_READING, false);
+            hearth_stop(t, ops, s, now, AT_END_NO_READING, false);
             l->last_action_ms = now;
             l->has_acted = true;
             l->stop_pending = true;
@@ -647,6 +771,7 @@ static void tick_auto(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const a
     if (!l->enabled) {
         return;
     }
+    if (t->run.running && !t->run.stopping && t->run.owner == AT_OWNER_FREEZE) take_from_frost(t);
     bool fault = s->have_status && s->status.fault;
     if (!fault) {
         reset_retry(l);
@@ -685,7 +810,7 @@ static void tick_auto(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const a
             set_note(l, "at %.1f, above %.1f, holding: minimum run %u min left", temp, hi, mins_up(left));
         } else {
             set_note(l, "temperature %.1f >= %.1f -> stop", temp, hi);
-            hearth_stop(t, ops, now, AT_END_TOP, true);
+            hearth_stop(t, ops, s, now, AT_END_TOP, true);
             l->last_action_ms = now;
             l->has_acted = true;
             l->stop_pending = true;
@@ -744,7 +869,10 @@ static void tick_freeze(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const
     }
     const float temp = t->room;
     const float stop_at = l->target + AT_CTL_HYSTERESIS;
+    if (mine && t->held == AT_HOLD_TOP && temp < stop_at - EPS) t->held = AT_HOLD_NONE;
     if (temp <= l->target + EPS && idle) {
+        /* Auto starts it (or already has): one start, and the run is Auto's */
+        if (start_pending(t, now) || auto_wants_start(t, s, now)) return;
         /* the only loop allowed to start inside the minimum off */
         if (fault && !retry_ready(l, s, now)) {
             return;
@@ -760,10 +888,11 @@ static void tick_freeze(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const
     } else if (mine && temp >= stop_at - EPS && !l->stop_pending) {
         uint32_t left = at_ctl_min_run_left_ms(t, now);
         if (left > 0 && !fault) {
+            t->held = AT_HOLD_TOP;
             set_note(l, "at %.1f, above %.1f, holding: minimum run %u min left", temp, stop_at, mins_up(left));
         } else {
             set_note(l, "temperature %.1f >= %.1f -> stop (frost-protection run ending)", temp, stop_at);
-            hearth_stop(t, ops, now, AT_END_TOP, false);
+            hearth_stop(t, ops, s, now, AT_END_TOP, false);
             l->last_action_ms = now;
             l->has_acted = true;
             l->started_by_me = false;
@@ -776,16 +905,20 @@ void at_ctl_tick(at_ctl_t *t, const at_snapshot_t *s, uint32_t now_ms, const at_
 {
     update_room(t, s, now_ms);
     track_run(t, s, now_ms);
-    check_ceiling(t, now_ms, ops);
-    service_held(t, s, now_ms, ops);
-    tick_auto(t, s, now_ms, ops);
-    tick_freeze(t, s, now_ms, ops);
+    /* before the loops act: the reading that makes Hearth stop the run at the top is part of the run's fit (on the
+     * controller's whole-degree sensor it is the last tick-over). Readings after a stop are kept out by the stop
+     * itself (at_learn_stop). */
     if (t->room_ok) {
         float lo, hi;
         at_ctl_working_range(t, &lo, &hi);
         at_learn_sample(&t->learn, now_ms, t->room, (at_sensor_t)t->sensor, lo,
                         at_ctl_min_off_left_ms(t, now_ms) > 0);
     }
+    check_ceiling(t, s, now_ms, ops);
+    retry_stop(t, s, now_ms, ops);
+    service_held(t, s, now_ms, ops);
+    tick_auto(t, s, now_ms, ops);
+    tick_freeze(t, s, now_ms, ops);
 }
 
 /* ---- status ------------------------------------------------------------------------------------------------ */
@@ -800,12 +933,20 @@ void at_ctl_status(const at_ctl_t *t, uint32_t now, at_ctl_status_t *o)
     o->learned_width = lw;
     o->min_width = ctl ? AT_LEARN_CTL_FLOOR : AT_CTL_MIN_WIDTH;
     o->sensor = t->sensor;
-    o->ceiling = t->run.owner == AT_OWNER_FREEZE && t->run.running
-                     ? t->freeze.target + AT_CTL_HYSTERESIS + AT_CTL_CEILING_OVER
-                     : t->autot.high + AT_CTL_CEILING_OVER;
+    at_ctl_loop_t *who;
+    if (t->run.running && ceiling_of(t, &o->ceiling, &who)) {
+        /* the live run's own ceiling */
+    } else if (!t->run.running && t->last_end == AT_END_CEILING && t->last_ceiling > 0) {
+        o->ceiling = t->last_ceiling;   /* the one the last run actually stopped at (frost's is not Auto's) */
+    } else {
+        o->ceiling = t->autot.high + AT_CTL_CEILING_OVER;
+    }
     o->at_limit = t->learn.st.s[t->sensor].limit;
+    /* "widened"/"narrowed" when the learned width takes the range past the user's own; otherwise a working range
+     * wider than the user's comes from the controller's sensor alone (its 2 C floor, or a learned width no wider than
+     * the user's range put into whole degrees plus 1 C) */
     if (w <= uw + EPS) o->reason = "user";
-    else if (ctl && w > lw + EPS) o->reason = "controller_sensor";
+    else if (ctl && lw <= uw + EPS) o->reason = "controller_sensor";
     else o->reason = t->learn.st.last_change == AT_EV_NARROWED ? "narrowed" : "widened";
     o->min_run_left_s = (at_ctl_min_run_left_ms(t, now) + 999u) / 1000u;
     o->min_off_left_s = (at_ctl_min_off_left_ms(t, now) + 999u) / 1000u;
