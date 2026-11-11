@@ -2,6 +2,8 @@
 
 Status: **built (the fixes are in firmware RoamOS 1.0048, apps, Home Assistant), 2026-11-11.** Still not bench tested on the test heater (§7 step 6).
 
+**Since 1.49 the user sets one temperature, not a range.** It is the top of the range, and the user's range is always the 1°C below it (set 20 → 19–20). Where this document says "the user's range", read that fixed 1°C. Everything else (the working range, the learning, the locks) is unchanged.
+
 Goal: hold the room close to a steady temperature with a narrow range, and stop Hearth's own thermostat, timers and frost protection from short-cycling the heater. A person or another system can still stop a run early, and a fault or the ceiling always can. Hearth learns how fast the space heats and widens or narrows the range itself. The heater cannot be turned down (Hearth's thermostat start is `ff fb`, run indefinitely, and that does not change), so the range width and the run locks are the only things Hearth controls.
 
 The apps call all of this **Heater Care**. The code and the API keep the plain names used below (`thermo`, `at_learn`, `learned_width`).

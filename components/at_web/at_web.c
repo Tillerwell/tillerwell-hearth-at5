@@ -1208,7 +1208,10 @@ static esp_err_t h_backup_put(httpd_req_t *req)
     /* what Heater Care learned about the space, so a replacement box carries on from it */
     const cJSON *learn = cJSON_GetObjectItemCaseSensitive(b, "thermo_learn");
     if (learn) SKIP_IF(at_app_thermo_learn_restore(learn), "thermo_learn");
-    SKIP_IF(backup_cmd("auto_target", b, "auto_target", "value"), "auto_target");
+    /* an older backup's auto_target is the middle of its range: only used when the backup has no range */
+    if (!cJSON_GetObjectItemCaseSensitive(b, "auto_high")) {
+        SKIP_IF(backup_cmd("auto_target", b, "auto_target", "value"), "auto_target");
+    }
     SKIP_IF(backup_cmd("use_external_temp", b, "use_external_temp", "enabled"), "use_external_temp");
     SKIP_IF(backup_cmd("preheat_temp", b, "preheat_temp", "value"), "preheat_temp");
     SKIP_IF(backup_cmd("preheat_minutes", b, "preheat_minutes", "value"), "preheat_minutes");

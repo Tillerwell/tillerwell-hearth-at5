@@ -403,6 +403,7 @@ Commands (`POST /api/cmd`, and the cloud `cmd`):
 
 - `{"cmd":"thermo_learn_reset"}` (manager): forget what was learned, with a history entry.
 - `{"cmd":"early_stop_seen"}` (control): an app showed the short-cycle explainer.
+- **One set temperature (1.49).** The user sets one temperature, not a range. It is the top of the range (`auto_high`, also reported as `auto_target`), and `auto_low` is always 1 C below it. `{"cmd":"auto_range","low":…,"high":…}` uses only `high` and ignores `low`; `{"cmd":"auto_target","value":…}` sets the same thing. A range saved by older firmware loads as its top. Timers do the same with `high_c`. Apps send `low = high - 1`, which also works on 1.47 and 1.48.
 - `{"cmd":"auto","enabled":false,"finish_run":true|false}` and `{"cmd":"auto_range","low":…,"high":…,"finish_run":…}`: inside a run's minimum run, `true` applies the change and lets the run reach it; `false` stops now and is logged as an early stop. Older apps send neither, which is treated as `true`.
 - `stop`, `auto` and `auto_range` take an optional `"source"` for the early-stop log (`"app"`, `"home_assistant"`, …). Without it, `POST /api/cmd` counts as `web` and a cloud command as `app`.
 - `{"cmd":"hysteresis",…}` is deprecated: accepted and ignored, answering `{"ok":true,"skipped":true}`.

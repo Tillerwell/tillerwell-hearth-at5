@@ -92,14 +92,10 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:
   <div class="card">
     <h2>Thermostat</h2>
     <div class="sw"><span>Auto thermostat</span><input type="checkbox" id="auto" onchange="autoClick(this)"></div>
-    <div class="row"><span class="k" style="width:44px">From</span>
-      <button class="b" onclick="range(-.5,0)">−</button>
-      <span class="v" id="alo">–</span>
-      <button class="b" onclick="range(.5,0)">+</button></div>
-    <div class="row"><span class="k" style="width:44px">To</span>
-      <button class="b" onclick="range(0,-.5)">−</button>
+    <div class="row"><span class="k" style="width:44px">Set to</span>
+      <button class="b" onclick="setTemp(-.5)">−</button>
       <span class="v" id="ahi">–</span>
-      <button class="b" onclick="range(0,.5)">+</button></div>
+      <button class="b" onclick="setTemp(.5)">+</button></div>
     <div class="note" id="hc"></div>
     <div class="note" id="hcexp" style="color:var(--fg)"></div>
     <div class="row hide" id="hcokrow"><button class="b" onclick="earlySeen()">OK</button></div>
@@ -242,10 +238,9 @@ function autoClick(el){
   if(el.checked){cmd({cmd:'auto',enabled:true});return}
   cmd({cmd:'auto',enabled:false,finish_run:finishAsk()});
 }
-function range(dl,dh){
-  let lo=st.auto_low+dl,hi=st.auto_high+dh;
-  if(hi-lo<1){if(dl)hi=lo+1;else lo=hi-1}
-  const c={cmd:'auto_range',low:lo,high:hi};
+function setTemp(d){
+  const hi=Math.min(30,Math.max(1,st.auto_high+d));
+  const c={cmd:'auto_range',low:hi-1,high:hi};
   if(st.auto_enabled&&st.effective_temp!=null&&st.effective_temp>=hi&&stopLeft())c.finish_run=finishAsk();
   cmd(c);
 }
@@ -331,7 +326,7 @@ function render(){
   $('fault').textContent=s.fault_active?('Fault '+s.fault+': '+s.fault_name):(s.last_fault_name?('Last fault: '+s.last_fault_name+' ('+Math.round(s.last_fault_ago_s/60)+' min ago)'):'');
   if(document.activeElement!==$('pre'))$('pre').value=$('pre').value||s.preheat_minutes;
   $('auto').checked=s.auto_enabled;$('frz').checked=s.prevent_freezing_enabled;
-  $('alo').textContent=fmt(s.auto_low,' °C');$('ahi').textContent=fmt(s.auto_high,' °C');
+  $('ahi').textContent=fmt(s.auto_high,' °C');
   $('hc').textContent=hcLine();{const c=earlyCard();$('hcexp').textContent=c;$('hcokrow').classList.toggle('hide',!c);if(!th().early_stop_unseen)earlyCard.seen=false;}$('ft').textContent=fmt(s.prevent_freezing_target,' °C');
   $('autonote').textContent=s.auto_note||'';$('frznote').textContent=s.prevent_freezing_note||'';
   $('byp').checked=s.bypass_mode;$('dbg').checked=s.debug_mode;

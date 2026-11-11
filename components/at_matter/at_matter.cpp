@@ -203,17 +203,13 @@ static esp_err_t attribute_update_cb(attribute::callback_type_t type, uint16_t e
             if (mode != 0 && mode != 1 && mode != 4) return ESP_ERR_INVALID_ARG;
             at_app_set_auto_from(mode != 0, true, AT_SRC_MATTER);  // no warning possible: a run inside 30 min finishes
         } else if (attribute_id == Thermostat::Attributes::OccupiedHeatingSetpoint::Id) {
-            // "heat to" is the bottom of the app's range; the top moves up if the gap would get too small
-            at_view_t v;
-            at_app_view(&v);
+            // one set temperature: the range is always the gap below it, so "heat to" (the bottom) moves both
             const float low = val->val.i16 / 100.0f, gap = at_app_band_min_gap();
-            at_app_set_auto_range_from(low, v.auto_high - low < gap ? low + gap : v.auto_high, true, AT_SRC_MATTER);
+            at_app_set_auto_range_from(low, low + gap, true, AT_SRC_MATTER);
         } else if (attribute_id == Thermostat::Attributes::OccupiedCoolingSetpoint::Id) {
-            // "cool to" is the top of the range; the bottom moves down if needed
-            at_view_t v;
-            at_app_view(&v);
-            const float high = val->val.i16 / 100.0f, gap = at_app_band_min_gap();
-            at_app_set_auto_range_from(high - v.auto_low < gap ? high - gap : v.auto_low, high, true, AT_SRC_MATTER);
+            // "cool to" is the top of the range, which is the set temperature
+            const float high = val->val.i16 / 100.0f;
+            at_app_set_auto_range_from(high - at_app_band_min_gap(), high, true, AT_SRC_MATTER);
         }
     } else if (endpoint_id == s_ep_preheat && cluster_id == OnOff::Id && attribute_id == OnOff::Attributes::OnOff::Id) {
         if (val->val.b) {

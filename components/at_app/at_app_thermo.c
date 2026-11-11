@@ -81,7 +81,7 @@ static void sb_num(sb_t *b, const char *key, double v)
 
 static void sb_epoch(sb_t *b, const char *key, int64_t e)
 {
-    if (e > 0) sb_add(b, "\"%s\":%lld", key, (long long)e);
+    if (e > 0) sb_add(b, "\"%s\":%.0f", key, (double)e);   /* not %lld: this printf has no long long */
     else sb_add(b, "\"%s\":null", key);
 }
 

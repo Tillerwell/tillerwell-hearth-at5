@@ -366,8 +366,8 @@ esp_err_t at_app_start(void)
     at_ctl_init(&s_ctl, cfg.auto_target, cfg.freeze_target);
     at_band_t band;
     if (at_settings_band_load(&band)) {
-        /* no migration (Heater Care): a saved range loads as it is */
-        at_ctl_set_auto_range(&s_ctl, band.low, band.high);
+        /* one set temperature (1.49): the top of a saved range is the set temperature, the range is 1 C below it */
+        at_ctl_set_auto_range(&s_ctl, band.high - AT_CTL_MIN_WIDTH, band.high);
     } else {
         at_ctl_set_auto_range(&s_ctl, 20.0f, 21.0f); /* a fresh box: a 1 C range, Heater Care widens it as needed */
     }
@@ -420,7 +420,7 @@ void at_app_view(at_view_t *v)
 
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
     v->auto_enabled = s_ctl.autot.enabled;
-    v->auto_target = s_ctl.autot.target;
+    v->auto_target = s_ctl.autot.high;   /* the set temperature */
     v->auto_low = s_ctl.autot.low;
     v->auto_high = s_ctl.autot.high;
     v->hyst_min = 0.5f;   /* compatibility: older apps add these up for the narrowest range (1 C) */
@@ -684,42 +684,25 @@ static void save_band(void)
     at_settings_band_save(&b);
 }
 
-void at_app_set_auto_target(float target)
+/* The user sets one temperature. It is the top of the range, and the range is always 1 C below it (Heater Care
+ * lowers the working bottom further by itself). Call with s_ctl_lock held. */
+static void set_temp_locked(float temp)
 {
-    if (target < 0) target = 0;
-    if (target > 30) target = 30;
-    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
-    at_ctl_set_auto_target(&s_ctl, target);
-    xSemaphoreGive(s_ctl_lock);
-    persist(m_auto_t, &target);
-    save_band();
+    if (temp < AT_CTL_MIN_WIDTH) temp = AT_CTL_MIN_WIDTH;
+    if (temp > 30) temp = 30;
+    at_ctl_set_auto_range(&s_ctl, temp - AT_CTL_MIN_WIDTH, temp);
 }
 
-/* The range must be at least 1 C wide (call with s_ctl_lock held). */
-static void widen_band_locked(void)
-{
-    float gap = AT_CTL_MIN_WIDTH;
-    float low = s_ctl.autot.low, high = s_ctl.autot.high;
-    if (high - low >= gap) return;
-    high = low + gap;
-    if (high > 30) {
-        high = 30;
-        low = high - gap;
-        if (low < 0) low = 0;
-    }
-    at_ctl_set_auto_range(&s_ctl, low, high);
-}
+void at_app_set_auto_target(float target) { at_app_set_auto_range_from(0, target, true, AT_SRC_UNKNOWN); }
 
 void at_app_set_auto_range(float low, float high) { at_app_set_auto_range_from(low, high, true, AT_SRC_UNKNOWN); }
 
 void at_app_set_auto_range_from(float low, float high, bool finish_run, at_src_t src)
 {
-    if (low < 0) low = 0;
-    if (high > 30) high = 30;
+    (void)low;   /* kept for older callers: only the top, the set temperature, is used */
     bool stop_now = false;
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
-    at_ctl_set_auto_range(&s_ctl, low, high);
-    widen_band_locked();
+    set_temp_locked(high);
     uint32_t now = at_now_ms();
     /* lowered below the room inside the minimum run: "Stop anyway" stops now; "Let it finish" lets the run reach
      * its minimum run, then the thermostat stops it at the new top as usual */
@@ -728,7 +711,7 @@ void at_app_set_auto_range_from(float low, float high, bool finish_run, at_src_t
         at_ctl_user_stop(&s_ctl, src, now);
         stop_now = true;
     }
-    float mid = s_ctl.autot.target;
+    float mid = s_ctl.autot.high;
     xSemaphoreGive(s_ctl_lock);
     if (stop_now) core_cmd(at_cmd_stop);
     persist(m_auto_t, &mid);
@@ -747,8 +730,8 @@ bool at_app_timer_thermostat_begin(int low_c, int high_c)
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
     s_tm_prev_low = s_ctl.autot.low;
     s_tm_prev_high = s_ctl.autot.high;
-    at_ctl_set_auto_range(&s_ctl, (float)low_c, (float)high_c);
-    widen_band_locked();
+    (void)low_c;
+    set_temp_locked((float)high_c);
     s_tm_low = s_ctl.autot.low;
     s_tm_high = s_ctl.autot.high;
     s_tm_have = true;
