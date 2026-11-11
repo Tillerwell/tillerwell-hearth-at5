@@ -201,25 +201,25 @@ static esp_err_t attribute_update_cb(attribute::callback_type_t type, uint16_t e
             // Off, Auto and Heat make sense for a heater; Cool, Dry, Fan and the rest are refused
             const uint8_t mode = val->val.u8;
             if (mode != 0 && mode != 1 && mode != 4) return ESP_ERR_INVALID_ARG;
-            at_app_set_auto(mode != 0);
+            at_app_set_auto_from(mode != 0, true, AT_SRC_MATTER);  // no warning possible: a run inside 30 min finishes
         } else if (attribute_id == Thermostat::Attributes::OccupiedHeatingSetpoint::Id) {
             // "heat to" is the bottom of the app's range; the top moves up if the gap would get too small
             at_view_t v;
             at_app_view(&v);
             const float low = val->val.i16 / 100.0f, gap = at_app_band_min_gap();
-            at_app_set_auto_range(low, v.auto_high - low < gap ? low + gap : v.auto_high);
+            at_app_set_auto_range_from(low, v.auto_high - low < gap ? low + gap : v.auto_high, true, AT_SRC_MATTER);
         } else if (attribute_id == Thermostat::Attributes::OccupiedCoolingSetpoint::Id) {
             // "cool to" is the top of the range; the bottom moves down if needed
             at_view_t v;
             at_app_view(&v);
             const float high = val->val.i16 / 100.0f, gap = at_app_band_min_gap();
-            at_app_set_auto_range(high - v.auto_low < gap ? high - gap : v.auto_low, high);
+            at_app_set_auto_range_from(high - v.auto_low < gap ? high - gap : v.auto_low, high, true, AT_SRC_MATTER);
         }
     } else if (endpoint_id == s_ep_preheat && cluster_id == OnOff::Id && attribute_id == OnOff::Attributes::OnOff::Id) {
         if (val->val.b) {
             at_app_start_preheat(0);
         } else {
-            at_app_stop();
+            at_app_stop_from(AT_SRC_MATTER);   // stops at once; logged as an early stop inside the minimum run
         }
     }
     return ESP_OK;

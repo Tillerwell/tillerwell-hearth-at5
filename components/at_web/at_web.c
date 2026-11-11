@@ -484,12 +484,26 @@ static bool set_display_name(const char *name)
     return true;
 }
 
+/* Who a command came from, for the early-stop log: the body's "source" ("app", "home_assistant", ...) if it says,
+ * else the path it arrived by (POST /api/cmd: the device web UI's API; the cloud link: an app). */
+static at_src_t cmd_src(const cJSON *j, at_src_t def)
+{
+    const char *s = jstr(j, "source");
+    at_src_t src = s ? at_ctl_src_parse(s) : AT_SRC_UNKNOWN;
+    return src == AT_SRC_UNKNOWN ? def : src;
+}
+
+/* "finish_run": older apps send none, which means let the run finish */
+static bool finish_run(const cJSON *j) { return jbool(j, "finish_run", true); }
+
 /* The safety layer's front door, shared by POST /api/cmd and the cloud link: the caller has already checked who may
- * ask. False means nothing was done (unknown command, bad value, or the box said no: bypass on, queue full). */
-static bool run_cmd(const cJSON *j)
+ * ask. False means nothing was done (unknown command, bad value, or the box said no: bypass on, queue full).
+ * *skipped (may be NULL) is set for a command that is accepted and ignored (hysteresis, since 1.47). */
+static bool run_cmd(const cJSON *j, at_src_t def_src, bool *skipped)
 {
     const char *c = jstr(j, "cmd");
     bool ok = true;
+    if (skipped) *skipped = false;
     if (!c) {
         ok = false;
     } else if (!strcmp(c, "start_preheat")) {
@@ -499,7 +513,7 @@ static bool run_cmd(const cJSON *j)
     } else if (!strcmp(c, "start_thermostat")) {
         ok = at_app_start_thermostat();
     } else if (!strcmp(c, "stop")) {
-        ok = at_app_stop();
+        ok = at_app_stop_from(cmd_src(j, def_src));
     } else if (!strcmp(c, "start_pump")) {
         ok = at_app_start_pump((int)jnum(j, "minutes", 0));
     } else if (!strcmp(c, "send_pubr0")) {
@@ -528,13 +542,19 @@ static bool run_cmd(const cJSON *j)
     } else if (!strcmp(c, "send_pubr0_variant")) {
         ok = at_app_send_pubr0_variant((int)jnum(j, "variant", 0));
     } else if (!strcmp(c, "auto")) {
-        at_app_set_auto(jbool(j, "enabled", false));
+        at_app_set_auto_from(jbool(j, "enabled", false), finish_run(j), cmd_src(j, def_src));
     } else if (!strcmp(c, "auto_target")) {
         at_app_set_auto_target((float)jnum(j, "value", 20));
     } else if (!strcmp(c, "auto_range")) {
-        at_app_set_auto_range((float)jnum(j, "low", 19), (float)jnum(j, "high", 21));
+        at_app_set_auto_range_from((float)jnum(j, "low", 19), (float)jnum(j, "high", 21), finish_run(j),
+                                   cmd_src(j, def_src));
     } else if (!strcmp(c, "hysteresis")) {
-        at_app_set_hysteresis((float)jnum(j, "min", 0), (float)jnum(j, "max", 0));
+        /* deprecated (1.47, Heater Care): the narrowest range is 1 C and the box widens it itself */
+        if (skipped) *skipped = true;
+    } else if (!strcmp(c, "thermo_learn_reset")) {
+        at_app_thermo_learn_reset();
+    } else if (!strcmp(c, "early_stop_seen")) {
+        at_app_early_stop_seen();
     } else if (!strcmp(c, "preheat_temp")) {
         at_app_set_preheat_temp((float)jnum(j, "value", 88));
     } else if (!strcmp(c, "display_name")) {
@@ -610,7 +630,7 @@ static bool run_cmd(const cJSON *j)
 bool at_web_exec_cmd(const char *json)
 {
     cJSON *j = json ? cJSON_Parse(json) : NULL;
-    bool ok = j && run_cmd(j);
+    bool ok = j && run_cmd(j, AT_SRC_APP, NULL);
     cJSON_Delete(j);
     return ok;
 }
@@ -620,8 +640,10 @@ static esp_err_t h_cmd(httpd_req_t *req)
     REQUIRE_AUTH(req);
     cJSON *j = read_json(req);
     if (!j) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad json");
-    bool ok = run_cmd(j);
+    bool skipped;
+    bool ok = run_cmd(j, AT_SRC_WEB, &skipped);
     cJSON_Delete(j);
+    if (ok && skipped) return send_json_str(req, "{\"ok\":true,\"skipped\":true}");
     return send_ok(req, ok);
 }
 
@@ -655,6 +677,17 @@ static esp_err_t h_fuel_get(httpd_req_t *req)
 {
     REQUIRE_AUTH(req);
     char *s = at_app_fuel_json();
+    if (!s) return httpd_resp_send_500(req);
+    esp_err_t e = send_json_str(req, s);
+    free(s);
+    return e;
+}
+
+/* GET /api/thermo/history: Heater Care's changes and the last runs, for the apps' "Why?" screen. */
+static esp_err_t h_thermo_history(httpd_req_t *req)
+{
+    REQUIRE_AUTH(req);
+    char *s = at_app_thermo_history_json();
     if (!s) return httpd_resp_send_500(req);
     esp_err_t e = send_json_str(req, s);
     free(s);
@@ -1144,7 +1177,7 @@ static bool backup_cmd(const char *cmd, const cJSON *from, const char *key, cons
     cJSON *c = cJSON_CreateObject();
     cJSON_AddStringToObject(c, "cmd", cmd);
     cJSON_AddItemToObject(c, as, cJSON_Duplicate(v, true));
-    bool ok = run_cmd(c);
+    bool ok = run_cmd(c, AT_SRC_WEB, NULL);
     cJSON_Delete(c);
     return ok;
 }
@@ -1169,18 +1202,12 @@ static esp_err_t h_backup_put(httpd_req_t *req)
         cJSON_AddNumberToObject(band, "low", jnum(b, "auto_low", 19));
         cJSON_AddNumberToObject(band, "high", jnum(b, "auto_high", 21));
     }
-    cJSON *hyst = cJSON_CreateObject();
-    if (cJSON_GetObjectItemCaseSensitive(b, "hyst_min") && cJSON_GetObjectItemCaseSensitive(b, "hyst_max")) {
-        cJSON_AddStringToObject(hyst, "cmd", "hysteresis");
-        cJSON_AddNumberToObject(hyst, "min", jnum(b, "hyst_min", 0));
-        cJSON_AddNumberToObject(hyst, "max", jnum(b, "hyst_max", 0));
-    }
-    /* The band and the hysteresis limit each other, so the band goes on either side of it. */
-    if (jstr(band, "cmd")) run_cmd(band);
-    if (jstr(hyst, "cmd")) SKIP_IF(run_cmd(hyst), "hysteresis");
-    if (jstr(band, "cmd")) SKIP_IF(run_cmd(band), "auto_range");
+    /* hyst_min/hyst_max in an older backup are ignored (1.47): the narrowest range is 1 C */
+    if (jstr(band, "cmd")) SKIP_IF(run_cmd(band, AT_SRC_WEB, NULL), "auto_range");
     cJSON_Delete(band);
-    cJSON_Delete(hyst);
+    /* what Heater Care learned about the space, so a replacement box carries on from it */
+    const cJSON *learn = cJSON_GetObjectItemCaseSensitive(b, "thermo_learn");
+    if (learn) SKIP_IF(at_app_thermo_learn_restore(learn), "thermo_learn");
     SKIP_IF(backup_cmd("auto_target", b, "auto_target", "value"), "auto_target");
     SKIP_IF(backup_cmd("use_external_temp", b, "use_external_temp", "enabled"), "use_external_temp");
     SKIP_IF(backup_cmd("preheat_temp", b, "preheat_temp", "value"), "preheat_temp");
@@ -1197,7 +1224,7 @@ static esp_err_t h_backup_put(httpd_req_t *req)
     if (cJSON_IsObject(rates)) {
         cJSON *c = cJSON_Duplicate(rates, true);
         cJSON_AddStringToObject(c, "cmd", "fuel_rates");
-        SKIP_IF(run_cmd(c), "fuel_rates");
+        SKIP_IF(run_cmd(c, AT_SRC_WEB, NULL), "fuel_rates");
         cJSON_Delete(c);
     }
     /* 0 means "never set" for these two, and the box refuses 0 */
@@ -1312,7 +1339,7 @@ esp_err_t at_web_start(void)
         return ESP_OK;
     }
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 36; /* 31 routes; a registration past this aborts at startup */
+    cfg.max_uri_handlers = 36; /* 32 routes; a registration past this aborts at startup */
     cfg.uri_match_fn = httpd_uri_match_wildcard; /* one route (DELETE users/<kid>) uses a wildcard */
     cfg.stack_size = 8192;
     cfg.lru_purge_enable = true;
@@ -1331,6 +1358,7 @@ esp_err_t at_web_start(void)
         {.uri = "/api/wifi", .method = HTTP_POST, .handler = h_wifi_set},
         {.uri = "/api/log", .method = HTTP_GET, .handler = h_log},
         {.uri = "/api/fuel", .method = HTTP_GET, .handler = h_fuel_get},
+        {.uri = "/api/thermo/history", .method = HTTP_GET, .handler = h_thermo_history},
         {.uri = "/api/mode", .method = HTTP_POST, .handler = h_mode},
         {.uri = "/api/reboot", .method = HTTP_POST, .handler = h_reboot},
         {.uri = "/api/factory_reset", .method = HTTP_POST, .handler = h_factory},

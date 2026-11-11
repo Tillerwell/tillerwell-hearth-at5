@@ -97,7 +97,7 @@ Levels are ordered: `view` < `control` < `manager` < `admin` (cloud plan Q8).
 | Route | Needs |
 |---|---|
 | `GET /api/auth/nonce`, `GET /api/hello`, `POST`/`GET /api/auth/claim`, `POST /api/auth/redeem` | nothing (each checks what it needs itself) |
-| `GET /api/status`, `/api/info`, `/api/timers`, `/api/fuel`, `/api/auth/me` | view |
+| `GET /api/status`, `/api/info`, `/api/timers`, `/api/fuel`, `/api/thermo/history`, `/api/auth/me` | view |
 | `PUT /api/timers` | control |
 | `POST /api/cmd` | depends on `cmd`, below (at least control) |
 | `GET /api/wifi/scan`, `POST /api/wifi`, `POST /api/mode` | manager |
@@ -108,8 +108,8 @@ Levels are ordered: `view` < `control` < `manager` < `admin` (cloud plan Q8).
 
 | Needs | Commands |
 |---|---|
-| control | `start_preheat`, `stop`, `auto`, `auto_target`, `auto_range`, `preheat_duration`, `set_time`, `tank_level`, `tank_filled`, `heater_read`, `start_pump`, `fuel_prime`, `timer_set`, `timer_delete` |
-| manager | `heater_unlock`, `heater_settings`, `fan_test`, `pump_minutes`, `hysteresis`, `preheat_temp`, `preheat_minutes`, `timezone`, `display_name`, `fuel_price`, `fuel_factor`, `fuel_rates`, `tank_capacity` |
+| control | `start_preheat`, `stop`, `auto`, `auto_target`, `auto_range`, `preheat_duration`, `set_time`, `tank_level`, `tank_filled`, `heater_read`, `start_pump`, `fuel_prime`, `timer_set`, `timer_delete`, `early_stop_seen` |
+| manager | `heater_unlock`, `heater_settings`, `fan_test`, `pump_minutes`, `hysteresis` (ignored since 1.47, §9.10), `thermo_learn_reset`, `preheat_temp`, `preheat_minutes`, `timezone`, `display_name`, `fuel_price`, `fuel_factor`, `fuel_rates`, `tank_capacity` |
 | admin | `factory_reset`, `reboot`, `auto_update`, `ota` (cloud only, §9.7), and **any command not listed** (fail closed) |
 
 `GET /api/hello` (public) tells a phone what it is talking to before it holds a key: `{"device_id","name","version","claimed":true|false,"fingerprint"}`.
@@ -170,11 +170,15 @@ When an owner's box dies, the app sets up the new box and the cloud moves the ol
 - `GET /api/backup` returns the owner's settings, `PUT /api/backup` applies them:
 
 ```json
-{"v":1,"display_name":"Saloon","auto_low":18,"auto_high":21,"auto_target":20,"hyst_min":1,"hyst_max":1,
+{"v":1,"display_name":"Saloon","auto_low":20,"auto_high":21,"auto_target":20.5,"hyst_min":0.5,"hyst_max":0.5,
  "use_external_temp":true,"preheat_temp":88,"preheat_minutes":30,"freeze_enabled":false,"freeze_target":5,
  "timezone":"Europe/London","auto_update":false,"fuel_price":1.45,"fuel_factor":1,
- "fuel_rates":{"starting":0.3,"low":0.12,"middle":0.3,"high":0.6},"ml_per_pulse":0,"tank_capacity":0,"timers":[…]}
+ "fuel_rates":{"starting":0.3,"low":0.12,"middle":0.3,"high":0.6},"ml_per_pulse":0,"tank_capacity":0,"timers":[…],
+ "thermo_learn":{"width":1.5,"last_change":"widened","window_ext":[{"need":1.7,"rate":0.05,"vote":"fast"}],"window_ctl":[],
+  "warmup_ext":[360,420],"warmup_ctl":[],"cooling_ext":[2700],"cooling_ctl":[],"limit_ext":null,"limit_ctl":null,"history":[…]}}
 ```
+
+`thermo_learn` (firmware 1.47, §9.10) is what Heater Care learned about the space, so a replacement box restored from the cloud carries on from it. It is optional and older boxes ignore it; `v` stays 1. `hyst_min`/`hyst_max` in a backup are ignored since 1.47.
 
 `timers` is the `GET /api/timers` array. Nothing in it belongs to one box alone (Wi-Fi, users, keys, the fuel log) or to the moment (whether the heater is running, whether the thermostat is on), so restoring never starts or stops the heater. `PUT` applies each field through the same checks as `POST /api/cmd`; a field the box turns down is named in `{"ok":true,"skipped":[…]}` and the rest still apply. `ml_per_pulse` and `tank_capacity` of 0 mean "never set" and are left alone. A changed `display_name` restarts the box, so it is applied last.
 
@@ -335,6 +339,68 @@ Only for a box linked to the cloud (§8): nothing here exists without enrolment.
 - `{"cmd":"timer_delete","id":"…"}`: removes that timer; `refused` if there is none.
 
 The box sends a fresh `backup` (§9.3) as soon as its list changes, so the website's copy follows changes made at home, from away and by the box itself (a finished one-off dropping off). The website returns that copy as `timers` and `timers_at` in `GET …/devices/<id>/state` (§9.6).
+
+### 9.10 Heater Care: the working range, run locks and learning (firmware 1.47)
+
+Plan and reasons: `docs/ADAPTIVE_THERMOSTAT.md`. The user's range (`auto_low`..`auto_high`, at least 1 C) is what the
+apps show as the setting. The thermostat runs on a working range: the same top, with the bottom lowered by what
+Heater Care learned (and to at least 2 C below the top on the controller's whole-degree sensor). Hearth's own stops
+wait until a run has burned 30 minutes from flame established (20 for frost protection); a thermostat start waits
+until the heater has been idle 20 minutes. A fault, the ceiling (top + 5 C) and a stop someone asks for always go at
+once.
+
+`GET /api/status` (and the MQTT and cloud `state`) gains a `thermo` object:
+
+```json
+"thermo": {
+  "work_low": 19.5, "work_high": 21.0, "learned_width": 1.5, "min_width": 1.0, "sensor": "external",
+  "ceiling": 26.0, "at_limit": null, "reason": "widened",
+  "min_run_left_s": 480, "min_off_left_s": 0, "holding": null,
+  "run_on_at": 1762871100, "flame_on_at": 1762871400,
+  "sensor_stuck": false, "no_reading": false,
+  "rise_rate": 0.05, "warmup_typical_s": 360, "cool_typical_s": 2700, "dip_below": 0.8,
+  "early_stop_unseen": 1, "last_run_end": "top",
+  "last_early_stop": {"at": 1762871940, "after_s": 540, "source": "matter"}
+}
+```
+
+- `sensor`: `"external"` or `"controller"`, the reading in use. `min_width` is the narrowest working range on it (1 or 2).
+- `at_limit`: `"max"` (the space heats faster than a 4 C range allows), `"min"` (at the narrowest; normal, say nothing) or null.
+- `reason`: `"user"` (working range = the user's), `"widened"`, `"narrowed"` (learning), `"controller_sensor"` (the 2 C floor or whole-degree rounding).
+- `min_run_left_s`: 0 when no run lock; the full 1800 (1200 for frost protection) all through light-up, then counting down from flame established. The apps' stop warning uses it.
+- `min_off_left_s`: 0 when no off lock. The manual start warning uses it.
+- `holding`: why a stop Hearth wants to send is waiting for the run lock: `"top"`, `"timer_ended"`, `"thermostat_off"`, `"no_reading"`, or null.
+- `run_on_at`, `flame_on_at`: epochs of the current run's start and flame, null when not running, lighting up, or the clock is not set.
+- `sensor_stuck`: the external sensor has not changed for 15 minutes while heating and is set aside. `no_reading`: no usable temperature at all.
+- `rise_rate`, `warmup_typical_s`, `cool_typical_s`: for the sensor in use, null until known. `dip_below`: how far below the bottom the room fell during the current or last off lock.
+- `early_stop_unseen`: stops someone asked for inside the minimum run that no app has explained yet; `last_early_stop` is the latest one (`source`: `app`, `web`, `matter`, `mqtt`, `home_assistant`, `controller`, `console`, `timer`, `unknown`). Ceiling stops and faults never count.
+- `last_run_end`: `"top"`, `"user"`, `"external"`, `"ceiling"`, `"fault"`, `"no_reading"`, `"heater"`, `"timer_ended"`, `"thermostat_off"`, or null.
+
+`hyst_min` and `hyst_max` stay in the status for older apps, always 0.5 + 0.5, so an app that adds them up gets a 1 C minimum.
+
+`GET /api/thermo/history` (view):
+
+```json
+{"learned_width":1.5,"sensor":"external","limit_ext":null,"limit_ctl":null,
+ "history":[{"at":1762871100,"kind":"widened","sensor":"external","limit":null,"old":1,"new":1.5,
+             "worked_out":1.21,"working":1.5,"rate1":0.05,"rate2":0.048}],
+ "runs":[{"at":1762871100,"sensor":"external","end":"top","counted":true,"why":"counted","vote":"fast",
+          "light_s":300,"burn_s":1900,"warmup_s":360,"rate":0.05,"need":1.7,"climb_min":26,
+          "start_temp":19.9,"peak_temp":21.6,"cooling_s":2700,"dip":0}],
+ "early_stops":[{"at":1762871940,"after_s":540,"source":"matter"}]}
+```
+
+Newest first. `history` (kinds `widened`, `narrowed`, `limit_reached`, `limit_cleared`, `reset`) is kept across a
+restart; `runs` (the last 20) and `early_stops` (the last 8) are not. `why` is `counted`, `not_thermostat`,
+`long_off`, `not_at_top`, `sensor_changed`, `lost_heat`, `not_enough_data` or `cold_spell`.
+
+Commands (`POST /api/cmd`, and the cloud `cmd`):
+
+- `{"cmd":"thermo_learn_reset"}` (manager): forget what was learned, with a history entry.
+- `{"cmd":"early_stop_seen"}` (control): an app showed the short-cycle explainer.
+- `{"cmd":"auto","enabled":false,"finish_run":true|false}` and `{"cmd":"auto_range","low":…,"high":…,"finish_run":…}`: inside a run's minimum run, `true` applies the change and lets the run reach it; `false` stops now and is logged as an early stop. Older apps send neither, which is treated as `true`.
+- `stop`, `auto` and `auto_range` take an optional `"source"` for the early-stop log (`"app"`, `"home_assistant"`, …). Without it, `POST /api/cmd` counts as `web` and a cloud command as `app`.
+- `{"cmd":"hysteresis",…}` is deprecated: accepted and ignored, answering `{"ok":true,"skipped":true}`.
 
 ## 10. Test vectors
 

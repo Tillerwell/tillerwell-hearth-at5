@@ -23,7 +23,8 @@ extern "C" {
 
 #define AT_TIMERS_MAX        32
 #define AT_TIMER_ID_LEN      37          /* UUID text + NUL */
-#define AT_TIMER_MIN_DUR     20
+#define AT_TIMER_MIN_DUR     30          /* new or edited timers (Heater Care's minimum run) */
+#define AT_TIMER_MIN_DUR_OLD 20          /* the shortest before 1.47: a saved timer this short still loads, unchanged */
 #define AT_TIMER_MAX_DUR     480
 #define AT_TIMER_GAP_MIN     30          /* a timer may not start sooner than this after another ended */
 
@@ -34,7 +35,7 @@ typedef struct {
     bool enabled;
     uint8_t mode;               /* at_timer_mode_t */
     uint16_t start_minute;      /* minutes after local midnight, 0..1439 */
-    uint16_t duration_min;      /* 20..480 */
+    uint16_t duration_min;      /* 30..480 (20..480 for one saved before 1.47) */
     uint8_t days;               /* repeating: bit 0 = Monday ... bit 6 = Sunday */
     bool one_off;
     int32_t date_day;           /* one-off: local date as days since 1970-01-01 */
@@ -91,8 +92,10 @@ bool at_timer_expired(const at_timer_t *t, const at_localtime_t *now);
 
 /* Check a whole replacement list. `existing` is what is stored now: a one-off that has already finished is
  * only accepted if it is unchanged from there (the app may be saving a list it read just before the window
- * ended); it is then ignored, and at_timers_prune_expired drops it. min_gap_c is the thermostat's hysteresis
- * minimum (hyst_min + hyst_max). Disabled timers and finished one-offs are left out of the 30 minute check. */
+ * ended); it is then ignored, and at_timers_prune_expired drops it. A timer shorter than AT_TIMER_MIN_DUR (but at least
+ * AT_TIMER_MIN_DUR_OLD) is only accepted if `existing` has it with the same id and duration: saved before the rule,
+ * so it is left alone (at boot the stored list is passed as its own `existing`). min_gap_c is the narrowest
+ * thermostat range (1 C). Disabled timers and finished one-offs are left out of the 30 minute check. */
 at_timer_problem_t at_timers_validate(const at_timer_t *list, int n, const at_timer_t *existing, int n_existing,
                                       const at_localtime_t *now, float min_gap_c);
 
@@ -131,6 +134,9 @@ typedef struct {
     /* disarm=false when the user already switched Auto off by hand: only put things back. */
     void (*thermostat_end)(void *ctx, bool disarm);
     void *ctx;
+    /* Optional: true while the heater is still running only to finish a previous thermostat timer's minimum run,
+     * so a thermostat timer may start and take that run over. NULL: never. */
+    bool (*can_take_over)(void *ctx);
 } at_timer_ops_t;
 
 #define AT_RUN_START_GRACE_MS 120000u   /* a started heater may still report idle for this long */
@@ -152,7 +158,8 @@ void at_runner_init(at_runner_t *r);
  *
  * Firing needs the heater idle with fresh status and no fault, not in bypass, and no other run going;
  * otherwise that firing is skipped (never queued). For a thermostat timer Auto must also be off, so the
- * user's own Auto always wins. A preheat run ends with its duration, or earlier if the heater went back to
+ * user's own Auto always wins (a thermostat timer may also take over a run that is only finishing the previous
+ * timer's minimum run, see can_take_over). A preheat run ends with its duration, or earlier if the heater went back to
  * idle (stopped by hand, or at the coolant limit); a thermostat run ends with its window, or earlier if
  * the user switched Auto off. */
 void at_runner_tick(at_runner_t *r, const at_timer_t *list, int n, const at_localtime_t *now, uint32_t now_ms,

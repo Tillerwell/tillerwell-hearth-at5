@@ -82,10 +82,10 @@ const char *at_timer_err_text(at_timer_err_t e)
     case AT_TERR_DUPLICATE_ID: return "two timers share an id";
     case AT_TERR_BAD_MODE: return "mode must be preheat or thermostat";
     case AT_TERR_BAD_START: return "start_minute must be 0 to 1439";
-    case AT_TERR_BAD_DURATION: return "a timer runs for 20 minutes to 8 hours";
+    case AT_TERR_BAD_DURATION: return "a timer runs for 30 minutes to 8 hours";
     case AT_TERR_NO_DAYS: return "pick at least one day (1 = Monday to 7 = Sunday)";
     case AT_TERR_BAD_DATE: return "date must be a real yyyy-MM-dd";
-    case AT_TERR_BAD_RANGE: return "thermostat range must be 0 to 30 C, low below high, and at least the hysteresis apart";
+    case AT_TERR_BAD_RANGE: return "thermostat range must be 0 to 30 C, low below high, and at least 1 C apart";
     case AT_TERR_IN_PAST: return "that time has already passed";
     case AT_TERR_TOO_CLOSE: return "too close to another timer: leave 30 minutes between one ending and the next starting";
     }
@@ -195,8 +195,16 @@ at_timer_problem_t at_timers_validate(const at_timer_t *list, int n, const at_ti
         } else if ((t->days & 0x7F) == 0 || (t->days & 0x80)) {
             return problem(AT_TERR_NO_DAYS, i, -1);
         }
-        if (t->duration_min < AT_TIMER_MIN_DUR || t->duration_min > AT_TIMER_MAX_DUR) {
+        if (t->duration_min < AT_TIMER_MIN_DUR_OLD || t->duration_min > AT_TIMER_MAX_DUR) {
             return problem(AT_TERR_BAD_DURATION, i, -1);
+        }
+        if (t->duration_min < AT_TIMER_MIN_DUR) {
+            /* only one saved before the 30 minute rule, with its duration unchanged */
+            bool saved = false;
+            for (int k = 0; k < n_existing && !saved; k++) {
+                saved = !strcmp(existing[k].id, t->id) && existing[k].duration_min == t->duration_min;
+            }
+            if (!saved) return problem(AT_TERR_BAD_DURATION, i, -1);
         }
         if (t->start_minute > 1439) return problem(AT_TERR_BAD_START, i, -1);
         if (t->mode == AT_TMODE_THERMOSTAT &&
@@ -364,7 +372,9 @@ void at_runner_tick(at_runner_t *r, const at_timer_t *list, int n, const at_loca
     else if (!snap->have_status || snap->stale) skip = "skipped: no heater data";
     else if (snap->bypass) skip = "skipped: bypass is on";
     else if (snap->status.fault) skip = "skipped: heater fault";
-    else if (snap->status.state_raw != 0x00) skip = "skipped: heater already running";
+    else if (snap->status.state_raw != 0x00 &&
+             !(t->mode == AT_TMODE_THERMOSTAT && ops->can_take_over && ops->can_take_over(ops->ctx)))
+        skip = "skipped: heater already running";
     else if (t->mode == AT_TMODE_THERMOSTAT && auto_enabled) skip = "skipped: Auto already on";
     if (skip) {
         note(r, t, skip);

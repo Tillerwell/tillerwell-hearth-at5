@@ -81,7 +81,7 @@ static void load_list(void)
                 at_timer_t tmp[AT_TIMERS_MAX];
                 memcpy(tmp, buf + sizeof(hdr), hdr.count * sizeof(at_timer_t));
                 at_localtime_t noclock = {0};   /* nothing is "in the past" without a clock */
-                at_timer_problem_t p = at_timers_validate(tmp, (int)hdr.count, NULL, 0, &noclock, 0);
+                at_timer_problem_t p = at_timers_validate(tmp, (int)hdr.count, tmp, (int)hdr.count, &noclock, 0);
                 if (p.err == AT_TERR_NONE) {
                     memcpy(s_list, tmp, hdr.count * sizeof(at_timer_t));
                     s_n = (int)hdr.count;
@@ -278,7 +278,8 @@ void at_app_timer_status(at_timer_status_t *o)
 static bool op_preheat(void *ctx, int minutes) { return at_app_start_preheat(minutes); }
 static bool op_begin(void *ctx, int low, int high) { return at_app_timer_thermostat_begin(low, high); }
 static void op_end(void *ctx, bool disarm) { at_app_timer_thermostat_end(disarm); }
-static const at_timer_ops_t s_ops = {op_preheat, op_begin, op_end, NULL};
+static bool op_take_over(void *ctx) { return at_app_timer_can_take_over(); }
+static const at_timer_ops_t s_ops = {op_preheat, op_begin, op_end, NULL, op_take_over};
 
 static void timers_task(void *arg)
 {

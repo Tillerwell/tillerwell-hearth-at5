@@ -74,8 +74,8 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:
   <div class="card">
     <h2>Run</h2>
     <div class="row">
-      <button class="b p grow" onclick="cmd({cmd:'start_thermostat'},'Start the heater in thermostat mode?')">Start</button>
-      <button class="b d grow" onclick="cmd({cmd:'stop'})">Stop</button>
+      <button class="b p grow" onclick="startClick()">Start</button>
+      <button class="b d grow" onclick="stopClick()">Stop</button>
     </div>
     <div class="row">
       <input type="number" id="pre" min="1" max="600" style="width:90px" aria-label="Preheat minutes">
@@ -91,11 +91,21 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:
 
   <div class="card">
     <h2>Thermostat</h2>
-    <div class="sw"><span>Auto thermostat</span><input type="checkbox" id="auto" onchange="cmd({cmd:'auto',enabled:this.checked})"></div>
-    <div class="row"><span class="k">Target</span>
-      <button class="b" onclick="step('auto_target',-.5)">−</button>
-      <span class="v" id="at">–</span>
-      <button class="b" onclick="step('auto_target',.5)">+</button></div>
+    <div class="sw"><span>Auto thermostat</span><input type="checkbox" id="auto" onchange="autoClick(this)"></div>
+    <div class="row"><span class="k" style="width:44px">From</span>
+      <button class="b" onclick="range(-.5,0)">−</button>
+      <span class="v" id="alo">–</span>
+      <button class="b" onclick="range(.5,0)">+</button></div>
+    <div class="row"><span class="k" style="width:44px">To</span>
+      <button class="b" onclick="range(0,-.5)">−</button>
+      <span class="v" id="ahi">–</span>
+      <button class="b" onclick="range(0,.5)">+</button></div>
+    <div class="note" id="hc"></div>
+    <div class="note" id="hcexp" style="color:var(--fg)"></div>
+    <details id="why" ontoggle="if(this.open)loadWhy()"><summary class="note" style="cursor:pointer">Heater Care: why this range?</summary>
+      <div id="whyb" class="note"></div>
+      <div class="row"><button class="b d" onclick="resetLearning()">Reset learning</button></div>
+    </details>
     <div class="note" id="autonote"></div>
     <hr style="border:0;border-top:1px solid var(--line);margin:12px 0">
     <div class="sw"><span>Prevent freezing</span><input type="checkbox" id="frz" onchange="cmd({cmd:'freeze',enabled:this.checked})"></div>
@@ -200,6 +210,97 @@ async function cmd(c,confirmText){
   setTimeout(poll,600);
 }
 function step(k,d){const cur=k==='auto_target'?st.auto_target:st.prevent_freezing_target;cmd({cmd:k,value:cur+d})}
+/* ---- Heater Care: run locks, the working range and the "Why?" list ---- */
+const th=()=>st.thermo||{};
+const mins=s=>Math.max(1,Math.ceil(s/60));
+const SHORT='Heaters like this last longer with fewer, longer runs, so Heater Care keeps each run to at least 30 minutes.';
+const running=()=>st.state&&st.state!=='idle';
+function stopLeft(){const t=th();return running()&&t.min_run_left_s>0?t.min_run_left_s:0}
+function stopClick(){
+  const l=stopLeft();
+  if(l&&!confirm('Stopping now is a short run. '+SHORT+' This one has '+mins(l)+' minutes left.\n\nOK: stop anyway. Cancel: let it finish.'))return;
+  cmd({cmd:'stop'});
+}
+function startClick(){
+  const t=th();
+  if(!running()&&t.min_off_left_s>0){
+    const ago=Math.max(0,20-mins(t.min_off_left_s));
+    if(!confirm('The heater stopped '+ago+' minutes ago. Heater Care rests it for 20 minutes between runs.\n\nOK: start anyway. Cancel: wait.'))return;
+    cmd({cmd:'start_thermostat'});return;
+  }
+  cmd({cmd:'start_thermostat'},'Start the heater in thermostat mode?');
+}
+/* turning the thermostat off, or lowering the range below the room, inside the minimum run */
+function finishAsk(){
+  const l=stopLeft();
+  if(!l)return true;
+  return confirm('Stopping now is a short run. '+SHORT+' This one has '+mins(l)+' minutes left.\n\nOK: let it finish. Cancel: stop anyway.');
+}
+function autoClick(el){
+  if(el.checked){cmd({cmd:'auto',enabled:true});return}
+  cmd({cmd:'auto',enabled:false,finish_run:finishAsk()});
+}
+function range(dl,dh){
+  let lo=st.auto_low+dl,hi=st.auto_high+dh;
+  if(hi-lo<1){if(dl)hi=lo+1;else lo=hi-1}
+  const c={cmd:'auto_range',low:lo,high:hi};
+  if(st.auto_enabled&&st.effective_temp!=null&&st.effective_temp>=hi&&stopLeft())c.finish_run=finishAsk();
+  cmd(c);
+}
+function hcLine(){
+  const t=th(),s=st;if(!t.work_low&&t.work_low!==0)return '';
+  const f=v=>(Math.round(v*10)/10).toString();
+  let out=[];
+  if(t.reason&&t.reason!=='user'){
+    out.push('Running '+f(t.work_low)+'–'+f(t.work_high)+' °C. '+(t.reason==='controller_sensor'
+      ?"The controller's sensor reads whole degrees, so Hearth needs a 2 °C range."
+      :'This space heats quickly, so Hearth widened the range to rest the heater longer.'));
+  }
+  if(t.holding==='timer_ended')out.push('Timer ended, finishing minimum run: '+mins(t.min_run_left_s)+' min left');
+  else if(running()&&t.min_run_left_s>0)out.push(t.flame_on_at==null&&!s.burner_active&&s.state==='running'?'Heater Care: lighting up':'Heater Care: minimum run, '+mins(t.min_run_left_s)+' min left');
+  else if(!running()&&t.min_off_left_s>0&&s.auto_enabled&&s.effective_temp!=null&&s.effective_temp<=t.work_low)out.push('Heater Care: resting, '+mins(t.min_off_left_s)+' min before the next start');
+  if(t.dip_below>0&&s.effective_temp!=null)out.push('Losing heat fast. Dropped '+f(t.dip_below)+' °C below the range while the heater rested its minimum 20 minutes.');
+  if(t.last_run_end==='ceiling'&&!running())out.push('Stopped early: the room reached '+f(t.ceiling)+' °C, 5 °C over your range.');
+  if(t.no_reading)out.push('No temperature reading. The heater will stop after its minimum run.');
+  if(t.sensor_stuck)out.push("The room sensor has not changed for 15 minutes, so Hearth is using the controller's reading.");
+  return out.join(' · ');
+}
+const SRC={app:'the app',web:'the web page',matter:'HomeKit',mqtt:'MQTT',home_assistant:'Home Assistant',controller:'the Comfort Controller',console:'the console',timer:'a timer'};
+function earlyCard(){
+  const t=th(),e=t.last_early_stop;
+  if(!t.early_stop_unseen||!e)return '';
+  if(!earlyCard.sent){earlyCard.sent=true;post('/api/cmd',{cmd:'early_stop_seen'}).catch(()=>{});}
+  return 'The heater was stopped after '+mins(e.after_s)+' minutes (from '+(SRC[e.source]||'somewhere else')+'). Heaters like this last longer with fewer, longer runs, so Heater Care\'s own thermostat always runs at least 30 minutes.';
+}
+async function loadWhy(){
+  const b=$('whyb');b.textContent='loading…';
+  try{
+    const h=await (await api('/api/thermo/history')).json(),t=th();
+    const f=v=>(Math.round(v*100)/100).toString(),d=e=>e?new Date(e*1000).toLocaleString([], {day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'';
+    let x='<p>Working range '+f(t.work_low)+'–'+f(t.work_high)+' °C. Learned width '+(h.learned_width?f(h.learned_width)+' °C':'none yet')+'.';
+    if(t.rise_rate!=null)x+=' This space warms about '+f(t.rise_rate)+' °C a minute.';
+    if(t.work_high-t.work_low>h.learned_width+0.01&&t.reason==='controller_sensor')x+=' Running on '+f(t.work_high-t.work_low)+" °C, because the controller's sensor reads whole degrees.";
+    if(t.at_limit==='max')x+=' This space heats faster than the widest range (4 °C) allows. Recent runs, measured on '+(t.sensor==='controller'?"the controller's sensor":'the room sensor')+', suggest the room may rise above your range before Heater Care can stop the heater.';
+    x+='</p><ul style="padding-left:18px">';
+    h.history.forEach(e=>{
+      let w=e.kind==='widened'?'widened to '+f(e.new)+' °C, 2 of the last 3 runs heated fast enough to climb the range in under 30 minutes'
+        :e.kind==='narrowed'?'heating is slower now ('+f(e.rate1)+' °C a minute), so the range is back to '+f(e.new)+' °C'
+        :e.kind==='limit_reached'?(e.limit==='max'?'reached the widest range (4 °C)':'at the narrowest range')
+        :e.kind==='limit_cleared'?'no longer at a limit':'learning reset';
+      x+='<li>'+d(e.at)+(e.at?': ':'')+w+'</li>';
+    });
+    if(!h.history.length)x+='<li>No changes yet.</li>';
+    x+='</ul><p>Recent runs:</p><ul style="padding-left:18px">';
+    const why={counted:'counted',not_thermostat:'not a thermostat run',long_off:'first run after a long rest',not_at_top:'did not end at the top',sensor_changed:'sensor changed',lost_heat:'lost heat mid-run, not counted',not_enough_data:'not enough data',cold_spell:'cold spell, not counted'};
+    h.runs.slice(0,10).forEach(r=>{x+='<li>'+d(r.at)+': '+Math.round(r.burn_s/60)+' min burning, '+(r.rate!=null?f(r.rate)+' °C/min, ':'')+(why[r.why]||r.why)+(r.dip>0?', dipped '+f(r.dip)+' °C below the range while resting':'')+'</li>'});
+    if(!h.runs.length)x+='<li>None since the last restart.</li>';
+    b.innerHTML=x+'</ul>';
+  }catch(e){b.textContent=e.message}
+}
+async function resetLearning(){
+  if(!confirm('Forget what Heater Care has learned about this space? The range goes back to your own setting.'))return;
+  await cmd({cmd:'thermo_learn_reset'});loadWhy();
+}
 document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('#tabs button').forEach(x=>x.classList.toggle('on',x===b));
   ['ctl','setup','diag','fw'].forEach(t=>$('t-'+t).classList.toggle('hide',t!==b.dataset.t));
@@ -225,7 +326,8 @@ function render(){
   $('fault').textContent=s.fault_active?('Fault '+s.fault+': '+s.fault_name):(s.last_fault_name?('Last fault: '+s.last_fault_name+' ('+Math.round(s.last_fault_ago_s/60)+' min ago)'):'');
   if(document.activeElement!==$('pre'))$('pre').value=$('pre').value||s.preheat_minutes;
   $('auto').checked=s.auto_enabled;$('frz').checked=s.prevent_freezing_enabled;
-  $('at').textContent=fmt(s.auto_target,' °C');$('ft').textContent=fmt(s.prevent_freezing_target,' °C');
+  $('alo').textContent=fmt(s.auto_low,' °C');$('ahi').textContent=fmt(s.auto_high,' °C');
+  $('hc').textContent=hcLine();$('hcexp').textContent=earlyCard();$('ft').textContent=fmt(s.prevent_freezing_target,' °C');
   $('autonote').textContent=s.auto_note||'';$('frznote').textContent=s.prevent_freezing_note||'';
   $('byp').checked=s.bypass_mode;$('dbg').checked=s.debug_mode;
   $('d_h').textContent=s.heater_seen?s.frames_heater+' frames':'nothing yet';

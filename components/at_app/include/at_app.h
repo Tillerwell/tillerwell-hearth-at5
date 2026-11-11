@@ -62,8 +62,8 @@ typedef struct {
     uint8_t mode;               /* AT_MODE_* */
 } at_settings_t;
 
-/* Thermostat band (Auto): keep the cabin between low and high; hyst_* are extra degrees past each end
- * before the heater starts/stops. Kept in its own NVS entry so older saved settings stay valid. */
+/* Thermostat band (Auto): the user's range, low..high. hyst_* are no longer used (1.47, Heater Care): kept so the
+ * saved entry keeps its layout. Kept in its own NVS entry so older saved settings stay valid. */
 typedef struct {
     float low, high, hyst_min, hyst_max;
 } at_band_t;
@@ -147,8 +147,11 @@ typedef struct {
     at_snapshot_t snap;
     bool auto_enabled;
     float auto_target;
-    float auto_low, auto_high, hyst_min, hyst_max;
+    float auto_low, auto_high, hyst_min, hyst_max;  /* hyst_*: always 0.5 + 0.5, for older apps (1.47) */
     float auto_start_at;
+    at_ctl_status_t thermo;     /* Heater Care: working range, locks, learning */
+    bool clock_ok;
+    int64_t epoch;              /* wall clock when the view was taken, 0 if not set */
     float preheat_temp;
     bool freeze_enabled;
     float freeze_target;
@@ -172,7 +175,9 @@ bool at_app_start_preheat(int minutes);       /* minutes <= 0 uses the saved def
 /* Change the total time of a preheat that is running (minutes from when it started). */
 bool at_app_set_preheat_duration(int minutes);
 bool at_app_start_thermostat(void);
-bool at_app_stop(void);
+/* Stop at once. Logged as an early stop (with who asked) if it is inside the minimum run. */
+bool at_app_stop(void);                       /* source unknown */
+bool at_app_stop_from(at_src_t src);
 /* The water (circulation) pump alone; minutes <= 0 uses the saved run time (at_app_pump_minutes). */
 bool at_app_start_pump(int minutes);
 #define AT_PUMP_MINUTES_DEFAULT 40
@@ -237,10 +242,27 @@ bool at_app_fuel_tank_filled(void);
 bool at_app_local_day(int32_t *day);
 
 void at_app_set_auto(bool enabled);
+/* Auto on/off. Turning it off inside a run's minimum run: finish_run lets the run reach it (the default for callers
+ * that cannot ask), otherwise it stops now and is logged as an early stop from src. */
+void at_app_set_auto_from(bool enabled, bool finish_run, at_src_t src);
 void at_app_set_auto_target(float target);
-/* Keep the cabin between low and high (0..30 C). */
+/* Keep the cabin between low and high (0..30 C, at least 1 C apart). Lowering it below the room inside a run's
+ * minimum run: finish_run lets the run reach it, otherwise it stops now (an early stop from src). */
 void at_app_set_auto_range(float low, float high);
-void at_app_set_hysteresis(float hyst_min, float hyst_max);
+void at_app_set_auto_range_from(float low, float high, bool finish_run, at_src_t src);
+/* Heater Care: forget what was learned; the apps showed the early-stop explainer. */
+void at_app_thermo_learn_reset(void);
+void at_app_early_stop_seen(void);
+/* A consistent copy of the learning, the early-stop log and the clock it is measured against (for the JSON). */
+bool at_app_learn_snapshot(at_learn_t *out, at_ctl_early_t *early, int *n_early, uint32_t *now_ms);
+/* Replace the learned store (a backup being restored) and save it. False if it does not make sense. */
+bool at_app_learn_put(const at_learn_store_t *st);
+/* GET /api/thermo/history (docs/API_SPEC.md): the learning history and the last runs. Caller frees. */
+char *at_app_thermo_history_json(void);
+/* The learning as the backup's "thermo_learn" object / put one back. */
+struct cJSON;
+struct cJSON *at_app_thermo_learn_backup(void);
+bool at_app_thermo_learn_restore(const struct cJSON *o);
 /* Stop a run that isn't the thermostat's when the coolant reaches this (20..95 C). */
 void at_app_set_preheat_temp(float celsius);
 void at_app_set_freeze(bool enabled);
@@ -261,7 +283,9 @@ int at_app_log_copy(at_log_entry_t *out, int max);
  * changed it meanwhile. */
 bool at_app_timer_thermostat_begin(int low_c, int high_c);
 void at_app_timer_thermostat_end(bool disarm);
-/* Smallest allowed width of an Auto range (hysteresis start + stop). */
+/* True while the heater runs on only to finish a timer's minimum run: the next thermostat timer may take it over. */
+bool at_app_timer_can_take_over(void);
+/* Smallest allowed width of an Auto range: 1 C (Heater Care widens the working range itself). */
 float at_app_band_min_gap(void);
 
 /* ---- timers and the clock (at_app_timers.c) ---------------------------------------------------------- */

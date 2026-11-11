@@ -944,207 +944,7 @@ static at_snapshot_t mk_snap(int cabin, uint8_t state, uint8_t fault)
     return s;
 }
 
-static void test_ctl(void)
-{
-    printf("thermostat and frost protection\n");
-    ops_log_t l = {0};
-    at_ctl_ops_t ops = {op_start, op_stop, &l};
-    at_ctl_t t;
-    at_ctl_init(&t, 20.0f, 5.0f);
-    at_snapshot_t cold = mk_snap(17, 0, 0), hot = mk_snap(22, 2, 0);
-    uint32_t now = 100000;
-
-    /* disabled: nothing */
-    at_ctl_tick(&t, &cold, now, &ops);
-    CHECK(l.starts == 0);
-
-    /* enabling while cold starts immediately */
-    at_ctl_set_auto(&t, true, &cold, now, &ops);
-    CHECK(l.starts == 1);
-    /* rate limit */
-    at_ctl_tick(&t, &cold, now + 3000, &ops);
-    CHECK(l.starts == 1);
-    /* too warm and running: stop once, not repeatedly during cooldown */
-    at_ctl_tick(&t, &hot, now + 100000, &ops);
-    CHECK(l.stops == 1);
-    at_snapshot_t cooling = mk_snap(22, 4, 0);
-    at_ctl_tick(&t, &cooling, now + 200000, &ops);
-    CHECK(l.stops == 1);
-    /* idle and cold again restarts */
-    at_ctl_tick(&t, &cold, now + 300000, &ops);
-    CHECK(l.starts == 2);
-    /* in the dead band nothing happens */
-    at_snapshot_t mid = mk_snap(20, 0, 0);
-    at_ctl_tick(&t, &mid, now + 400000, &ops);
-    CHECK(l.starts == 2 && l.stops == 1);
-    /* stale reading is ignored */
-    at_snapshot_t stale = mk_snap(10, 0, 0);
-    stale.cabin_age_ms = 30000;
-    at_ctl_tick(&t, &stale, now + 500000, &ops);
-    CHECK(l.starts == 2);
-
-    /* enabling when already warm does not start */
-    ops_log_t l2 = {0};
-    at_ctl_ops_t ops2 = {op_start, op_stop, &l2};
-    at_ctl_t t2;
-    at_ctl_init(&t2, 20.0f, 5.0f);
-    at_snapshot_t warm = mk_snap(21, 0, 0);
-    at_ctl_set_auto(&t2, true, &warm, 1000, &ops2);
-    CHECK(l2.starts == 0);
-    at_ctl_set_auto(&t2, false, &warm, 2000, &ops2);
-    CHECK(l2.stops == 1);
-
-    /* a band of 18-21 acts like the Comfort Controller set to 20: the first run starts at 20, every
-     * later one at 18, and each runs to 21 with no stop inside the band */
-    {
-        ops_log_t lb = {0};
-        at_ctl_ops_t opsb = {op_start, op_stop, &lb};
-        at_ctl_t tb;
-        at_ctl_init(&tb, 20.0f, 5.0f);
-        at_ctl_set_auto_range(&tb, 18.0f, 21.0f);
-        at_ctl_set_hysteresis(&tb, 2.0f, 1.0f);
-        uint32_t tm = 100000;
-        at_snapshot_t s209 = mk_snap(21, 0, 0);
-        at_ctl_set_external(&tb, 20.9f, tm);
-        at_ctl_set_auto(&tb, true, &s209, tm, &opsb);
-        CHECK(lb.starts == 0); /* above the set temperature: waits */
-        CHECK(at_ctl_auto_start_at(&tb) == 20.0f);
-        at_ctl_set_external(&tb, 20.4f, tm += 100000);
-        at_ctl_tick(&tb, &s209, tm, &opsb);
-        CHECK(lb.starts == 0);
-        at_ctl_set_external(&tb, 20.0f, tm += 100000);
-        at_ctl_tick(&tb, &s209, tm, &opsb);
-        CHECK(lb.starts == 1); /* down to 20: first run */
-        at_snapshot_t burning = mk_snap(20, 2, 0);
-        at_ctl_set_external(&tb, 20.8f, tm += 100000);
-        at_ctl_tick(&tb, &burning, tm, &opsb);
-        CHECK(lb.stops == 0);
-        at_ctl_set_external(&tb, 21.0f, tm += 100000);
-        at_ctl_tick(&tb, &burning, tm, &opsb);
-        CHECK(lb.stops == 1); /* top of the band: stop */
-        CHECK(at_ctl_auto_start_at(&tb) == 18.0f);
-        at_snapshot_t idle = mk_snap(20, 0, 0);
-        at_ctl_set_external(&tb, 20.0f, tm += 100000);
-        at_ctl_tick(&tb, &idle, tm, &opsb);
-        at_ctl_set_external(&tb, 18.1f, tm += 100000);
-        at_ctl_tick(&tb, &idle, tm, &opsb);
-        CHECK(lb.starts == 1); /* after the first run it waits for the low end */
-        at_ctl_set_external(&tb, 18.0f, tm += 100000);
-        at_ctl_tick(&tb, &idle, tm, &opsb);
-        CHECK(lb.starts == 2);
-        /* running: 18.1 and 17.9 change nothing, it runs on to 21 */
-        at_ctl_set_external(&tb, 18.1f, tm += 100000);
-        at_ctl_tick(&tb, &burning, tm, &opsb);
-        at_ctl_set_external(&tb, 17.9f, tm += 100000);
-        at_ctl_tick(&tb, &burning, tm, &opsb);
-        CHECK(lb.starts == 2 && lb.stops == 1);
-        at_ctl_set_external(&tb, 21.0f, tm += 100000);
-        at_ctl_tick(&tb, &burning, tm, &opsb);
-        CHECK(lb.stops == 2);
-
-        /* armed below the set temperature: starts straight away */
-        ops_log_t lc = {0};
-        at_ctl_ops_t opsc = {op_start, op_stop, &lc};
-        at_ctl_t tc;
-        at_ctl_init(&tc, 20.0f, 5.0f);
-        at_ctl_set_auto_range(&tc, 18.0f, 21.0f);
-        at_ctl_set_external(&tc, 19.5f, 1000);
-        at_ctl_set_auto(&tc, true, &idle, 1000, &opsc);
-        CHECK(lc.starts == 1);
-
-        /* a Home Assistant reading 20 s old still counts: armed at 20.5 it waits, and the loop
-         * starts at 20 on a reading up to 90 s old; an older one is no reading at all */
-        ops_log_t le = {0};
-        at_ctl_ops_t opse = {op_start, op_stop, &le};
-        at_ctl_t te;
-        at_ctl_init(&te, 20.0f, 5.0f);
-        at_ctl_set_auto_range(&te, 18.0f, 21.0f);
-        at_snapshot_t nocab = mk_snap(0, 0, 0);
-        nocab.have_cabin = false;
-        at_ctl_set_external(&te, 20.5f, 100000);
-        at_ctl_set_auto(&te, true, &nocab, 120000, &opse);
-        CHECK(le.starts == 0);
-        at_ctl_set_external(&te, 20.0f, 200000);
-        at_ctl_tick(&te, &nocab, 200000 + 60000, &opse);
-        CHECK(le.starts == 1);
-
-        /* armed with no reading at all: never starts blind */
-        ops_log_t lf = {0};
-        at_ctl_ops_t opsf = {op_start, op_stop, &lf};
-        at_ctl_t tf;
-        at_ctl_init(&tf, 20.0f, 5.0f);
-        at_ctl_set_auto_range(&tf, 18.0f, 21.0f);
-        at_ctl_set_external(&tf, 15.0f, 1000);
-        at_ctl_set_auto(&tf, true, &nocab, 1000 + AT_CTL_EXT_STALE_MS + 1, &opsf);
-        at_ctl_tick(&tf, &nocab, 1000 + AT_CTL_EXT_STALE_MS + 200000, &opsf);
-        CHECK(lf.starts == 0);
-
-        /* Auto restored at boot (no arming) waits for the low end */
-        ops_log_t ld = {0};
-        at_ctl_ops_t opsd = {op_start, op_stop, &ld};
-        at_ctl_t td;
-        at_ctl_init(&td, 20.0f, 5.0f);
-        at_ctl_set_auto_range(&td, 18.0f, 21.0f);
-        td.autot.enabled = true;
-        at_ctl_set_external(&td, 19.5f, 100000);
-        at_ctl_tick(&td, &idle, 100000, &opsd);
-        CHECK(ld.starts == 0);
-    }
-
-    /* fault back-off: 5 min, 15 min, 20 min, then give up */
-    ops_log_t l3 = {0};
-    at_ctl_ops_t ops3 = {op_start, op_stop, &l3};
-    at_ctl_t t3;
-    at_ctl_init(&t3, 20.0f, 5.0f);
-    at_snapshot_t warm3 = mk_snap(25, 0, 0);
-    at_ctl_set_auto(&t3, true, &warm3, 0, &ops3); /* warm: no start */
-    at_snapshot_t faulted = mk_snap(15, 0, 78);
-    uint32_t tt = 200000;
-    at_ctl_tick(&t3, &faulted, tt, &ops3);
-    CHECK(l3.starts == 0); /* armed, waiting */
-    at_ctl_tick(&t3, &faulted, tt + 4 * 60000, &ops3);
-    CHECK(l3.starts == 0);
-    at_ctl_tick(&t3, &faulted, tt + 5 * 60000 + 1000, &ops3);
-    CHECK(l3.starts == 1);
-    uint32_t t_after1 = tt + 5 * 60000 + 1000;
-    at_ctl_tick(&t3, &faulted, t_after1 + 100000, &ops3); /* re-arm 15 min */
-    at_ctl_tick(&t3, &faulted, t_after1 + 100000 + 14 * 60000, &ops3);
-    CHECK(l3.starts == 1);
-    at_ctl_tick(&t3, &faulted, t_after1 + 100000 + 15 * 60000 + 1000, &ops3);
-    CHECK(l3.starts == 2);
-
-    /* frost protection runs without Auto and only stops its own runs */
-    ops_log_t l4 = {0};
-    at_ctl_ops_t ops4 = {op_start, op_stop, &l4};
-    at_ctl_t t4;
-    at_ctl_init(&t4, 20.0f, 5.0f);
-    at_ctl_set_freeze(&t4, true);
-    at_snapshot_t frozen = mk_snap(4, 0, 0);
-    at_ctl_tick(&t4, &frozen, 100000, &ops4);
-    CHECK(l4.starts == 1);
-    at_snapshot_t warmed = mk_snap(8, 2, 0);
-    at_ctl_tick(&t4, &warmed, 300000, &ops4);
-    CHECK(l4.stops == 1);
-    /* a run it did not start is left alone */
-    ops_log_t l5 = {0};
-    at_ctl_ops_t ops5 = {op_start, op_stop, &l5};
-    at_ctl_t t5;
-    at_ctl_init(&t5, 20.0f, 5.0f);
-    at_ctl_set_freeze(&t5, true);
-    at_ctl_tick(&t5, &warmed, 100000, &ops5);
-    CHECK(l5.stops == 0 && l5.starts == 0);
-
-    /* external temperature preferred while fresh, falls back when stale */
-    at_ctl_t t6;
-    at_ctl_init(&t6, 20.0f, 5.0f);
-    at_snapshot_t cab = mk_snap(25, 0, 0);
-    float temp;
-    uint32_t age;
-    bool ext;
-    at_ctl_set_external(&t6, 18.5f, 1000);
-    CHECK(at_ctl_effective_temp(&t6, &cab, 5000, &temp, &age, &ext) && ext && temp == 18.5f);
-    CHECK(at_ctl_effective_temp(&t6, &cab, 1000 + AT_CTL_EXT_STALE_MS + 1, &temp, &age, &ext) && !ext && temp == 25.0f);
-}
+#include "test_heater_care.inc"
 
 
 /* ---- timers ----------------------------------------------------------------------------------------- */
@@ -1211,8 +1011,28 @@ static void test_timer_rules(void)
     CHECK(at_timers_validate(a, 1, NULL, 0, &now, 3).err == AT_TERR_BAD_DURATION);
     a[0] = rep("a", 390, 481, MON);
     CHECK(at_timers_validate(a, 1, NULL, 0, &now, 3).err == AT_TERR_BAD_DURATION);
-    a[0] = rep("a", 390, 20, MON);
+    a[0] = rep("a", 390, 30, MON);
     CHECK(is_ok(at_timers_validate(a, 1, NULL, 0, &now, 3)));
+    /* shortest new timer 30 min (Heater Care); one saved at 20-29 before the rule still loads, unchanged */
+    a[0] = rep("a", 390, 29, MON);
+    CHECK(at_timers_validate(a, 1, NULL, 0, &now, 3).err == AT_TERR_BAD_DURATION);
+    a[0] = rep("a", 390, 20, MON);
+    CHECK(at_timers_validate(a, 1, NULL, 0, &now, 1).err == AT_TERR_BAD_DURATION);
+    CHECK(is_ok(at_timers_validate(a, 1, a, 1, &now, 1)));
+    {
+        at_timer_t old20 = rep("a", 390, 25, MON);
+        CHECK(at_timers_validate(a, 1, &old20, 1, &now, 1).err == AT_TERR_BAD_DURATION);   /* edited: 25 -> 20 */
+        at_timer_t other = rep("z", 390, 20, MON);
+        CHECK(at_timers_validate(a, 1, &other, 1, &now, 1).err == AT_TERR_BAD_DURATION);
+    }
+    /* the narrowest thermostat timer range is 1 C */
+    a[0] = rep("a", 390, 60, MON);
+    a[0].mode = AT_TMODE_THERMOSTAT;
+    a[0].low_c = 20;
+    a[0].high_c = 21;
+    CHECK(is_ok(at_timers_validate(a, 1, NULL, 0, &now, 1)));
+    a[0].high_c = 20;
+    CHECK(at_timers_validate(a, 1, NULL, 0, &now, 1).err == AT_TERR_BAD_RANGE);
     a[0] = rep("a", 390, 480, MON);
     CHECK(is_ok(at_timers_validate(a, 1, NULL, 0, &now, 3)));
     a[0] = rep("a", 1440, 60, MON);
@@ -1227,56 +1047,56 @@ static void test_timer_rules(void)
 
     /* thirty minutes between one ending and the next starting */
     a[0] = rep("a", 360, 60, MON);                          /* Mon 06:00-07:00 */
-    a[1] = rep("b", 7 * 60 + 29, 20, MON);
+    a[1] = rep("b", 7 * 60 + 29, 30, MON);
     CHECK(at_timers_validate(a, 2, NULL, 0, &now, 3).err == AT_TERR_TOO_CLOSE);
-    a[1] = rep("b", 7 * 60 + 30, 20, MON);
+    a[1] = rep("b", 7 * 60 + 30, 30, MON);
     CHECK(is_ok(at_timers_validate(a, 2, NULL, 0, &now, 3)));
     a[1] = rep("b", 360, 60, TUE);
     CHECK(is_ok(at_timers_validate(a, 2, NULL, 0, &now, 3)));
     at_timer_problem_t p;
-    a[1] = rep("b", 7 * 60 + 29, 20, MON);
+    a[1] = rep("b", 7 * 60 + 29, 30, MON);
     p = at_timers_validate(a, 2, NULL, 0, &now, 3);
     CHECK(p.index == 1 && p.other == 0);
     /* ... also when the earlier one is the one listed second */
-    a[0] = rep("b", 7 * 60 + 29, 20, MON);
+    a[0] = rep("b", 7 * 60 + 29, 30, MON);
     a[1] = rep("a", 360, 60, MON);
     CHECK(at_timers_validate(a, 2, NULL, 0, &now, 3).err == AT_TERR_TOO_CLOSE);
 
     /* across midnight and the end of the week */
     a[0] = rep("late", 22 * 60, 120, SUN);                  /* Sun 22:00 -> Mon 00:00 (+30) */
-    a[1] = rep("early", 15, 20, MON);
+    a[1] = rep("early", 15, 30, MON);
     CHECK(at_timers_validate(a, 2, NULL, 0, &now, 3).err == AT_TERR_TOO_CLOSE);
-    a[1] = rep("early", 30, 20, MON);
+    a[1] = rep("early", 30, 30, MON);
     CHECK(is_ok(at_timers_validate(a, 2, NULL, 0, &now, 3)));
     a[0] = rep("spill", 20 * 60, 480, SUN);                 /* Sun 20:00 -> Mon 04:00 (+30) */
-    a[1] = rep("mon", 4 * 60 + 29, 20, MON);
+    a[1] = rep("mon", 4 * 60 + 29, 30, MON);
     CHECK(at_timers_validate(a, 2, NULL, 0, &now, 3).err == AT_TERR_TOO_CLOSE);
-    a[1] = rep("mon", 4 * 60 + 30, 20, MON);
+    a[1] = rep("mon", 4 * 60 + 30, 30, MON);
     CHECK(is_ok(at_timers_validate(a, 2, NULL, 0, &now, 3)));
     /* the reverse: Monday run that ends late, Sunday timer just before the week wraps */
-    a[0] = rep("mon", 0, 20, MON);
-    a[1] = rep("sun", 23 * 60 + 40, 20, SUN);               /* Sun 23:40 -> 00:00 (+30 = 00:30) clashes with Mon 00:00 */
+    a[0] = rep("mon", 0, 30, MON);
+    a[1] = rep("sun", 23 * 60 + 40, 30, SUN);               /* Sun 23:40 -> 00:00 (+30 = 00:30) clashes with Mon 00:00 */
     CHECK(at_timers_validate(a, 2, NULL, 0, &now, 3).err == AT_TERR_TOO_CLOSE);
 
     /* disabled timers are ignored */
     a[0] = rep("a", 360, 60, MON);
     a[0].enabled = false;
-    a[1] = rep("b", 400, 20, MON);
+    a[1] = rep("b", 400, 30, MON);
     CHECK(is_ok(at_timers_validate(a, 2, NULL, 0, &now, 3)));
 
     /* one-offs */
     int32_t day = mon + 3;
     int wd = at_iso_weekday(day);
     a[0] = once("o1", day, 600, 60);
-    a[1] = once("o2", day, 11 * 60 + 20, 20);
+    a[1] = once("o2", day, 11 * 60 + 20, 30);
     CHECK(at_timers_validate(a, 2, NULL, 0, &now, 3).err == AT_TERR_TOO_CLOSE);
-    a[1] = once("o2", day, 11 * 60 + 30, 20);
+    a[1] = once("o2", day, 11 * 60 + 30, 30);
     CHECK(is_ok(at_timers_validate(a, 2, NULL, 0, &now, 3)));
     a[1] = once("o2", day + 1, 600, 60);                    /* next day, same time */
     CHECK(is_ok(at_timers_validate(a, 2, NULL, 0, &now, 3)));
-    a[1] = rep("r", 11 * 60, 20, (uint8_t)(1u << (wd - 1)));
+    a[1] = rep("r", 11 * 60, 30, (uint8_t)(1u << (wd - 1)));
     CHECK(at_timers_validate(a, 2, NULL, 0, &now, 3).err == AT_TERR_TOO_CLOSE);
-    a[1] = rep("r", 11 * 60, 20, (uint8_t)(1u << (wd % 7)));
+    a[1] = rep("r", 11 * 60, 30, (uint8_t)(1u << (wd % 7)));
     CHECK(is_ok(at_timers_validate(a, 2, NULL, 0, &now, 3)));
     /* a repeating run spilling past midnight into the one-off's day */
     a[1] = rep("r", 23 * 60, 120, (uint8_t)(1u << ((wd + 5) % 7)));   /* the day before, 23:00 -> 01:00 */
@@ -1389,7 +1209,7 @@ static void test_timer_schedule(void)
     printf("timer firing\n");
     int32_t mon = at_days_from_civil(2026, 10, 26);
     fake_t f = {0};
-    at_timer_ops_t ops = {f_preheat, f_begin, f_end, &f};
+    at_timer_ops_t ops = {f_preheat, f_begin, f_end, &f, NULL};
     at_snapshot_t idle = mk_snap(15, 0, 0);
     at_timer_t tl[4];
     at_runner_t r;
@@ -1592,7 +1412,7 @@ static void test_timer_dst(void)
 {
     printf("timer firing across daylight saving\n");
     fake_t f = {0};
-    at_timer_ops_t ops = {f_preheat, f_begin, f_end, &f};
+    at_timer_ops_t ops = {f_preheat, f_begin, f_end, &f, NULL};
     at_snapshot_t idle = mk_snap(15, 0, 0);
     uint32_t ms = 1;
     at_runner_t r;

@@ -281,6 +281,9 @@ char *at_app_backup_json(void)
     cJSON_AddNumberToObject(o, "ml_per_pulse", round(fv.pump.ml_per_pulse * 1e5) / 1e5);
     cJSON_AddNumberToObject(o, "tank_capacity", round3(fv.tank.capacity_l));
 
+    cJSON *learn = at_app_thermo_learn_backup();
+    if (learn) cJSON_AddItemToObject(o, "thermo_learn", learn);
+
     char *timers = at_app_timers_json();
     cJSON *arr = timers ? cJSON_Parse(timers) : NULL;
     free(timers);
@@ -407,6 +410,44 @@ static void add_heater_info(cJSON *o)
     free(hi);
 }
 
+/* Heater Care (docs/API_SPEC.md, "thermo"): the working range, the locks and what has been learned. */
+static void add_thermo(cJSON *root, const at_view_t *v)
+{
+    const at_ctl_status_t *t = &v->thermo;
+    const int64_t ep = v->clock_ok ? v->epoch : 0;
+    cJSON *o = cJSON_AddObjectToObject(root, "thermo");
+    if (!o) return;
+    cJSON_AddNumberToObject(o, "work_low", round3(t->work_low));
+    cJSON_AddNumberToObject(o, "work_high", round3(t->work_high));
+    cJSON_AddNumberToObject(o, "learned_width", round3(t->learned_width));
+    cJSON_AddNumberToObject(o, "min_width", round3(t->min_width));
+    cJSON_AddStringToObject(o, "sensor", at_learn_sensor_name((at_sensor_t)t->sensor));
+    cJSON_AddNumberToObject(o, "ceiling", round3(t->ceiling));
+    add_str_or_null(o, "at_limit", at_learn_limit_name((at_limit_t)t->at_limit));
+    cJSON_AddStringToObject(o, "reason", t->reason);
+    cJSON_AddNumberToObject(o, "min_run_left_s", t->min_run_left_s);
+    cJSON_AddNumberToObject(o, "min_off_left_s", t->min_off_left_s);
+    add_str_or_null(o, "holding", at_ctl_hold_name((at_hold_t)t->holding));
+    add_num_or_null(o, "run_on_at", t->running && ep, (double)(ep - t->run_on_ago_s));
+    add_num_or_null(o, "flame_on_at", t->running && t->flame && ep, (double)(ep - t->flame_on_ago_s));
+    cJSON_AddBoolToObject(o, "sensor_stuck", t->sensor_stuck);
+    cJSON_AddBoolToObject(o, "no_reading", t->no_reading);
+    add_num_or_null(o, "rise_rate", t->have_rate, round(t->rise_rate * 10000.0) / 10000.0);
+    add_num_or_null(o, "warmup_typical_s", t->have_warm, t->warmup_typical_s);
+    add_num_or_null(o, "cool_typical_s", t->have_cool, t->cool_typical_s);
+    cJSON_AddNumberToObject(o, "dip_below", round3(t->dip_below));
+    cJSON_AddNumberToObject(o, "early_stop_unseen", t->early_stop_unseen);
+    add_str_or_null(o, "last_run_end", t->last_run_end ? at_learn_end_name((at_run_end_t)t->last_run_end) : NULL);
+    if (t->have_last_early) {
+        cJSON *e = cJSON_AddObjectToObject(o, "last_early_stop");
+        add_num_or_null(e, "at", ep != 0, (double)(ep - t->last_early_ago_s));
+        cJSON_AddNumberToObject(e, "after_s", t->last_early.after_s);
+        cJSON_AddStringToObject(e, "source", at_ctl_src_name((at_src_t)t->last_early.src));
+    } else {
+        cJSON_AddNullToObject(o, "last_early_stop");
+    }
+}
+
 static cJSON *build_state_tree(void)
 {
     at_view_t v;
@@ -446,6 +487,7 @@ static cJSON *build_state_tree(void)
     cJSON_AddNumberToObject(o, "hyst_min", v.hyst_min);
     cJSON_AddNumberToObject(o, "hyst_max", v.hyst_max);
     cJSON_AddNumberToObject(o, "auto_start_at", v.auto_start_at);
+    add_thermo(o, &v);
     cJSON_AddNumberToObject(o, "preheat_temp", v.preheat_temp);
     cJSON_AddStringToObject(o, "model", CONFIG_AUTOTERM_MODEL);
     cJSON_AddStringToObject(o, "hw_rev", CONFIG_AUTOTERM_HW_REV);

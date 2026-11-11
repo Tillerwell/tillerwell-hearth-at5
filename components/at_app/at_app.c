@@ -1,4 +1,7 @@
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "at_app.h"
 #include "driver/gpio.h"
@@ -192,6 +195,78 @@ static void ops_start(void *ctx) { (void)ctx; core_cmd(at_cmd_start_thermostat);
 static void ops_stop(void *ctx) { (void)ctx; core_cmd(at_cmd_stop); }
 static const at_ctl_ops_t s_ops = {ops_start, ops_stop, NULL};
 
+/* ---- Heater Care persistence ------------------------------------------------------------------------------ */
+
+#define KEY_LEARN "thermo_learn"
+#define KEY_REST  "ctl_rest"
+#define REST_VERSION 1
+
+typedef struct {
+    uint8_t version;
+    uint8_t run_mark;
+    uint8_t have_stop;
+    uint8_t pad;
+    int64_t stop_epoch;
+} rest_blob_t;
+
+static rest_blob_t s_rest;
+static at_learn_store_t s_learn_save;   /* a copy to write outside the lock (too big for the task's stack) */
+
+/* The firmware's build date (a clock earlier than this is wrong), from __DATE__ "Mmm dd yyyy". */
+static int64_t build_epoch(void)
+{
+    static const char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    const char *d = __DATE__;
+    int m = 0;
+    for (int i = 0; i < 12; i++) {
+        if (!strncmp(d, months + i * 3, 3)) m = i + 1;
+    }
+    int day = atoi(d + 4), year = atoi(d + 7);
+    if (!m || !day || year < 2024) return 0;
+    return (int64_t)at_days_from_civil(year, m, day) * 86400;
+}
+
+/* Called from the thermostat task after each tick: the writes the control loop asked for. */
+static void persist_ctl(void)
+{
+    bool w_learn = false, w_rest = false;
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    if (s_ctl.learn.dirty) {
+        s_learn_save = s_ctl.learn.st;
+        s_ctl.learn.dirty = false;
+        w_learn = true;
+    }
+    if (s_ctl.save_run_mark) {
+        s_ctl.save_run_mark = false;
+        if (!s_rest.run_mark) {
+            s_rest.run_mark = 1;
+            w_rest = true;
+        }
+    }
+    if (s_ctl.save_stop) {
+        s_ctl.save_stop = false;
+        s_rest.run_mark = 0;
+        s_rest.have_stop = s_ctl.save_stop_epoch != 0;
+        s_rest.stop_epoch = s_ctl.save_stop_epoch;
+        w_rest = true;
+    }
+    xSemaphoreGive(s_ctl_lock);
+    if (w_learn) at_settings_blob_save(KEY_LEARN, &s_learn_save, sizeof(s_learn_save));
+    if (w_rest) {
+        s_rest.version = REST_VERSION;
+        at_settings_blob_save(KEY_REST, &s_rest, sizeof(s_rest));
+    }
+}
+
+static bool wall_clock(int64_t *epoch)
+{
+    at_timer_status_t ts;
+    at_app_timer_status(&ts);
+    time_t now = time(NULL);
+    *epoch = (int64_t)now;
+    return ts.time_set && now > 1700000000;
+}
+
 static volatile float s_preheat_temp = AT_PREHEAT_TEMP_DEFAULT;
 static volatile int s_pump_minutes = AT_PUMP_MINUTES_DEFAULT; /* water pump run time, minutes */
 static uint32_t s_last_preheat_stop_ms;
@@ -206,8 +281,11 @@ static void ctl_task(void *arg)
         at_snapshot_t snap;
         snapshot_locked(&snap);
         uint32_t now = at_now_ms();
+        int64_t epoch;
+        bool clock_ok = wall_clock(&epoch);
 
         xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+        at_ctl_set_clock(&s_ctl, clock_ok, epoch);
         if (snap.panel_control_seq != panel_control_seq) {
             panel_control_seq = snap.panel_control_seq;
             at_ctl_disarm_auto(&s_ctl, "physical controller took control -> Auto disabled");
@@ -221,6 +299,7 @@ static void ctl_task(void *arg)
         at_ctl_tick(&s_ctl, &snap, now, &s_ops);
         bool thermostat = s_ctl.autot.enabled;
         xSemaphoreGive(s_ctl_lock);
+        persist_ctl();
         at_app_fuel_tick(&snap, now);
 
         /* A timed preheat also ends when the coolant is hot enough; the thermostat has its own limits. */
@@ -280,14 +359,23 @@ esp_err_t at_app_start(void)
     at_ctl_init(&s_ctl, cfg.auto_target, cfg.freeze_target);
     at_band_t band;
     if (at_settings_band_load(&band)) {
+        /* no migration (Heater Care): a saved range loads as it is */
         at_ctl_set_auto_range(&s_ctl, band.low, band.high);
-        /* settings saved before the limits existed may sit outside them */
-        at_ctl_set_hysteresis(&s_ctl, band.hyst_min < 2 ? 2 : (band.hyst_min > 7 ? 7 : band.hyst_min),
-                              band.hyst_max < 1 ? 1 : (band.hyst_max > 3 ? 3 : band.hyst_max));
     } else {
-        at_ctl_set_auto_range(&s_ctl, 19.0f, 22.0f); /* narrowest default band that fits the default hysteresis */
-        at_ctl_set_hysteresis(&s_ctl, 2.0f, 1.0f);   /* defaults: the range is at least 3 C wide */
+        at_ctl_set_auto_range(&s_ctl, 20.0f, 21.0f); /* a fresh box: a 1 C range, Heater Care widens it as needed */
     }
+    if (at_settings_blob_load(KEY_LEARN, &s_learn_save, sizeof(s_learn_save))) {
+        if (!at_learn_restore(&s_ctl.learn, &s_learn_save)) ESP_LOGW(TAG, "saved Heater Care learning rejected");
+    }
+    at_ctl_saved_t saved = {0};
+    if (at_settings_blob_load(KEY_REST, &s_rest, sizeof(s_rest)) && s_rest.version == REST_VERSION) {
+        saved.run_mark = s_rest.run_mark;
+        saved.have_stop = s_rest.have_stop;
+        saved.stop_epoch = s_rest.stop_epoch;
+    } else {
+        memset(&s_rest, 0, sizeof(s_rest));
+    }
+    at_ctl_boot(&s_ctl, &saved, build_epoch(), at_now_ms());
     s_preheat_temp = at_settings_preheat_temp_load();
     uint16_t pump_min;
     if (at_settings_blob_load("pump_min", &pump_min, sizeof(pump_min)) && pump_min >= 1 && pump_min <= 1440) {
@@ -300,7 +388,7 @@ esp_err_t at_app_start(void)
     at_app_fuel_init();
     at_app_state_json_init();
     xTaskCreate(bridge_task, "bridge", 6144, NULL, configMAX_PRIORITIES - 4, NULL);
-    xTaskCreate(ctl_task, "thermostat", 4096, NULL, 5, NULL);
+    xTaskCreate(ctl_task, "thermostat", 5120, NULL, 5, NULL); /* 1.47: Heater Care saves its learning from here */
     xTaskCreate(probe_task, "probe", 3072, NULL, 2, NULL);
     if (cfg.debug_mode && !cfg.bypass) {
         xTaskCreate(boot_burst_task, "boot-burst", 2048, NULL, 4, NULL);
@@ -328,9 +416,12 @@ void at_app_view(at_view_t *v)
     v->auto_target = s_ctl.autot.target;
     v->auto_low = s_ctl.autot.low;
     v->auto_high = s_ctl.autot.high;
-    v->hyst_min = s_ctl.autot.hyst_min;
-    v->hyst_max = s_ctl.autot.hyst_max;
+    v->hyst_min = 0.5f;   /* compatibility: older apps add these up for the narrowest range (1 C) */
+    v->hyst_max = 0.5f;
     v->auto_start_at = at_ctl_auto_start_at(&s_ctl);
+    at_ctl_status(&s_ctl, now, &v->thermo);
+    v->clock_ok = s_ctl.clock_ok;
+    v->epoch = s_ctl.epoch;
     v->preheat_temp = s_preheat_temp;
     v->freeze_enabled = s_ctl.freeze.enabled;
     v->freeze_target = s_ctl.freeze.target;
@@ -373,9 +464,12 @@ bool at_app_set_preheat_duration(int minutes)
 }
 
 bool at_app_start_thermostat(void) { return core_cmd(at_cmd_start_thermostat); }
-bool at_app_stop(void)
+bool at_app_stop(void) { return at_app_stop_from(AT_SRC_UNKNOWN); }
+
+bool at_app_stop_from(at_src_t src)
 {
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    at_ctl_user_stop(&s_ctl, src, at_now_ms());
     at_ctl_disarm_auto(&s_ctl, "manual Hearth stop");
     xSemaphoreGive(s_ctl_lock);
     at_settings_t cfg;
@@ -504,14 +598,62 @@ static void m_ext(at_settings_t *c, const void *a) { c->use_external_temp = *(co
 static void m_dbg_on(at_settings_t *c, const void *a) { c->debug_mode = *(const bool *)a; }
 static void m_dbg_iv(at_settings_t *c, const void *a) { c->debug_interval_s = (uint16_t)*(const int *)a; }
 
-void at_app_set_auto(bool enabled)
+void at_app_set_auto(bool enabled) { at_app_set_auto_from(enabled, true, AT_SRC_UNKNOWN); }
+
+void at_app_set_auto_from(bool enabled, bool finish_run, at_src_t src)
 {
     at_snapshot_t snap;
     snapshot_locked(&snap);
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
-    at_ctl_set_auto(&s_ctl, enabled, &snap, at_now_ms(), &s_ops);
+    if (enabled) {
+        at_ctl_set_auto(&s_ctl, true, &snap, at_now_ms(), &s_ops);
+    } else {
+        at_ctl_auto_off(&s_ctl, finish_run, AT_HOLD_THERMO_OFF, src, &snap, at_now_ms(), &s_ops);
+    }
     xSemaphoreGive(s_ctl_lock);
     persist(m_auto, &enabled);
+}
+
+void at_app_thermo_learn_reset(void)
+{
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    at_learn_reset(&s_ctl.learn);
+    xSemaphoreGive(s_ctl_lock);
+    ESP_LOGI(TAG, "Heater Care learning reset");
+    persist_ctl();
+}
+
+void at_app_early_stop_seen(void)
+{
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    at_ctl_early_seen(&s_ctl);
+    xSemaphoreGive(s_ctl_lock);
+}
+
+bool at_app_learn_snapshot(at_learn_t *out, at_ctl_early_t *early, int *n_early, uint32_t *now_ms)
+{
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    *out = s_ctl.learn;
+    if (early && n_early) {
+        *n_early = s_ctl.n_early;
+        memcpy(early, s_ctl.early, sizeof(s_ctl.early[0]) * (size_t)s_ctl.n_early);
+    }
+    *now_ms = at_now_ms();
+    xSemaphoreGive(s_ctl_lock);
+    return true;
+}
+
+bool at_app_learn_put(const at_learn_store_t *st)
+{
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    bool ok = at_learn_restore(&s_ctl.learn, st);
+    if (ok) {
+        at_learn_check_limits(&s_ctl.learn, s_ctl.autot.high - s_ctl.autot.low);
+        s_ctl.learn.dirty = true;
+    }
+    xSemaphoreGive(s_ctl_lock);
+    if (ok) persist_ctl();
+    return ok;
 }
 
 static void save_band(void)
@@ -520,8 +662,8 @@ static void save_band(void)
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
     b.low = s_ctl.autot.low;
     b.high = s_ctl.autot.high;
-    b.hyst_min = s_ctl.autot.hyst_min;
-    b.hyst_max = s_ctl.autot.hyst_max;
+    b.hyst_min = 0.5f;
+    b.hyst_max = 0.5f;
     xSemaphoreGive(s_ctl_lock);
     at_settings_band_save(&b);
 }
@@ -537,10 +679,10 @@ void at_app_set_auto_target(float target)
     save_band();
 }
 
-/* The range must be at least hyst_min + hyst_max wide (call with s_ctl_lock held). */
+/* The range must be at least 1 C wide (call with s_ctl_lock held). */
 static void widen_band_locked(void)
 {
-    float gap = s_ctl.autot.hyst_min + s_ctl.autot.hyst_max;
+    float gap = AT_CTL_MIN_WIDTH;
     float low = s_ctl.autot.low, high = s_ctl.autot.high;
     if (high - low >= gap) return;
     high = low + gap;
@@ -552,15 +694,27 @@ static void widen_band_locked(void)
     at_ctl_set_auto_range(&s_ctl, low, high);
 }
 
-void at_app_set_auto_range(float low, float high)
+void at_app_set_auto_range(float low, float high) { at_app_set_auto_range_from(low, high, true, AT_SRC_UNKNOWN); }
+
+void at_app_set_auto_range_from(float low, float high, bool finish_run, at_src_t src)
 {
     if (low < 0) low = 0;
     if (high > 30) high = 30;
+    bool stop_now = false;
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
     at_ctl_set_auto_range(&s_ctl, low, high);
     widen_band_locked();
+    uint32_t now = at_now_ms();
+    /* lowered below the room inside the minimum run: "Stop anyway" stops now; "Let it finish" lets the run reach
+     * its minimum run, then the thermostat stops it at the new top as usual */
+    if (!finish_run && s_ctl.autot.enabled && s_ctl.room_ok && s_ctl.room >= s_ctl.autot.high &&
+        at_ctl_min_run_left_ms(&s_ctl, now) > 0) {
+        at_ctl_user_stop(&s_ctl, src, now);
+        stop_now = true;
+    }
     float mid = s_ctl.autot.target;
     xSemaphoreGive(s_ctl_lock);
+    if (stop_now) core_cmd(at_cmd_stop);
     persist(m_auto_t, &mid);
     save_band();
 }
@@ -593,7 +747,8 @@ void at_app_timer_thermostat_end(bool disarm)
     snapshot_locked(&snap);
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
     if (disarm) {
-        at_ctl_set_auto(&s_ctl, false, &snap, at_now_ms(), &s_ops);
+        /* inside the run's minimum run the timer's stop waits for it (Heater Care) */
+        at_ctl_auto_off(&s_ctl, true, AT_HOLD_TIMER_ENDED, AT_SRC_TIMER, &snap, at_now_ms(), &s_ops);
     }
     if (s_tm_have && s_ctl.autot.low == s_tm_low && s_ctl.autot.high == s_tm_high) {
         at_ctl_set_auto_range(&s_ctl, s_tm_prev_low, s_tm_prev_high);
@@ -602,13 +757,15 @@ void at_app_timer_thermostat_end(bool disarm)
     xSemaphoreGive(s_ctl_lock);
 }
 
-float at_app_band_min_gap(void)
+bool at_app_timer_can_take_over(void)
 {
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
-    float gap = s_ctl.autot.hyst_min + s_ctl.autot.hyst_max;
+    bool ok = s_ctl.held == AT_HOLD_TIMER_ENDED;
     xSemaphoreGive(s_ctl_lock);
-    return gap;
+    return ok;
 }
+
+float at_app_band_min_gap(void) { return AT_CTL_MIN_WIDTH; }
 
 void at_app_set_preheat_temp(float celsius)
 {
@@ -616,21 +773,6 @@ void at_app_set_preheat_temp(float celsius)
     if (celsius > 95) celsius = 95;
     s_preheat_temp = celsius;
     at_settings_preheat_temp_save(celsius);
-}
-
-void at_app_set_hysteresis(float hyst_min, float hyst_max)
-{
-    if (hyst_min < 2) hyst_min = 2;
-    if (hyst_min > 7) hyst_min = 7;
-    if (hyst_max < 1) hyst_max = 1;
-    if (hyst_max > 3) hyst_max = 3;
-    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
-    at_ctl_set_hysteresis(&s_ctl, hyst_min, hyst_max);
-    widen_band_locked();
-    float mid = s_ctl.autot.target;
-    xSemaphoreGive(s_ctl_lock);
-    persist(m_auto_t, &mid);
-    save_band();
 }
 
 void at_app_set_freeze(bool enabled)

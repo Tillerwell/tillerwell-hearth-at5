@@ -147,6 +147,50 @@ would show thermostat, but the controller shows preheat for any start it did
 not send itself (see "Start echo" and "The mode is not stored in the heater"
 below), so there was nothing to gain from it.
 
+### Heater Care: working range, run locks, ceiling, learning (RoamOS 1.0047)
+
+Hearth's thermostat no longer acts like the controller set to `high - 1`. Full
+plan: `docs/ADAPTIVE_THERMOSTAT.md`; API: `docs/API_SPEC.md` §9.10.
+
+- **Working range.** The run starts at or below the bottom of the working range
+  and always runs to the top (`auto_high`); it is never stopped inside the
+  range. The bottom is the user's range (at least 1 C) lowered by the learned
+  width, at least 2 C below the top on the controller's whole-degree sensor,
+  and never more than 4 C unless the user's own range is wider.
+- **Run lock.** Hearth's own stops (the top, a timer ending, the thermostat
+  turned off with "let it finish", every reading lost) wait until the run has
+  burned 30 minutes from flame established (20 minutes for frost protection).
+  The whole of light-up is locked too. A fault, the ceiling (top + 5 C; frost
+  protection: its stop point + 5 C) and a stop someone asks for always go at
+  once. A stop someone asks for inside the minimum run is logged as an early
+  stop with its source.
+- **Off lock.** A thermostat start waits until the heater has been idle 20
+  minutes (from state `0x00`, after its purge). Only frost protection may start
+  sooner. The stop time is saved, so the rest carries on over a restart; a run
+  that ended without Hearth seeing it (power cut) rests 20 minutes from boot.
+- **Flame established** is the first time in a run the status frame's `[0]`
+  reads `0x03` (the burning stage: low, middle, high, waiting, pump only) or the
+  burner-active byte `[12]` reads `0xff`. Locks are measured from what the
+  heater reports, so a run started by the controller or Home Assistant counts
+  too, and on the uptime clock, so a clock change cannot shorten one.
+- **The heater's own burner pause.** Only `0x00` is idle. A pause on coolant
+  temperature shows as `3.5` (waiting), `3.7` (pump only) or `1.0` (waiting for
+  temperature reduction); if the heater passes through `0x04`/`0x05` without a
+  stop from anyone and comes back to `0x02`/`0x03`, that is still the same run.
+  The locks carry straight through it, and the learning keeps the pause in the
+  room's real heating time.
+- **Learning** (`at_learn.c`) measures each counted run's warm-up delay (flame
+  established to the first 0.2 C rise, or the first whole-degree tick-over) and
+  rise rate (a straight-line fit to Hearth's stop, never the purge after it),
+  and works out the width that would take about 40 minutes to climb. Two of the
+  last three counted runs on the same sensor agreeing changes the width in one
+  move.
+- **Room reading.** The thermostat, frost protection, the ceiling and the
+  learning use the middle of the last three readings from the sensor in use,
+  so one bad reading cannot start or stop a run. An external reading that has
+  not changed at all for 15 minutes while burning is set aside for the
+  controller's until it has moved for 2 minutes.
+
 The panel also sent `type21, payload 05 a0` three times around a thermostat
 selection (heater replied `01 5b 00`). Its meaning is unknown, and the box does
 not send it.
