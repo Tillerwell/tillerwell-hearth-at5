@@ -375,7 +375,7 @@ once.
 - `ceiling`: the stop point for the run going (frost protection's target + 1 + 5; while a timer's run finishes after the timer ended, the timer's top + 5). With no run going: the ceiling the last run stopped at when `last_run_end` is `"ceiling"`, otherwise the range's top + 5. It is always 5 C above where Hearth would have stopped that run.
 - A stop Hearth sends is sent again every 90 s while the heater still reports starting or burning, until it purges or goes idle.
 - `run_on_at`, `flame_on_at`: epochs of the current run's start and flame, null when not running, lighting up, or the clock is not set.
-- `sensor_stuck`: the external sensor has not changed for 15 minutes while heating and is set aside. `no_reading`: no usable temperature at all.
+- `sensor_stuck`: the external sensor has not changed for 15 minutes while heating, while the controller's reading rose 2°C, and is set aside until its next new value (1.50+; before that, 15 flat minutes alone). `no_reading`: no usable temperature at all.
 - `rise_rate`, `warmup_typical_s`, `cool_typical_s`: for the sensor in use, null until known. `dip_below`: how far below the bottom the room fell during the current or last off lock.
 - `early_stop_unseen`: stops someone asked for inside the minimum run that no app has explained yet; `last_early_stop` is the latest one (`source`: `app`, `web`, `matter`, `mqtt`, `home_assistant`, `controller`, `console`, `timer`, `unknown`). Ceiling stops and faults never count.
 - `last_run_end`: `"top"`, `"user"`, `"external"`, `"ceiling"`, `"fault"`, `"no_reading"`, `"heater"`, `"timer_ended"`, `"thermostat_off"`, or null.

@@ -19,6 +19,8 @@ typedef struct {
     float room;
     float rate_on, rate_off;   /* C per minute while heating / resting */
     bool feed_ext;             /* the external sensor sends readings */
+    bool ext_hold;             /* ...always the same value, ext_value, whatever the room does */
+    float ext_value;
     uint32_t last_ext;
     bool cabin_ok;             /* the controller reports its cabin reading */
     int fault;
@@ -98,7 +100,7 @@ static void hsim_step(hsim_t *m)
     if (m->state == 3 && m->now - m->since >= m->delay_ms) m->room += m->rate_on * dt / 60000.0f;
     else if (m->state == 0) m->room -= m->rate_off * dt / 60000.0f;
     if (m->feed_ext && m->now - m->last_ext >= 30000) {
-        at_ctl_set_external(m->t, roundf(m->room * 10) / 10, m->now);
+        at_ctl_set_external(m->t, m->ext_hold ? m->ext_value : roundf(m->room * 10) / 10, m->now);
         m->last_ext = m->now;
     }
     at_snapshot_t s = hsim_snap(m);
@@ -490,7 +492,8 @@ static void test_ctl_sensors(void)
         hsim_run(&m2, 20000);
         CHECK(m2.l.stops == stops);
     }
-    /* stuck external sensor: exactly 20.0 for 15 min while burning -> the controller's reading */
+    /* a room that holds steady while burning is not a stuck sensor (the 1.48 bug: a room sat at 16.9 for
+     * 15 min of a slow heat-up and Hearth switched to a controller reading 3 C low) */
     {
         at_ctl_t t;
         hsim_t m;
@@ -498,25 +501,31 @@ static void test_ctl_sensors(void)
         m.rate_on = 0.0f;
         hsim_arm(&m);
         CHECK(HSIM_UNTIL(&m, m.state == 3, 10 * MIN_MS));
-        hsim_run(&m, 14 * MIN_MS);
+        hsim_run(&m, 60 * MIN_MS);
+        CHECK(!t.ext_stuck && t.sensor == AT_SENS_EXT);
+    }
+    /* stuck external sensor: flat for 15 min while the controller's reading climbs 2 C -> the controller's */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 19.9f);
+        m.rate_on = 0.2f;
+        m.ext_hold = true;
+        m.ext_value = 19.9f;
+        hsim_arm(&m);
+        CHECK(HSIM_UNTIL(&m, m.state == 3, 10 * MIN_MS));
+        hsim_run(&m, 14 * MIN_MS);           /* controller up 2+ C already, but not yet 15 min */
         CHECK(!t.ext_stuck && t.sensor == AT_SENS_EXT);
         hsim_run(&m, 2 * MIN_MS);
         CHECK(t.ext_stuck && t.sensor == AT_SENS_CTL);
         at_ctl_status_t st;
         at_ctl_status(&t, m.now, &st);
         CHECK(st.sensor_stuck && st.min_width == 2.0f);
-        /* one changed reading does not bring it back; 2 min of moving readings do */
-        m.feed_ext = false;
-        at_ctl_set_external(&t, 20.1f, m.now);
-        hsim_run(&m, 30000);
-        at_ctl_set_external(&t, 20.2f, m.now);
-        hsim_step(&m);
+        /* the same value resent keeps it set aside; the first new value brings it back */
+        hsim_run(&m, 2 * MIN_MS);
         CHECK(t.ext_stuck);
-        for (int i = 0; i < 5; i++) {
-            hsim_run(&m, 30000);
-            at_ctl_set_external(&t, 20.3f + i * 0.1f, m.now);
-        }
-        hsim_step(&m);
+        m.ext_value = 20.0f;
+        hsim_run(&m, 31000);
         CHECK(!t.ext_stuck && t.sensor == AT_SENS_EXT);
         /* the controller's whole-degree sensor sitting still is never "stuck" */
         at_ctl_t t2;

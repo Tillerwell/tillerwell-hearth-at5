@@ -63,16 +63,10 @@ void at_ctl_set_external(at_ctl_t *t, float temp, uint32_t now_ms)
 {
     if (!t->have_external || temp != t->external_temp) {
         t->ext_change_ms = now_ms;
-        if (t->ext_stuck) {
-            /* trusted again only after 2 min of fresh readings that have moved */
-            if (!t->unstick_on) {
-                t->unstick_on = true;
-                t->unstick_ms = now_ms;
-            } else if (now_ms - t->unstick_ms >= AT_CTL_UNSTICK_MS) {
-                t->ext_stuck = false;
-                t->unstick_on = false;
-                set_note(&t->autot, "room sensor moving again -> using it");
-            }
+        if (t->ext_stuck && t->have_external) {
+            /* a new value is proof it is alive: trust it again at once */
+            t->ext_stuck = false;
+            set_note(&t->autot, "room sensor moving again -> using it");
         }
     }
     t->have_external = true;
@@ -122,14 +116,26 @@ static bool burning(const at_ctl_t *t) { return t->run.running && t->run.flame &
 static void update_room(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
 {
     bool fresh = ext_fresh(t, now);
-    if (!fresh) t->unstick_on = false;
-    if (fresh && !t->ext_stuck && burning(t)) {
+    /* Stuck: the external reading has not moved for 15 min of burning AND the controller's own reading has
+     * climbed 2 C meanwhile. A room that is simply holding steady (a slow heat-up, a big space) is not a fault:
+     * a flat reading alone is never enough. */
+    bool cabin_ok = s->have_cabin && s->cabin_age_ms <= AT_CTL_MAX_READING_AGE_MS;
+    if (fresh && !t->ext_stuck && burning(t) && cabin_ok) {
         uint32_t since = after_eq(t->ext_change_ms, t->run.flame_ms) ? t->ext_change_ms : t->run.flame_ms;
-        if (now - since >= AT_CTL_STUCK_MS) {
-            t->ext_stuck = true;
-            t->unstick_on = false;
-            set_note(&t->autot, "room sensor unchanged for 15 min while heating -> using the controller's reading");
+        if (!t->stuck_ref_ok || t->stuck_ref_ms != since) {
+            t->stuck_ref_ok = true;
+            t->stuck_ref_ms = since;
+            t->stuck_ref_cabin = s->cabin_temp;
+        } else if (s->cabin_temp < t->stuck_ref_cabin) {
+            t->stuck_ref_cabin = s->cabin_temp;     /* measure the climb from its lowest point */
         }
+        if (now - since >= AT_CTL_STUCK_MS && s->cabin_temp - t->stuck_ref_cabin >= AT_CTL_STUCK_CTL_RISE) {
+            t->ext_stuck = true;
+            t->stuck_ref_ok = false;
+            set_note(&t->autot, "room sensor unchanged while the controller's reading rose 2 C -> using the controller's reading");
+        }
+    } else {
+        t->stuck_ref_ok = false;
     }
     bool have = true;
     uint8_t sensor;

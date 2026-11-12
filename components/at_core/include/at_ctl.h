@@ -40,8 +40,8 @@ extern "C" {
 #define AT_CTL_FROST_RUN_MS      (20u * 60000u)       /* frost protection */
 #define AT_CTL_MIN_OFF_MS        (20u * 60000u)       /* from idle to the next thermostat start */
 #define AT_CTL_CEILING_OVER      5.0f
-#define AT_CTL_STUCK_MS          (15u * 60000u)       /* external reading unchanged this long while burning */
-#define AT_CTL_UNSTICK_MS        (2u * 60000u)        /* moving, fresh readings this long to trust it again */
+#define AT_CTL_STUCK_MS          (15u * 60000u)       /* external reading unchanged at least this long while burning */
+#define AT_CTL_STUCK_CTL_RISE    2                    /* ...while the controller's reading rose this many whole degrees */
 #define AT_CTL_START_GRACE_MS    120000u              /* a start we sent shows as the heater leaving idle within this */
 #define AT_CTL_EARLY_LOG         8
 
@@ -133,10 +133,11 @@ typedef struct {
     uint32_t external_ms;
     uint32_t ext_change_ms;     /* the external reading last changed value */
 
-    /* stuck external sensor */
+    /* stuck external sensor: flat while the controller's reading climbs */
     bool ext_stuck;
-    bool unstick_on;
-    uint32_t unstick_ms;
+    bool stuck_ref_ok;          /* a flat period is being watched */
+    uint32_t stuck_ref_ms;      /* it started here (last change, or flame on) */
+    int stuck_ref_cabin;        /* the controller's reading when it started */
 
     /* room reading filter: middle of the last 3 from the sensor in use */
     bool filt_have;
