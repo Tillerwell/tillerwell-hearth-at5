@@ -636,6 +636,47 @@ static void test_ctl_restart(void)
         CHECK(HSIM_UNTIL(&m, m.l.stops == 1, 40 * MIN_MS));
         CHECK(m.last_stop_ms - boot >= AT_CTL_MIN_RUN_MS);
     }
+    /* booted with the heater running and its flame time saved (burning 50 min): the 30 min lock is already served */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 22.0f);
+        m.state = 3;
+        at_ctl_saved_t sv = {true, false, 0, now_e - 50 * 60};
+        at_ctl_boot(&t, &sv, build, m.now);
+        uint32_t boot = m.now;
+        t.autot.enabled = true;
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 1, 40 * MIN_MS));
+        CHECK(m.last_stop_ms - boot < 5 * MIN_MS);
+    }
+    /* the same, burning only 10 min: 20 min of the lock left, not 30 */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 22.0f);
+        m.state = 3;
+        at_ctl_saved_t sv = {true, false, 0, now_e - 10 * 60};
+        at_ctl_boot(&t, &sv, build, m.now);
+        uint32_t boot = m.now;
+        t.autot.enabled = true;
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 1, 40 * MIN_MS));
+        CHECK(m.last_stop_ms - boot >= 20 * MIN_MS - 3000 && m.last_stop_ms - boot < 22 * MIN_MS);
+    }
+    /* a saved flame time with no clock at boot: counted from boot until the clock arrives (the run is "adopted") */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 22.0f);
+        m.state = 3;
+        at_ctl_set_clock(&t, false, 0);
+        at_ctl_saved_t sv = {true, false, 0, now_e - 50 * 60};
+        at_ctl_boot(&t, &sv, build, m.now);
+        t.autot.enabled = true;
+        hsim_run(&m, 20 * 1000);
+        at_ctl_status_t st;
+        at_ctl_status(&t, m.now, &st);
+        CHECK(st.running && st.run_adopted);
+    }
     /* the clock is set: the rest carries on from the saved stop time (stopped 15 min ago: 5 min left) */
     {
         at_ctl_t t;

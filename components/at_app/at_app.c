@@ -200,7 +200,7 @@ static const at_ctl_ops_t s_ops = {ops_start, ops_stop, NULL};
 
 #define KEY_LEARN "thermo_learn"
 #define KEY_REST  "ctl_rest"
-#define REST_VERSION 1
+#define REST_VERSION 2
 
 typedef struct {
     uint8_t version;
@@ -208,7 +208,17 @@ typedef struct {
     uint8_t have_stop;
     uint8_t pad;
     int64_t stop_epoch;
+    int64_t flame_epoch;        /* v2 (1.51): wall clock of the running run's flame established, 0 unknown */
 } rest_blob_t;
+
+/* The v1 blob, before flame_epoch: read once on the first boot after the update. */
+typedef struct {
+    uint8_t version;
+    uint8_t run_mark;
+    uint8_t have_stop;
+    uint8_t pad;
+    int64_t stop_epoch;
+} rest_blob_v1_t;
 
 static rest_blob_t s_rest;
 static at_learn_store_t s_learn_save;   /* a copy to write outside the lock (too big for the task's stack) */
@@ -247,9 +257,17 @@ static void persist_ctl(void)
             w_rest = true;
         }
     }
+    if (s_ctl.save_flame) {
+        s_ctl.save_flame = false;
+        if (s_rest.flame_epoch != s_ctl.save_flame_epoch) {
+            s_rest.flame_epoch = s_ctl.save_flame_epoch;
+            w_rest = true;
+        }
+    }
     if (s_ctl.save_stop) {
         s_ctl.save_stop = false;
         s_rest.run_mark = 0;
+        s_rest.flame_epoch = 0;
         /* stop_epoch 0: stopped while the clock was not set; the next boot still owes a rest, counted from boot */
         s_rest.have_stop = 1;
         s_rest.stop_epoch = s_ctl.save_stop_epoch;
@@ -379,8 +397,20 @@ esp_err_t at_app_start(void)
         saved.run_mark = s_rest.run_mark;
         saved.have_stop = s_rest.have_stop;
         saved.stop_epoch = s_rest.stop_epoch;
+        saved.flame_epoch = s_rest.flame_epoch;
     } else {
+        rest_blob_v1_t old;
         memset(&s_rest, 0, sizeof(s_rest));
+        if (at_settings_blob_load(KEY_REST, &old, sizeof(old)) && old.version == 1) {
+            /* an update from 1.50 or earlier: keep the owed rest, the running run's flame time is not known */
+            s_rest.version = REST_VERSION;
+            s_rest.run_mark = old.run_mark;
+            s_rest.have_stop = old.have_stop;
+            s_rest.stop_epoch = old.stop_epoch;
+            saved.run_mark = old.run_mark;
+            saved.have_stop = old.have_stop;
+            saved.stop_epoch = old.stop_epoch;
+        }
     }
     at_ctl_boot(&s_ctl, &saved, build_epoch(), at_now_ms());
     s_preheat_temp = at_settings_preheat_temp_load();

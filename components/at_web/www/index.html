@@ -255,7 +255,7 @@ function hcLine(){
       :'This space heats quickly, so Hearth widened the range to rest the heater longer.'));
   }
   if(t.holding==='timer_ended')out.push('Timer ended, finishing minimum run: '+mins(t.min_run_left_s)+' min left');
-  else if(running()&&t.min_run_left_s>0)out.push(t.flame_on_at==null&&!s.burner_active&&s.state==='running'?'Heater Care: lighting up':'Heater Care: minimum run, '+mins(t.min_run_left_s)+' min left');
+  else if(running()&&t.min_run_left_s>0)out.push(t.flame_on_at==null&&!s.burner_active&&s.state==='running'?'Heater Care: lighting up':'Heater Care: running at least '+mins(t.min_run_left_s)+' more min'+(t.run_adopted?' (box restarted)':''));
   else if(!running()&&t.min_off_left_s>0&&s.auto_enabled&&s.effective_temp!=null&&s.effective_temp<=t.work_low)out.push('Heater Care: resting, '+mins(t.min_off_left_s)+' min before the next start');
   if(t.dip_below>0&&s.effective_temp!=null)out.push('Losing heat fast. Dropped '+f(t.dip_below)+' °C below the range while the heater rested its minimum 20 minutes.');
   if(t.last_run_end==='ceiling'&&!running())out.push('Stopped early: the room reached '+f(t.ceiling)+' °C, 5 °C above where Hearth stops the heater.');

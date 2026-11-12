@@ -101,6 +101,8 @@ typedef struct {
     bool run_mark;              /* a run started and its end was never seen */
     bool have_stop;             /* a run's end was recorded */
     int64_t stop_epoch;         /* wall clock of the last run's end (idle); 0: stopped, time unknown (no clock) */
+    int64_t flame_epoch;        /* wall clock of the running run's flame established; 0: not known (1.51: a restart keeps
+                                   the run's true age, so the 30 minute lock is not counted again from boot) */
 } at_ctl_saved_t;
 
 typedef struct {
@@ -108,6 +110,7 @@ typedef struct {
     uint32_t on_ms;
     bool flame;                 /* burning reported in this run */
     uint32_t flame_ms;
+    bool adopted;               /* found already running at boot and its start time is not known: the locks count from boot */
     uint8_t owner;              /* at_owner_t */
     bool stopping;              /* a stop was sent, or the heater is shutting down */
     uint32_t stop_ms;
@@ -169,6 +172,7 @@ typedef struct {
     bool boot_pending;          /* restore decided on the first status seen */
     at_ctl_saved_t saved;
     bool clock_fix_pending;     /* clock was not set at boot: switch to the saved stop time once it is */
+    bool flame_fix_pending;     /* a run adopted at boot: use its saved flame time once the clock is set */
     int64_t build_epoch;
     bool clock_ok;
     int64_t epoch;
@@ -176,6 +180,8 @@ typedef struct {
     bool save_run_mark;         /* true: set the mark */
     bool save_stop;             /* write have_stop = 1 with stop_epoch, and clear the mark */
     int64_t save_stop_epoch;    /* 0: the clock was not set, the stop time is unknown */
+    bool save_flame;            /* write flame_epoch (0 clears it) */
+    int64_t save_flame_epoch;
 
     /* early stops (stops someone asked for before the minimum run was up) */
     at_ctl_early_t early[AT_CTL_EARLY_LOG];
@@ -197,6 +203,7 @@ typedef struct {
     uint32_t run_on_ago_s;      /* valid while running */
     bool flame;
     uint32_t flame_on_ago_s;
+    bool run_adopted;           /* the run was already going at a restart and its true start is not known */
     bool sensor_stuck;
     bool have_rate;
     float rise_rate;

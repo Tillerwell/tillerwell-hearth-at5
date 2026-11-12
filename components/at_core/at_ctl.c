@@ -552,6 +552,27 @@ static void apply_saved_rest(at_ctl_t *t, uint32_t now)
     }
 }
 
+/* How long the saved run's flame has been burning, from the wall clock; false when that cannot be trusted. */
+static bool saved_flame_age(const at_ctl_t *t, int64_t *age_s)
+{
+    if (!t->saved.run_mark || t->saved.flame_epoch <= 0 || !t->clock_ok || t->epoch < t->build_epoch ||
+        t->saved.flame_epoch > t->epoch) return false;
+    *age_s = t->epoch - t->saved.flame_epoch;
+    return *age_s < 24 * 3600;
+}
+
+/* A run adopted at boot takes its saved flame time, so a restart does not give it a fresh 30 minute lock. */
+static bool apply_saved_flame(at_ctl_t *t, uint32_t now)
+{
+    int64_t age;
+    if (!t->run.running || !t->run.flame || !saved_flame_age(t, &age)) return false;
+    t->run.flame_ms = now - (uint32_t)(age * 1000);
+    t->run.on_ms = t->run.flame_ms;
+    t->run.adopted = false;
+    t->flame_fix_pending = false;
+    return true;
+}
+
 static void boot_decide(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
 {
     t->boot_pending = false;
@@ -565,6 +586,9 @@ static void boot_decide(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
         if (s->status.state_raw == 0x03 || s->status.burner_active) {
             t->run.flame = true;
             t->run.flame_ms = t->boot_ms;
+            t->run.adopted = true;
+            /* the clock may not be set yet: the saved flame time is applied when it is */
+            if (!apply_saved_flame(t, now)) t->flame_fix_pending = t->saved.run_mark && t->saved.flame_epoch > 0;
         }
         at_learn_run_start(&t->learn, now, (at_sensor_t)t->sensor, false, false, 0);
         if (t->run.flame) at_learn_flame(&t->learn, now);
@@ -602,7 +626,10 @@ static void run_begin(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
     t->run.off_ms = now - t->idle_since_ms;
     t->off_lock = false;
     t->clock_fix_pending = false;
+    t->flame_fix_pending = false;
     t->save_run_mark = true;
+    t->save_flame = true;       /* a new run: the last one's flame time no longer applies */
+    t->save_flame_epoch = 0;
     at_learn_run_start(&t->learn, now, (at_sensor_t)t->sensor, t->run.owner == AT_OWNER_AUTO, t->run.off_known,
                        t->run.off_ms);
     if (t->run.owner == AT_OWNER_FREEZE && t->autot.enabled) take_from_frost(t);
@@ -629,6 +656,7 @@ static void run_end(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
     at_learn_run_end(&t->learn, now, end, user_width(t));
     t->last_end = (uint8_t)end;
     t->run.running = false;
+    t->flame_fix_pending = false;
     t->idle_known = true;
     t->idle_since_ms = now;
     off_lock_from(t, now, now);
@@ -648,6 +676,10 @@ static void track_run(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
         boot_decide(t, s, now);
         return;
     }
+    if (t->flame_fix_pending && t->clock_ok) {
+        if (!t->run.running || !t->run.adopted) t->flame_fix_pending = false;
+        else apply_saved_flame(t, now);
+    }
     if (t->clock_fix_pending && t->clock_ok && t->off_lock && !t->run.running) {
         /* the clock arrived during a rest counted from boot: the saved stop time is the true rest */
         t->clock_fix_pending = false;
@@ -663,6 +695,8 @@ static void track_run(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
     if (!t->run.flame && (st == 0x03 || s->status.burner_active)) {
         t->run.flame = true;
         t->run.flame_ms = now;
+        t->save_flame = true;
+        t->save_flame_epoch = t->clock_ok ? t->epoch : 0;
         at_learn_flame(&t->learn, now);
     }
     if (!t->run.stopping && (st == 0x04 || st == 0x05)) {
@@ -961,6 +995,7 @@ void at_ctl_status(const at_ctl_t *t, uint32_t now, at_ctl_status_t *o)
     if (t->run.running) {
         o->run_on_ago_s = (now - t->run.on_ms) / 1000u;
         o->flame = t->run.flame;
+        o->run_adopted = t->run.adopted;
         if (t->run.flame) o->flame_on_ago_s = (now - t->run.flame_ms) / 1000u;
     }
     o->sensor_stuck = t->ext_stuck;

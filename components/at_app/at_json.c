@@ -430,6 +430,7 @@ static void add_thermo(cJSON *root, const at_view_t *v)
     add_str_or_null(o, "holding", at_ctl_hold_name((at_hold_t)t->holding));
     add_num_or_null(o, "run_on_at", t->running && ep, (double)(ep - t->run_on_ago_s));
     add_num_or_null(o, "flame_on_at", t->running && t->flame && ep, (double)(ep - t->flame_on_ago_s));
+    cJSON_AddBoolToObject(o, "run_adopted", t->run_adopted);
     cJSON_AddBoolToObject(o, "sensor_stuck", t->sensor_stuck);
     cJSON_AddBoolToObject(o, "no_reading", t->no_reading);
     add_num_or_null(o, "rise_rate", t->have_rate, round(t->rise_rate * 10000.0) / 10000.0);

@@ -77,7 +77,7 @@ The 30 minute minimum run and 20 minute rest are Hearth's own control choice. Th
 - **Heater's own burner pause:** the heater pauses its burner on coolant temperature and relights by itself. The run start time and the locks carry straight through it. Check in `docs/PROTOCOL.md` and the heater logs which `state_raw` values a pause reports, and make sure none of them is read as idle. `at_ctl.c:199` treats only `0x00` as idle today.
 - The first-run special case (`set_temp`, start at `high - 1`) goes. With a 1°C default it is the bottom anyway, and wider working ranges come from learning, which must start at the real bottom.
 - Lock timing is shared between both loops and manual control. Locks are measured from what the heater reports (`state_raw`), not from what Hearth sent, so a run started from the Comfort Controller or Home Assistant counts too.
-- Boot: the current "restored mid-cycle, wait for low" behaviour stays. If the heater is already running at boot, the run start time is unknown, so the run lock counts from boot. That is the safe side.
+- Boot: the current "restored mid-cycle, wait for low" behaviour stays. If the heater is already running at boot, the run keeps its true age (1.51): the wall-clock time the flame was established is saved to NVS when it lights, and restored at boot (or once the clock is set), so a restart does not give the run a fresh 30 minute lock. Only when that time is not known (no clock when it lit, an update from 1.50 or earlier, a saved time that makes no sense) does the run lock count from boot, the safe side, and `thermo.run_adopted` is true so the apps can say so.
 
 ### 3.2 Learning: new `at_learn.c` (in `at_core`, pure C, host-testable)
 
@@ -205,7 +205,7 @@ Cases to cover before any hardware test:
 - Stuck sensor: the external reading sits at exactly 20.0°C for 15 min while burning → Hearth switches to the controller's reading. The same on the controller's sensor does nothing. A reading that then moves is trusted again.
 - Sensor disappears 2 min into a run: the run carries on to the end of its minimum run, then stops.
 - External sensor drops out and returns several times: each run goes into its own sensor's window, and no decision mixes the two.
-- Power cut mid-run: boot with the "run in progress" mark set and the heater idle → 20 min rest from boot. Boot with the heater still running → run lock from boot.
+- Power cut mid-run: boot with the "run in progress" mark set and the heater idle → 20 min rest from boot. Boot with the heater still running → run lock from the saved flame time, or from boot when that is not known (`run_adopted`).
 - The off lock starts when the heater reports idle, after its purge, not when the stop was sent.
 - Wall clock jumps backwards or forwards mid-run or mid-rest: neither lock changes length. The same for a rest restored from the saved stop time after a restart: once the deadline is set, clock jumps do not move it.
 - Warm-up and cooling medians are kept per sensor: runs on the controller's sensor do not change the external sensor's typical values, and the other way round.
