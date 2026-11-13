@@ -2143,6 +2143,46 @@ static void test_runlog(void)
     CHECK(st.n == 0 && at_runlog_restore(&M, &st) && M.nruns == 0);
 }
 
+/* the heating speed (1.59): from any run with a good fit, not only counted ones. A cabin heated once a day has every
+ * run after more than 2 hours off, so none counts, but how fast it heats is still known */
+static void test_rise_rate_any_good_run(void)
+{
+    printf("Heater Care: heating speed from runs that do not count\n");
+    static at_learn_t L;
+    float rate = 0;
+    at_learn_init(&L);
+    CHECK(!at_learn_rate(&L, AT_SENS_EXT, &rate));
+    /* after a long time off (off_known false): long_off, but a clean climb of 0.02 C a minute */
+    uint32_t t0 = 1000000, now = t0;
+    at_learn_run_start(&L, now, AT_SENS_EXT, true, false, 0);
+    now += 4 * MIN_MS;
+    at_learn_flame(&L, now);
+    const uint32_t flame = now;
+    for (; now - flame <= 90 * MIN_MS; now += MIN_MS) {
+        float temp = 15.0f + 0.02f * (float)((now - flame) / MIN_MS);
+        at_learn_sample(&L, now, temp, AT_SENS_EXT, 18.0f, false);
+    }
+    at_learn_stop(&L, now, true);
+    at_learn_run_end(&L, now + 4 * MIN_MS, AT_END_TOP, 1.0f);
+    CHECK(L.nruns == 1 && L.runs[0].why == AT_WHY_LONG_OFF && L.runs[0].rate_ok);
+    CHECK(at_learn_rate(&L, AT_SENS_EXT, &rate) && fabsf(rate - 0.02f) < 0.002f);
+    CHECK(L.st.s[AT_SENS_EXT].n == 0);   /* still not counted: the width decision is untouched */
+    CHECK(!at_learn_rate(&L, AT_SENS_CTL, &rate));
+    /* a run with no usable fit (stopped after 5 min burning) does not replace it */
+    rate = 0;
+    now += 30 * MIN_MS;
+    at_learn_run_start(&L, now, AT_SENS_EXT, true, true, 30 * MIN_MS);
+    now += 4 * MIN_MS;
+    at_learn_flame(&L, now);
+    at_learn_sample(&L, now, 16.8f, AT_SENS_EXT, 18.0f, false);
+    now += 5 * MIN_MS;
+    at_learn_sample(&L, now, 16.8f, AT_SENS_EXT, 18.0f, false);
+    at_learn_stop(&L, now, false);
+    at_learn_run_end(&L, now + 4 * MIN_MS, AT_END_USER, 1.0f);
+    CHECK(L.nruns == 2 && !L.runs[1].rate_ok);
+    CHECK(at_learn_rate(&L, AT_SENS_EXT, &rate) && fabsf(rate - 0.02f) < 0.002f);
+}
+
 /* the rise after a stop at the top (1.53): learned from 3 stops, then Hearth stops that much early */
 static void test_ctl_coast(void)
 {
@@ -2261,6 +2301,7 @@ static void test_ctl_coast(void)
 static void test_ctl(void)
 {
     test_ctl_coast();
+    test_rise_rate_any_good_run();
     test_runlog();
     test_ctl_locks();
     test_ctl_frost();

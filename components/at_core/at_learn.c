@@ -122,10 +122,13 @@ bool at_learn_cool_typical(const at_learn_t *L, at_sensor_t s, uint32_t *sec)
 
 bool at_learn_rate(const at_learn_t *L, at_sensor_t s, float *rate)
 {
-    /* the latest counted run on this sensor: the window, or the run log once a change has cleared the window */
+    /* the latest run on this sensor with a good fit (1.59): counted, or rate_ok however it ended or was started, so a
+     * space whose runs never count (each after more than 2 hours off) still shows how fast it heats. Then the window,
+     * which survives a run log emptied by an older firmware's restart */
     const at_learn_sensor_t *ss = &L->st.s[s];
     for (int i = L->nruns - 1; i >= 0; i--) {
-        if (L->runs[i].sensor == s && L->runs[i].why == AT_WHY_COUNTED && L->runs[i].have_rate) {
+        const at_learn_run_t *r = &L->runs[i];
+        if (r->sensor == s && r->have_rate && (r->why == AT_WHY_COUNTED || r->rate_ok)) {
             *rate = L->runs[i].rate;
             return true;
         }
