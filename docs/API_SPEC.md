@@ -180,6 +180,8 @@ When an owner's box dies, the app sets up the new box and the cloud moves the ol
 
 `thermo_learn` (firmware 1.47, §9.10) is what Heater Care learned about the space, so a replacement box restored from the cloud carries on from it. It is optional and older boxes ignore it; `v` stays 1. `hyst_min`/`hyst_max` in a backup are ignored since 1.47.
 
+`heater_care` (firmware 1.54) is the `GET /api/thermo/history` document (§9.10) without `early_stops`: Heater Care's changes and its last runs. The website keeps it so apps away from the box can show the Heater Care screen. `PUT` ignores it: the runs belong to the old box.
+
 `timers` is the `GET /api/timers` array. Nothing in it belongs to one box alone (Wi-Fi, users, keys, the fuel log) or to the moment (whether the heater is running, whether the thermostat is on), so restoring never starts or stops the heater. `PUT` applies each field through the same checks as `POST /api/cmd`; a field the box turns down is named in `{"ok":true,"skipped":[…]}` and the rest still apply. `ml_per_pulse` and `tank_capacity` of 0 mean "never set" and are left alone. A changed `display_name` restarts the box, so it is applied last.
 
 The box also sends this document to the cloud (§9.3), which keeps the last copy so it is there when the box is not.

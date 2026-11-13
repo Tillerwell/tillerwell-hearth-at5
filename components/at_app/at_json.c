@@ -283,6 +283,8 @@ char *at_app_backup_json(void)
 
     cJSON *learn = at_app_thermo_learn_backup();
     if (learn) cJSON_AddItemToObject(o, "thermo_learn", learn);
+    cJSON *care = at_app_thermo_care_backup();
+    if (care) cJSON_AddItemToObject(o, "heater_care", care);
 
     char *timers = at_app_timers_json();
     cJSON *arr = timers ? cJSON_Parse(timers) : NULL;

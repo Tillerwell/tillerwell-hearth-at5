@@ -116,7 +116,9 @@ static void add_event(sb_t *b, const at_learn_event_t *e)
     sb_add(b, "}");
 }
 
-char *at_app_thermo_history_json(void)
+/* The history document. The backup's copy leaves out the early stops: they are RAM only, the apps read the last one
+ * from the status, and their times are worked out from the uptime, so they would change the backup every minute. */
+static char *history_json(bool early_stops)
 {
     at_learn_t *L = malloc(sizeof(*L));
     at_ctl_early_t *early = malloc(sizeof(at_ctl_early_t) * AT_CTL_EARLY_LOG);
@@ -194,8 +196,9 @@ char *at_app_thermo_history_json(void)
         sb_num(&b, "dip", r->dip);
         sb_add(&b, "}");
     }
-    sb_add(&b, "],\"early_stops\":[");
-    for (int i = n_early - 1; i >= 0; i--) {
+    sb_add(&b, "]");
+    if (early_stops) sb_add(&b, ",\"early_stops\":[");
+    for (int i = n_early - 1; early_stops && i >= 0; i--) {
         if (i != n_early - 1) sb_add(&b, ",");
         sb_add(&b, "{");
         sb_epoch(&b, "at", epoch ? epoch - (int64_t)((now_ms - early[i].ms) / 1000u) : 0);
@@ -203,10 +206,21 @@ char *at_app_thermo_history_json(void)
         sb_str(&b, "source", at_ctl_src_name((at_src_t)early[i].src));
         sb_add(&b, "}");
     }
-    sb_add(&b, "]}");
+    sb_add(&b, early_stops ? "]}" : "}");
     free(L);
     free(early);
     return sb_done(&b);
+}
+
+char *at_app_thermo_history_json(void) { return history_json(true); }
+
+cJSON *at_app_thermo_care_backup(void)
+{
+    char *js = history_json(false);
+    if (!js) return NULL;
+    cJSON *raw = cJSON_CreateRaw(js);
+    free(js);
+    return raw;
 }
 
 /* ---- backup ------------------------------------------------------------------------------------------------- */

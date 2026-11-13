@@ -262,6 +262,9 @@ char *at_app_thermo_history_json(void);
 /* The learning as the backup's "thermo_learn" object / put one back. */
 struct cJSON;
 struct cJSON *at_app_thermo_learn_backup(void);
+/* The backup's "heater_care" object: GET /api/thermo/history without "early_stops", so the website can show Heater
+ * Care to apps away from the box. Raw JSON node; NULL when out of memory. */
+struct cJSON *at_app_thermo_care_backup(void);
 bool at_app_thermo_learn_restore(const struct cJSON *o);
 /* Stop a run that isn't the thermostat's when the coolant reaches this (20..95 C). */
 void at_app_set_preheat_temp(float celsius);
