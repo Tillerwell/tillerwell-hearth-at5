@@ -8,6 +8,7 @@
 #include "at_ctl.h"
 #include "at_fuel.h"
 #include "at_proto.h"
+#include "at_runlog.h"
 #include "at_timers.h"
 #include "at_tz.h"
 #include "at_version.h"

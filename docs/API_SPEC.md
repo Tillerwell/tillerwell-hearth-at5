@@ -399,7 +399,7 @@ once.
 
 Newest first. In a `history` entry `old` and `new` are the learned width (the real swing) and `working` is the
 working width on that entry's sensor (on the controller's, the learned width in whole degrees plus 1 C). `history`
-(kinds `widened`, `narrowed`, `limit_reached`, `limit_cleared`, `reset`) is kept across a restart; `runs` (the last 20) and `early_stops` (the last 8) are not. `why` is `counted`, `not_thermostat`,
+(kinds `widened`, `narrowed`, `limit_reached`, `limit_cleared`, `reset`) is kept across a restart, and so are `runs` (the last 20) from firmware 1.55 (before that a restart or update emptied them); `early_stops` (the last 8) are not. `why` is `counted`, `not_thermostat`,
 `long_off`, `not_at_top`, `sensor_changed`, `lost_heat`, `not_enough_data` or `cold_spell`.
 
 Commands (`POST /api/cmd`, and the cloud `cmd`):

@@ -2004,6 +2004,55 @@ static void test_gaps(void)
     }
 }
 
+/* the run log survives a restart (1.55): saved when a run is added, put back at boot, nonsense refused */
+static void test_runlog(void)
+{
+    printf("Heater Care: the run log across a restart\n");
+    static at_learn_t L, M;
+    static at_runlog_store_t st, bad;
+    memset(&st, 0, sizeof(st));
+    at_learn_init(&L);
+    CHECK(!at_runlog_changed(&L, &st));
+    for (int i = 0; i < AT_LEARN_RUNS + 3; i++) {
+        L.epoch = 1763000000 + i * 7200;
+        at_learn_run_start(&L, 1000u + (uint32_t)i * 7200000u, AT_SENS_EXT, true, true, 600000u);
+        at_learn_run_end(&L, 1000u + (uint32_t)i * 7200000u + 3600000u, AT_END_USER, 1.0f);
+    }
+    CHECK(L.nruns == AT_LEARN_RUNS && at_runlog_changed(&L, &st));
+    at_runlog_save(&L, &st);
+    CHECK(!at_runlog_changed(&L, &st));
+    /* full: one more run drops the oldest, the count stays 20, and it still needs saving */
+    L.epoch = 1764000000;
+    at_learn_run_start(&L, 900000000u, AT_SENS_EXT, true, true, 600000u);
+    at_learn_run_end(&L, 900000000u + 2400000u, AT_END_USER, 1.0f);
+    CHECK(L.nruns == AT_LEARN_RUNS && at_runlog_changed(&L, &st));
+    at_runlog_save(&L, &st);
+    CHECK(st.version == AT_RUNLOG_VERSION && st.n == AT_LEARN_RUNS && st.size == sizeof(at_learn_run_t));
+
+    at_learn_init(&M);
+    CHECK(at_runlog_restore(&M, &st));
+    CHECK(M.nruns == AT_LEARN_RUNS && !at_runlog_changed(&M, &st));
+    CHECK(!memcmp(M.runs, L.runs, sizeof(L.runs)));
+
+    /* refused, and nothing changes */
+    at_learn_init(&M);
+    bad = st; bad.version = 2;
+    CHECK(!at_runlog_restore(&M, &bad) && M.nruns == 0);
+    bad = st; bad.size = (uint16_t)(sizeof(at_learn_run_t) + 4);
+    CHECK(!at_runlog_restore(&M, &bad) && M.nruns == 0);
+    bad = st; bad.n = AT_LEARN_RUNS + 1;
+    CHECK(!at_runlog_restore(&M, &bad) && M.nruns == 0);
+    bad = st; bad.r[3].why = 99;
+    CHECK(!at_runlog_restore(&M, &bad) && M.nruns == 0);
+    bad = st; bad.r[5].rate = NAN;
+    CHECK(!at_runlog_restore(&M, &bad) && M.nruns == 0);
+
+    /* an empty log is fine */
+    at_learn_init(&L);
+    at_runlog_save(&L, &st);
+    CHECK(st.n == 0 && at_runlog_restore(&M, &st) && M.nruns == 0);
+}
+
 /* the rise after a stop at the top (1.53): learned from 3 stops, then Hearth stops that much early */
 static void test_ctl_coast(void)
 {
@@ -2122,6 +2171,7 @@ static void test_ctl_coast(void)
 static void test_ctl(void)
 {
     test_ctl_coast();
+    test_runlog();
     test_ctl_locks();
     test_ctl_frost();
     test_ctl_stops();
