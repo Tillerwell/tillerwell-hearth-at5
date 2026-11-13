@@ -197,7 +197,7 @@ typedef struct {
     at_learn_t learn;
     at_cd_t cd;                 /* the heater's own cooldown: when it began, how long it usually takes (1.52) */
     at_coast_t coast;           /* how far the room rises after a stop at the top: Hearth stops that much early (1.53) */
-    at_warm_t warm;             /* warm by a set time: idle cooling, gross rates, arrival errors (1.57) */
+    at_warm_t warm;             /* warm by a set time: idle cooling, gross rates, arrival errors (1.56) */
     bool warm_in_range;         /* a warm-by timer may make one start inside the range (below the stop point) */
 } at_ctl_t;
 
