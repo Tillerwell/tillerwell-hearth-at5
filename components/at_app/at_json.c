@@ -473,6 +473,19 @@ static cJSON *build_state_tree(void)
     add_str_or_null(o, "last_fault_name", s->have_last_fault ? (s->last_fault_name ? s->last_fault_name : "unknown") : NULL);
     add_num_or_null(o, "last_fault_ago_s", s->have_last_fault, s->last_fault_ago_ms / 1000.0);
 
+    /* the heater's own cooldown (1.52): when it began (wall clock, so the apps and the cloud count down from the
+     * same moment however late they look) and how long it usually takes, learned from past cooldowns */
+    {
+        const at_ctl_status_t *t = &v.thermo;
+        const int64_t ep = v.clock_ok ? v.epoch : 0;
+        cJSON_AddBoolToObject(o, "cooling", t->cooling);
+        add_num_or_null(o, "cooldown_at", t->have_cooldown_elapsed && ep, (double)(ep - t->cooldown_elapsed_s));
+        add_num_or_null(o, "cooldown_elapsed_s", t->have_cooldown_elapsed, t->cooldown_elapsed_s);
+        cJSON_AddNumberToObject(o, "cooldown_typical_s", t->cooldown_typical_s);
+        cJSON_AddBoolToObject(o, "cooldown_learned", t->cooldown_learned);
+        cJSON_AddNumberToObject(o, "cooldown_samples", t->cooldown_samples);
+    }
+
     add_num_or_null(o, "effective_temp", v.have_effective_temp, v.effective_temp);
     cJSON_AddBoolToObject(o, "external_temp_active", v.have_effective_temp && v.effective_is_external);
     add_num_or_null(o, "external_temp", v.have_external, v.external_temp);

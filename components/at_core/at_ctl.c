@@ -42,6 +42,7 @@ void at_ctl_init(at_ctl_t *t, float auto_target, float freeze_target)
     t->use_external = true;
     t->sensor = AT_SENS_CTL;
     at_learn_init(&t->learn);
+    at_cd_init(&t->cd);
 }
 
 void at_ctl_boot(at_ctl_t *t, const at_ctl_saved_t *saved, int64_t build_epoch, uint32_t now_ms)
@@ -944,6 +945,7 @@ static void tick_freeze(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const
 void at_ctl_tick(at_ctl_t *t, const at_snapshot_t *s, uint32_t now_ms, const at_ctl_ops_t *ops)
 {
     update_room(t, s, now_ms);
+    if (s->have_status && !s->stale) at_cd_tick(&t->cd, s->status.state_raw, now_ms);
     track_run(t, s, now_ms);
     /* before the loops act: the reading that makes Hearth stop the run at the top is part of the run's fit (on the
      * controller's whole-degree sensor it is the last tick-over). Readings after a stop are kept out by the stop
@@ -1004,6 +1006,10 @@ void at_ctl_status(const at_ctl_t *t, uint32_t now, at_ctl_status_t *o)
     o->have_cool = at_learn_cool_typical(&t->learn, (at_sensor_t)t->sensor, &o->cool_typical_s);
     o->dip_below = t->learn.dip > 0 ? t->learn.dip : (t->run.running ? t->learn.last_dip : 0);
     o->early_stop_unseen = t->early_unseen;
+    o->cooling = at_cd_active(&t->cd);
+    o->have_cooldown_elapsed = at_cd_elapsed(&t->cd, now, &o->cooldown_elapsed_s);
+    o->cooldown_typical_s = at_cd_typical(&t->cd, &o->cooldown_learned);
+    o->cooldown_samples = t->cd.st.n;
     o->last_run_end = t->last_end;
     if (t->n_early) {
         o->have_last_early = true;

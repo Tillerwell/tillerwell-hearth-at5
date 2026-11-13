@@ -24,6 +24,7 @@
 
 #include "at_core.h"
 #include "at_learn.h"
+#include "at_cooldown.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -189,6 +190,7 @@ typedef struct {
     uint16_t early_unseen;
 
     at_learn_t learn;
+    at_cd_t cd;                 /* the heater's own cooldown: when it began, how long it usually takes (1.52) */
 } at_ctl_t;
 
 /* Thermostat status for the apps (the "thermo" object). */
@@ -218,6 +220,13 @@ typedef struct {
     at_ctl_early_t last_early;
     uint32_t last_early_ago_s;
     bool no_reading;            /* no usable temperature at all */
+    /* the heater's own cooldown (1.52) */
+    bool cooling;               /* cooling down now (status 0x04/0x05) */
+    bool have_cooldown_elapsed; /* and seen from its start */
+    uint32_t cooldown_elapsed_s;
+    uint32_t cooldown_typical_s; /* learned median, or the default 300 */
+    bool cooldown_learned;
+    uint8_t cooldown_samples;
 } at_ctl_status_t;
 
 void at_ctl_init(at_ctl_t *t, float auto_target, float freeze_target);

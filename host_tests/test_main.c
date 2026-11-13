@@ -1701,6 +1701,69 @@ static void test_fuel(void)
     CHECK(!at_fuel_cfg_valid(&cfg));
 }
 
+/* The heater's own cooldown (1.52): timed from 0x04, kept when it reaches idle, the median is the typical. */
+static void test_cooldown(void)
+{
+    at_cd_t c;
+    at_cd_init(&c);
+    bool learned = true;
+    CHECK(at_cd_typical(&c, &learned) == AT_CD_DEFAULT_S && !learned);
+    uint32_t e = 0;
+
+    /* found already cooling at boot: start unknown, not kept */
+    at_cd_tick(&c, 0x04, 1000);
+    CHECK(at_cd_active(&c) && !at_cd_elapsed(&c, 5000, &e));
+    at_cd_tick(&c, 0x00, 200000);
+    CHECK(!at_cd_active(&c) && c.st.n == 0 && !c.dirty);
+
+    /* a whole one: run, cooldown, final shutdown, idle */
+    at_cd_tick(&c, 0x03, 300000);
+    at_cd_tick(&c, 0x04, 400000);
+    CHECK(at_cd_elapsed(&c, 430000, &e) && e == 30);
+    at_cd_tick(&c, 0x05, 500000);
+    CHECK(at_cd_elapsed(&c, 520000, &e) && e == 120);   /* 0x05 carries on the same cooldown */
+    at_cd_tick(&c, 0x00, 400000 + 240000);
+    CHECK(c.st.n == 1 && c.st.s[0] == 240 && c.dirty);
+    CHECK(at_cd_typical(&c, &learned) == AT_CD_DEFAULT_S && !learned);   /* one is not enough */
+
+    /* cut short by a relight: not kept */
+    at_cd_tick(&c, 0x04, 1000000);
+    at_cd_tick(&c, 0x02, 1060000);
+    CHECK(c.st.n == 1 && !at_cd_active(&c));
+
+    /* a second whole one: the typical is learned */
+    at_cd_tick(&c, 0x04, 2000000);
+    at_cd_tick(&c, 0x00, 2000000 + 360000);
+    CHECK(c.st.n == 2 && at_cd_typical(&c, &learned) == 300 && learned);
+    at_cd_tick(&c, 0x04, 3000000);
+    at_cd_tick(&c, 0x01, 3000000 + 420000);
+    CHECK(c.st.n == 3 && at_cd_typical(&c, NULL) == 360);
+
+    /* implausible lengths are not kept */
+    at_cd_tick(&c, 0x04, 4000000);
+    at_cd_tick(&c, 0x00, 4000000 + 5000);
+    CHECK(c.st.n == 3);
+
+    /* only the last AT_CD_KEEP are kept, oldest dropped */
+    for (int i = 0; i < AT_CD_KEEP + 2; i++) {
+        uint32_t t0 = 5000000 + (uint32_t)i * 1000000;
+        at_cd_tick(&c, 0x04, t0);
+        at_cd_tick(&c, 0x00, t0 + 600000);
+    }
+    CHECK(c.st.n == AT_CD_KEEP && at_cd_typical(&c, NULL) == 600);
+
+    /* restore checks the store */
+    at_cd_t r;
+    at_cd_init(&r);
+    CHECK(at_cd_restore(&r, &c.st) && r.st.n == AT_CD_KEEP);
+    at_cd_store_t bad = c.st;
+    bad.s[0] = 5;
+    CHECK(!at_cd_restore(&r, &bad));
+    bad = c.st;
+    bad.version = 9;
+    CHECK(!at_cd_restore(&r, &bad));
+}
+
 int main(void)
 {
     test_frames();
@@ -1728,6 +1791,7 @@ int main(void)
     test_tz();
     test_version();
     test_fuel();
+    test_cooldown();
     printf("\n%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

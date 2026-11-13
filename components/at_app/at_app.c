@@ -200,6 +200,7 @@ static const at_ctl_ops_t s_ops = {ops_start, ops_stop, NULL};
 
 #define KEY_LEARN "thermo_learn"
 #define KEY_REST  "ctl_rest"
+#define KEY_COOL  "ctl_cool"
 #define REST_VERSION 2
 
 typedef struct {
@@ -222,6 +223,7 @@ typedef struct {
 
 static rest_blob_t s_rest;
 static at_learn_store_t s_learn_save;   /* a copy to write outside the lock (too big for the task's stack) */
+static at_cd_store_t s_cool_save;      /* learned cooldown lengths (1.52) */
 
 /* The firmware's build date (a clock earlier than this is wrong), from __DATE__ "Mmm dd yyyy". */
 static int64_t build_epoch(void)
@@ -240,7 +242,7 @@ static int64_t build_epoch(void)
 /* Called from the thermostat task after each tick: the writes the control loop asked for. */
 static void persist_ctl(void)
 {
-    bool w_learn = false, w_rest = false;
+    bool w_learn = false, w_rest = false, w_cool = false;
     /* called from the thermostat task and the HTTP task (Reset learning, a backup restore): one at a time, so the
      * copies are not overwritten while NVS is writing them */
     xSemaphoreTake(s_persist_lock, portMAX_DELAY);
@@ -249,6 +251,11 @@ static void persist_ctl(void)
         s_learn_save = s_ctl.learn.st;
         s_ctl.learn.dirty = false;
         w_learn = true;
+    }
+    if (s_ctl.cd.dirty) {
+        s_cool_save = s_ctl.cd.st;
+        s_ctl.cd.dirty = false;
+        w_cool = true;
     }
     if (s_ctl.save_run_mark) {
         s_ctl.save_run_mark = false;
@@ -275,6 +282,7 @@ static void persist_ctl(void)
     }
     xSemaphoreGive(s_ctl_lock);
     if (w_learn) at_settings_blob_save(KEY_LEARN, &s_learn_save, sizeof(s_learn_save));
+    if (w_cool) at_settings_blob_save(KEY_COOL, &s_cool_save, sizeof(s_cool_save));
     if (w_rest) {
         s_rest.version = REST_VERSION;
         at_settings_blob_save(KEY_REST, &s_rest, sizeof(s_rest));
@@ -391,6 +399,9 @@ esp_err_t at_app_start(void)
     }
     if (at_settings_blob_load(KEY_LEARN, &s_learn_save, sizeof(s_learn_save))) {
         if (!at_learn_restore(&s_ctl.learn, &s_learn_save)) ESP_LOGW(TAG, "saved Heater Care learning rejected");
+    }
+    if (at_settings_blob_load(KEY_COOL, &s_cool_save, sizeof(s_cool_save))) {
+        if (!at_cd_restore(&s_ctl.cd, &s_cool_save)) ESP_LOGW(TAG, "saved cooldown lengths rejected");
     }
     at_ctl_saved_t saved = {0};
     if (at_settings_blob_load(KEY_REST, &s_rest, sizeof(s_rest)) && s_rest.version == REST_VERSION) {
