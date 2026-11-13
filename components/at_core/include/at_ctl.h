@@ -25,6 +25,7 @@
 #include "at_core.h"
 #include "at_learn.h"
 #include "at_cooldown.h"
+#include "at_coast.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -191,6 +192,7 @@ typedef struct {
 
     at_learn_t learn;
     at_cd_t cd;                 /* the heater's own cooldown: when it began, how long it usually takes (1.52) */
+    at_coast_t coast;           /* how far the room rises after a stop at the top: Hearth stops that much early (1.53) */
 } at_ctl_t;
 
 /* Thermostat status for the apps (the "thermo" object). */
@@ -227,6 +229,11 @@ typedef struct {
     uint32_t cooldown_typical_s; /* learned median, or the default 300 */
     bool cooldown_learned;
     uint8_t cooldown_samples;
+    float stop_at;              /* the reading Hearth's thermostat stops at: work_high less stop_early */
+    float stop_early;           /* how far below the top it stops (0 until the rise after a stop is learned) */
+    bool have_coast;
+    float coast_typical;        /* the typical rise after a stop at the top, C */
+    uint8_t coast_samples;
 } at_ctl_status_t;
 
 void at_ctl_init(at_ctl_t *t, float auto_target, float freeze_target);
@@ -254,6 +261,10 @@ void at_ctl_auto_off(at_ctl_t *t, bool finish, at_hold_t hold, at_src_t src, con
 void at_ctl_disarm_auto(at_ctl_t *t, const char *note);
 /* The room temperature Auto's next start happens at: the bottom of the working range. */
 float at_ctl_auto_start_at(const at_ctl_t *t);
+/* How far below the top Hearth's thermostat stops (the learned rise after a stop, 1.53; 0 on the controller's sensor
+ * or until learned), and the reading it stops at. */
+float at_ctl_stop_early(const at_ctl_t *t);
+float at_ctl_stop_at(const at_ctl_t *t);
 void at_ctl_set_auto_target(at_ctl_t *t, float target);
 void at_ctl_set_auto_range(at_ctl_t *t, float low, float high);
 void at_ctl_set_freeze(at_ctl_t *t, bool enabled);

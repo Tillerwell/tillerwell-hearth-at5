@@ -131,6 +131,8 @@ Cooling never widens or narrows the range by itself (it moves with the weather, 
 - **Narrowing guard:** keep a running typical cooling time (median of the last 10 recorded off periods) for each sensor. A run is compared with the typical time of the sensor it was measured on. A slow run does not count as slow if the off period before it cooled to the bottom in under half the typical time. A cold night then cannot narrow the range by mistake. Those runs are logged with the reason "cold spell, not counted".
 - **Explaining dips:** when the room fell below the bottom during the off lock, the run log says so, for the apps' status line and "Why?" screen.
 
+**Stopping early (1.53).** The rise from the stop to that peak is also learned on its own (`at_coast.c`, API_SPEC §9.12). From 3 stops at the top on the external sensor, Hearth stops by the median rise below the top (at most 1°C and half the working range), so the room peaks at the set temperature instead of over it. The top of the range itself never moves, and a stop still waits for the 30-minute minimum run. Not on the controller's whole-degree sensor.
+
 The typical cooling time is also what a later "warm by a set time" feature for timers will need (§9), so it is stored from the start.
 
 Store in NVS (one blob, versioned): learned width, the 3-run window for each sensor, the last 10 warm-up delays and the last 10 cooling times for each sensor, the limit state of each sensor, and a history ring of the last 20 changes and events (width changes, "limit reached", "limit cleared", resets), each with its time, sensor, reason, the widths, and the rise rates that caused it. Write only when something changes, never every tick.

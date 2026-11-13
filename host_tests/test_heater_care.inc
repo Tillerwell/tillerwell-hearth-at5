@@ -18,6 +18,7 @@ typedef struct {
     bool want_start, want_stop;
     float room;
     float rate_on, rate_off;   /* C per minute while heating / resting */
+    float rate_purge;          /* C per minute during the purge after a stop (the heat still coming out) */
     bool feed_ext;             /* the external sensor sends readings */
     bool ext_hold;             /* ...always the same value, ext_value, whatever the room does */
     float ext_value;
@@ -98,6 +99,7 @@ static void hsim_step(hsim_t *m)
         m->since = m->now;
     }
     if (m->state == 3 && m->now - m->since >= m->delay_ms) m->room += m->rate_on * dt / 60000.0f;
+    else if (m->state == 4) m->room += m->rate_purge * dt / 60000.0f;
     else if (m->state == 0) m->room -= m->rate_off * dt / 60000.0f;
     if (m->feed_ext && m->now - m->last_ext >= 30000) {
         at_ctl_set_external(m->t, m->ext_hold ? m->ext_value : roundf(m->room * 10) / 10, m->now);
@@ -2002,8 +2004,124 @@ static void test_gaps(void)
     }
 }
 
+/* the rise after a stop at the top (1.53): learned from 3 stops, then Hearth stops that much early */
+static void test_ctl_coast(void)
+{
+    printf("Heater Care: stopping early by the rise after a stop\n");
+    /* the module on its own */
+    {
+        at_coast_t c;
+        at_coast_init(&c);
+        float r;
+        CHECK(!at_coast_typical(&c, &r) && at_coast_lead(&c, 1.0f) == 0);
+        /* 19.0 at the stop, up to 19.3, kept once it is 0.3 below the peak */
+        at_coast_stop(&c, 0, 19.0f, true);
+        at_coast_sample(&c, MIN_MS, 19.2f, true);
+        at_coast_sample(&c, 2 * MIN_MS, 19.3f, true);
+        at_coast_sample(&c, 3 * MIN_MS, 19.1f, true);
+        CHECK(c.on && c.st.n == 0);
+        at_coast_sample(&c, 4 * MIN_MS, 19.0f, true);
+        CHECK(!c.on && c.st.n == 1 && c.st.rise_cc[0] == 30 && c.dirty);
+        /* the controller's sensor took over: not kept */
+        at_coast_stop(&c, 0, 19.0f, true);
+        at_coast_sample(&c, MIN_MS, 19.4f, false);
+        at_coast_sample(&c, 2 * MIN_MS, 18.0f, true);
+        CHECK(c.st.n == 1);
+        /* a new run before the fall: not kept */
+        at_coast_stop(&c, 0, 19.0f, true);
+        at_coast_sample(&c, MIN_MS, 19.4f, true);
+        at_coast_cancel(&c);
+        at_coast_sample(&c, 2 * MIN_MS, 18.0f, true);
+        CHECK(c.st.n == 1);
+        /* a stop on the controller's sensor is not followed */
+        at_coast_stop(&c, 0, 19.0f, false);
+        at_coast_sample(&c, MIN_MS, 19.5f, true);
+        at_coast_sample(&c, 2 * MIN_MS, 18.0f, true);
+        CHECK(c.st.n == 1);
+        /* no fall within 3 hours: not kept */
+        at_coast_stop(&c, 0, 19.0f, true);
+        at_coast_sample(&c, MIN_MS, 19.5f, true);
+        at_coast_sample(&c, AT_COAST_WATCH_MS + MIN_MS, 19.0f, true);
+        CHECK(c.st.n == 1);
+        /* a fall straight away is a rise of 0; a jump over 3 C is not the heater's */
+        at_coast_stop(&c, 0, 19.0f, true);
+        at_coast_sample(&c, MIN_MS, 18.7f, true);
+        CHECK(c.st.n == 2 && c.st.rise_cc[1] == 0);
+        at_coast_stop(&c, 0, 19.0f, true);
+        at_coast_sample(&c, MIN_MS, 22.5f, true);
+        at_coast_sample(&c, 2 * MIN_MS, 22.0f, true);
+        CHECK(c.st.n == 2);
+        CHECK(!at_coast_typical(&c, &r));
+        /* the median, capped at 1 C and half the working range, in 0.1 steps rounded down */
+        at_coast_stop(&c, 0, 19.0f, true);
+        at_coast_sample(&c, MIN_MS, 19.45f, true);
+        at_coast_sample(&c, 2 * MIN_MS, 19.0f, true);
+        CHECK(c.st.n == 3 && at_coast_typical(&c, &r) && fabsf(r - 0.30f) < 0.001f);
+        CHECK(fabsf(at_coast_lead(&c, 2.0f) - 0.3f) < 0.001f);
+        CHECK(fabsf(at_coast_lead(&c, 0.5f) - 0.2f) < 0.001f);
+        at_coast_store_t big = {AT_COAST_VERSION, 3, {250, 250, 250}};
+        CHECK(at_coast_restore(&c, &big) && fabsf(at_coast_lead(&c, 4.0f) - 1.0f) < 0.001f);
+        /* saved stores that make no sense are refused */
+        at_coast_store_t bad = {AT_COAST_VERSION, 3, {10, -5, 10}};
+        CHECK(!at_coast_restore(&c, &bad) && c.st.rise_cc[0] == 250);
+        bad = (at_coast_store_t){AT_COAST_VERSION, AT_COAST_KEEP + 1, {0}};
+        CHECK(!at_coast_restore(&c, &bad));
+        bad = (at_coast_store_t){AT_COAST_VERSION + 1, 1, {10}};
+        CHECK(!at_coast_restore(&c, &bad));
+        at_coast_reset(&c);
+        CHECK(c.st.n == 0 && c.dirty);
+        /* only the last AT_COAST_KEEP */
+        for (int i = 0; i < AT_COAST_KEEP + 2; i++) {
+            at_coast_stop(&c, 0, 19.0f, true);
+            at_coast_sample(&c, MIN_MS, 19.0f + 0.1f * (i + 1), true);
+            at_coast_sample(&c, 2 * MIN_MS, 18.0f, true);
+        }
+        CHECK(c.st.n == AT_COAST_KEEP && c.st.rise_cc[0] == 30 && c.st.rise_cc[AT_COAST_KEEP - 1] == 90);
+    }
+    /* in the loop: a room that keeps rising through the purge */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 19.9f);
+        m.rate_on = 0.015f;      /* over an hour for the 1 C range, so the minimum run never holds the stop */
+        m.rate_purge = 0.15f;    /* 3 min of purge: about 0.45 C more after the stop */
+        hsim_arm(&m);
+        float peaks[5] = {0};
+        float stops[5] = {0};
+        for (int run = 0; run < 5; run++) {
+            int s0 = m.l.stops;
+            CHECK(HSIM_UNTIL(&m, m.l.stops > s0, 3 * 60 * MIN_MS));
+            stops[run] = t.room;
+            float peak = m.room;
+            uint32_t end = m.now + 60 * MIN_MS;
+            int st0 = m.l.starts;
+            while ((int32_t)(m.now - end) < 0 && m.l.starts == st0) {
+                hsim_step(&m);
+                if (m.room > peak) peak = m.room;
+            }
+            peaks[run] = peak;
+        }
+        /* the first 3 stop at the top and overshoot; then Hearth stops early and the peak comes near the top */
+        CHECK(stops[0] >= 21.0f - 0.01f && peaks[0] > 21.3f);
+        CHECK(t.coast.st.n >= 3);
+        at_ctl_status_t st;
+        at_ctl_status(&t, m.now, &st);
+        CHECK(st.have_coast && st.coast_typical > 0.3f && st.coast_typical < 0.6f);
+        CHECK(st.stop_early >= 0.3f - 0.001f && st.stop_early <= 0.5f + 0.001f);
+        CHECK(fabsf(st.stop_at - (st.work_high - st.stop_early)) < 0.001f);
+        CHECK(stops[4] < 21.0f - 0.25f && peaks[4] < 21.15f && peaks[4] > 20.8f);
+        /* the run that stopped early still counts as a stop at the top */
+        CHECK(t.learn.runs[t.learn.nruns - 1].end == AT_END_TOP);
+        /* on the controller's sensor it never stops early */
+        t.sensor = AT_SENS_CTL;
+        CHECK(at_ctl_stop_early(&t) == 0);
+        t.sensor = AT_SENS_EXT;
+    }
+}
+
 static void test_ctl(void)
 {
+    test_ctl_coast();
     test_ctl_locks();
     test_ctl_frost();
     test_ctl_stops();

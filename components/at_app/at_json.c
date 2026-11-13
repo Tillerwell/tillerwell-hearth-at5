@@ -436,6 +436,10 @@ static void add_thermo(cJSON *root, const at_view_t *v)
     add_num_or_null(o, "rise_rate", t->have_rate, round(t->rise_rate * 10000.0) / 10000.0);
     add_num_or_null(o, "warmup_typical_s", t->have_warm, t->warmup_typical_s);
     add_num_or_null(o, "cool_typical_s", t->have_cool, t->cool_typical_s);
+    cJSON_AddNumberToObject(o, "stop_at", round(t->stop_at * 10.0) / 10.0);
+    cJSON_AddNumberToObject(o, "stop_early", round(t->stop_early * 10.0) / 10.0);
+    add_num_or_null(o, "coast_typical", t->have_coast, round(t->coast_typical * 100.0) / 100.0);
+    cJSON_AddNumberToObject(o, "coast_samples", t->coast_samples);
     cJSON_AddNumberToObject(o, "dip_below", round3(t->dip_below));
     cJSON_AddNumberToObject(o, "early_stop_unseen", t->early_stop_unseen);
     add_str_or_null(o, "last_run_end", t->last_run_end ? at_learn_end_name((at_run_end_t)t->last_run_end) : NULL);

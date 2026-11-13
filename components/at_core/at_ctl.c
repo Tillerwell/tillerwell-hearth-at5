@@ -43,6 +43,7 @@ void at_ctl_init(at_ctl_t *t, float auto_target, float freeze_target)
     t->sensor = AT_SENS_CTL;
     at_learn_init(&t->learn);
     at_cd_init(&t->cd);
+    at_coast_init(&t->coast);
 }
 
 void at_ctl_boot(at_ctl_t *t, const at_ctl_saved_t *saved, int64_t build_epoch, uint32_t now_ms)
@@ -186,6 +187,21 @@ void at_ctl_working_range(const at_ctl_t *t, float *low, float *high)
     float w = at_learn_working_width(t->learn.st.width, user_width(t), t->sensor == AT_SENS_CTL);
     *high = t->autot.high;
     *low = t->autot.high - w;
+}
+
+float at_ctl_stop_early(const at_ctl_t *t)
+{
+    if (t->sensor != AT_SENS_EXT) return 0;
+    float lo, hi;
+    at_ctl_working_range(t, &lo, &hi);
+    return at_coast_lead(&t->coast, hi - lo);
+}
+
+float at_ctl_stop_at(const at_ctl_t *t)
+{
+    float lo, hi;
+    at_ctl_working_range(t, &lo, &hi);
+    return hi - at_ctl_stop_early(t);
 }
 
 float at_ctl_auto_start_at(const at_ctl_t *t)
@@ -633,6 +649,7 @@ static void run_begin(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
     t->save_flame_epoch = 0;
     at_learn_run_start(&t->learn, now, (at_sensor_t)t->sensor, t->run.owner == AT_OWNER_AUTO, t->run.off_known,
                        t->run.off_ms);
+    at_coast_cancel(&t->coast);
     if (t->run.owner == AT_OWNER_FREEZE && t->autot.enabled) take_from_frost(t);
 }
 
@@ -842,21 +859,24 @@ static void tick_auto(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const a
     const float temp = t->room;
     float lo, hi;
     at_ctl_working_range(t, &lo, &hi);
-    /* The run only ends at the top of the range; the heater is never stopped and restarted inside it, which
-     * would short-cycle it. */
-    if (temp >= hi - EPS && !idle && !l->stop_pending && in_run) {
+    /* The run ends at the top of the range, less the rise the room usually still makes after a stop (learned, 1.53),
+     * so the peak lands on the top. The heater is never stopped and restarted inside the range, which would
+     * short-cycle it. */
+    const float stop_at = hi - at_ctl_stop_early(t);
+    if (temp >= stop_at - EPS && !idle && !l->stop_pending && in_run) {
         uint32_t left = at_ctl_min_run_left_ms(t, now);
         if (left > 0 && !fault) {
             t->held = AT_HOLD_TOP;
-            set_note(l, "at %.1f, above %.1f, holding: minimum run %u min left", temp, hi, mins_up(left));
+            set_note(l, "at %.1f, above %.1f, holding: minimum run %u min left", temp, stop_at, mins_up(left));
         } else {
-            set_note(l, "temperature %.1f >= %.1f -> stop", temp, hi);
+            set_note(l, "temperature %.1f >= %.1f -> stop", temp, stop_at);
             hearth_stop(t, ops, s, now, AT_END_TOP, true);
+            at_coast_stop(&t->coast, now, temp, t->sensor == AT_SENS_EXT);
             l->last_action_ms = now;
             l->has_acted = true;
             l->stop_pending = true;
         }
-    } else if (in_run && t->held == AT_HOLD_TOP && temp < hi - EPS) {
+    } else if (in_run && t->held == AT_HOLD_TOP && temp < stop_at - EPS) {
         t->held = AT_HOLD_NONE;
     } else if (temp <= lo + EPS && idle) {
         uint32_t off_left = at_ctl_min_off_left_ms(t, now);
@@ -955,6 +975,7 @@ void at_ctl_tick(at_ctl_t *t, const at_snapshot_t *s, uint32_t now_ms, const at_
         at_ctl_working_range(t, &lo, &hi);
         at_learn_sample(&t->learn, now_ms, t->room, (at_sensor_t)t->sensor, lo,
                         at_ctl_min_off_left_ms(t, now_ms) > 0);
+        at_coast_sample(&t->coast, now_ms, t->room, t->sensor == AT_SENS_EXT);
     }
     check_ceiling(t, s, now_ms, ops);
     retry_stop(t, s, now_ms, ops);
@@ -1010,6 +1031,10 @@ void at_ctl_status(const at_ctl_t *t, uint32_t now, at_ctl_status_t *o)
     o->have_cooldown_elapsed = at_cd_elapsed(&t->cd, now, &o->cooldown_elapsed_s);
     o->cooldown_typical_s = at_cd_typical(&t->cd, &o->cooldown_learned);
     o->cooldown_samples = t->cd.st.n;
+    o->stop_early = at_ctl_stop_early(t);
+    o->stop_at = o->work_high - o->stop_early;
+    o->have_coast = at_coast_typical(&t->coast, &o->coast_typical);
+    o->coast_samples = t->coast.st.n;
     o->last_run_end = t->last_end;
     if (t->n_early) {
         o->have_last_early = true;
