@@ -36,6 +36,8 @@ extern "C" {
 #define AT_CTL_MIN_ACTION_MS     90000u
 #define AT_CTL_MAX_READING_AGE_MS 10000u
 #define AT_CTL_EXT_STALE_MS      90000u
+#define AT_CTL_EXT_BOOT_WAIT_MS  (3u * 60000u)        /* after a restart: how long the thermostat waits for the room
+                                                       * sensor's first reading before starting on the controller's */
 #define AT_CTL_NOTE_LEN          96
 
 #define AT_CTL_MIN_WIDTH         1.0f                 /* narrowest user range, either sensor */
@@ -173,6 +175,7 @@ typedef struct {
     /* rest across a restart */
     uint32_t boot_ms;
     bool boot_pending;          /* restore decided on the first status seen */
+    bool boot_ext_wait;         /* restarted with the room sensor in use: see ext_boot_wait() (1.57) */
     at_ctl_saved_t saved;
     bool clock_fix_pending;     /* clock was not set at boot: switch to the saved stop time once it is */
     bool flame_fix_pending;     /* a run adopted at boot: use its saved flame time once the clock is set */
@@ -194,7 +197,7 @@ typedef struct {
     at_learn_t learn;
     at_cd_t cd;                 /* the heater's own cooldown: when it began, how long it usually takes (1.52) */
     at_coast_t coast;           /* how far the room rises after a stop at the top: Hearth stops that much early (1.53) */
-    at_warm_t warm;             /* warm by a set time: idle cooling, gross rates, arrival errors (1.56) */
+    at_warm_t warm;             /* warm by a set time: idle cooling, gross rates, arrival errors (1.57) */
     bool warm_in_range;         /* a warm-by timer may make one start inside the range (below the stop point) */
 } at_ctl_t;
 

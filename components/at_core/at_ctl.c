@@ -53,6 +53,7 @@ void at_ctl_boot(at_ctl_t *t, const at_ctl_saved_t *saved, int64_t build_epoch, 
     t->build_epoch = build_epoch;
     t->boot_ms = now_ms;
     t->boot_pending = true;
+    t->boot_ext_wait = true;
 }
 
 void at_ctl_set_clock(at_ctl_t *t, bool ok, int64_t epoch)
@@ -80,6 +81,21 @@ void at_ctl_set_external(at_ctl_t *t, float temp, uint32_t now_ms)
 static bool ext_fresh(const at_ctl_t *t, uint32_t now)
 {
     return t->use_external && t->have_external && now - t->external_ms <= AT_CTL_EXT_STALE_MS;
+}
+
+/* Just restarted, the room sensor in use and nothing heard from it yet (Home Assistant pushes about once a minute):
+ * the Comfort Controller's whole-degree sensor is not used for the room, which in some spaces reads several degrees
+ * below it. On 2026-11-13 a restart started the heater 5 s after boot on the controller's 15 C with the room at
+ * 19.2 C. Ends at the first room reading, or after AT_CTL_EXT_BOOT_WAIT_MS (no room sensor reporting: the
+ * controller's sensor as before). Only while the heater is idle: a run going at boot keeps its reading. */
+static bool ext_boot_wait(at_ctl_t *t, uint32_t now)
+{
+    if (!t->boot_ext_wait) return false;
+    if (!t->use_external || t->have_external || now - t->boot_ms >= AT_CTL_EXT_BOOT_WAIT_MS) {
+        t->boot_ext_wait = false;
+        return false;
+    }
+    return true;
 }
 
 bool at_ctl_effective_temp(const at_ctl_t *t, const at_snapshot_t *s, uint32_t now_ms,
@@ -154,6 +170,11 @@ static void update_room(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
         sensor = t->sensor;
     }
     if (!have) {
+        t->room_ok = false;
+        return;
+    }
+    if (sensor == AT_SENS_CTL && !t->run.running && ext_boot_wait(t, now)) {
+        /* no reading yet as far as the loops go: nothing starts blind (tick_auto, at_ctl_set_auto, frost) */
         t->room_ok = false;
         return;
     }

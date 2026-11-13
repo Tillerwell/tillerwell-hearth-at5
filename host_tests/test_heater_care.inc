@@ -608,6 +608,96 @@ static void test_ctl_sensors(void)
     }
 }
 
+/* a restart with the room sensor in use (1.57): no thermostat start on the controller's sensor before the room
+ * sensor's first reading. 2026-11-13: the controller read 15 with the room at 19.2 and the heater started 5 s after
+ * boot. */
+static void ctl_boot_tick(at_ctl_t *t, ops_log_t *l, int cabin, uint32_t now)
+{
+    at_snapshot_t s = mk_snap(cabin, 0, 0);
+    s.have_cabin = true;
+    at_ctl_ops_t ops = {op_start, op_stop, l};
+    at_ctl_tick(t, &s, now, &ops);
+}
+
+static void test_ctl_boot_room_wait(void)
+{
+    printf("Heater Care: a restart waits for the room sensor\n");
+    const at_ctl_saved_t sv = {false, true, 1800000000 - 3600};
+    /* the room sensor reports 60 s after boot: nothing starts, then the room is above the range */
+    {
+        at_ctl_t t;
+        ops_log_t l = {0};
+        at_ctl_init(&t, 18.5f, 5.0f);
+        at_ctl_set_auto_range(&t, 18.0f, 19.0f);
+        at_ctl_set_clock(&t, true, 1800000000);
+        t.use_external = true;
+        uint32_t now = 1000000;
+        at_ctl_boot(&t, &sv, 1790000000, now);
+        t.autot.enabled = true;   /* restored at boot */
+        for (uint32_t ms = 0; ms < 60000; ms += 3000) ctl_boot_tick(&t, &l, 15, now + ms);
+        CHECK(l.starts == 0);
+        CHECK(strstr(t.autot.note, "no temperature reading") != NULL);
+        at_ctl_set_external(&t, 19.2f, now + 60000);
+        for (uint32_t ms = 60000; ms < 30 * MIN_MS; ms += 3000) {
+            if (ms % 30000 == 0) at_ctl_set_external(&t, 19.2f, now + ms);
+            ctl_boot_tick(&t, &l, 15, now + ms);
+        }
+        CHECK(l.starts == 0);
+    }
+    /* no room sensor reporting at all: after the wait, the controller's sensor as before */
+    {
+        at_ctl_t t;
+        ops_log_t l = {0};
+        at_ctl_init(&t, 18.5f, 5.0f);
+        at_ctl_set_auto_range(&t, 18.0f, 19.0f);
+        at_ctl_set_clock(&t, true, 1800000000);
+        t.use_external = true;
+        uint32_t now = 1000000, at = 0;
+        at_ctl_boot(&t, &sv, 1790000000, now);
+        t.autot.enabled = true;
+        for (uint32_t ms = 0; ms < 10 * MIN_MS && !l.starts; ms += 3000) {
+            ctl_boot_tick(&t, &l, 15, now + ms);
+            at = ms;
+        }
+        CHECK(l.starts == 1);
+        CHECK(at >= AT_CTL_EXT_BOOT_WAIT_MS && at < AT_CTL_EXT_BOOT_WAIT_MS + AT_CTL_MIN_ACTION_MS + 6000);
+    }
+    /* the heater burning at boot with its 30 min already served: not stopped for want of a reading, and it still stops
+     * at the top on the controller's sensor until the room sensor reports */
+    {
+        at_ctl_t t;
+        ops_log_t l = {0};
+        at_ctl_init(&t, 18.5f, 5.0f);
+        at_ctl_set_auto_range(&t, 18.0f, 19.0f);
+        at_ctl_set_clock(&t, true, 1800000000);
+        t.use_external = true;
+        uint32_t now = 1000000;
+        at_ctl_saved_t run = {true, false, 0, 1800000000 - 50 * 60};
+        at_ctl_boot(&t, &run, 1790000000, now);
+        t.autot.enabled = true;
+        at_ctl_ops_t ops = {op_start, op_stop, &l};
+        for (uint32_t ms = 0; ms < 60000; ms += 3000) {
+            at_snapshot_t s = mk_snap(17, 3, 0);
+            at_ctl_tick(&t, &s, now + ms, &ops);
+        }
+        CHECK(l.stops == 0 && t.room_ok && t.held != AT_HOLD_NO_READING);
+    }
+    /* the room sensor turned off: no wait */
+    {
+        at_ctl_t t;
+        ops_log_t l = {0};
+        at_ctl_init(&t, 18.5f, 5.0f);
+        at_ctl_set_auto_range(&t, 18.0f, 19.0f);
+        at_ctl_set_clock(&t, true, 1800000000);
+        t.use_external = false;
+        uint32_t now = 1000000;
+        at_ctl_boot(&t, &sv, 1790000000, now);
+        t.autot.enabled = true;
+        for (uint32_t ms = 0; ms < 30000; ms += 3000) ctl_boot_tick(&t, &l, 15, now + ms);
+        CHECK(l.starts == 1);
+    }
+}
+
 static void test_ctl_restart(void)
 {
     printf("Heater Care: restarts, the saved stop time and the clock\n");
@@ -2178,6 +2268,7 @@ static void test_ctl(void)
     test_ctl_thermostat_off();
     test_ctl_sensors();
     test_ctl_restart();
+    test_ctl_boot_room_wait();
     test_ctl_fault_backoff();
     test_review_lost_stop();
     test_review_stop_tick_and_carry_on();
