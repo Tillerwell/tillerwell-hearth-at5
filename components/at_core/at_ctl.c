@@ -45,6 +45,7 @@ void at_ctl_init(at_ctl_t *t, float auto_target, float freeze_target)
     at_cd_init(&t->cd);
     at_coast_init(&t->coast);
     at_warm_init(&t->warm);
+    at_early_init(&t->early_start);
 }
 
 void at_ctl_boot(at_ctl_t *t, const at_ctl_saved_t *saved, int64_t build_epoch, uint32_t now_ms)
@@ -226,11 +227,27 @@ float at_ctl_stop_at(const at_ctl_t *t)
     return hi - at_ctl_stop_early(t);
 }
 
+void at_ctl_early_point(const at_ctl_t *t, at_early_out_t *out)
+{
+    at_early_in_t in = {0};
+    at_ctl_working_range(t, &in.lo, &in.hi);
+    in.ext = t->sensor == AT_SENS_EXT;
+    in.stop_at = in.hi - at_ctl_stop_early(t);
+    const at_warm_t *w = &t->warm;
+    if (w->st.ngross[AT_SENS_EXT] >= AT_WARM_MIN_LEARN) {
+        in.have_gross = true;
+        in.gross = at_warm_median(w->st.gross[AT_SENS_EXT], w->st.ngross[AT_SENS_EXT]);
+    }
+    in.have_loss = at_warm_idle_loss(w, AT_SENS_EXT, AT_WARM_LOSS_MIN, &in.loss);
+    in.have_warm = at_learn_warm_typical(&t->learn, AT_SENS_EXT, &in.warm_s);
+    at_early_point(&t->early_start, &in, out);
+}
+
 float at_ctl_auto_start_at(const at_ctl_t *t)
 {
-    float lo, hi;
-    at_ctl_working_range(t, &lo, &hi);
-    return lo;
+    at_early_out_t e;
+    at_ctl_early_point(t, &e);
+    return e.start_at;
 }
 
 void at_ctl_set_auto_target(at_ctl_t *t, float target)
@@ -271,13 +288,11 @@ void at_ctl_set_freeze_target(at_ctl_t *t, float target)
 
 void at_ctl_allow_warm_start(at_ctl_t *t, bool allow) { t->warm_in_range = allow; }
 
-/* Auto may start at this reading: at or below the bottom of the working range, or below the stop point once for a
- * warm-by timer. */
+/* Auto may start at this reading: at or below its start point (the bottom of the working range, or higher up on the
+ * external sensor: at_early.h), or below the stop point once for a warm-by timer. */
 static bool auto_start_ok(const at_ctl_t *t, float temp)
 {
-    float lo, hi;
-    at_ctl_working_range(t, &lo, &hi);
-    if (temp <= lo + EPS) return true;
+    if (temp <= at_ctl_auto_start_at(t) + EPS) return true;
     return t->warm_in_range && temp < at_ctl_stop_at(t) - EPS;
 }
 
@@ -502,8 +517,7 @@ void at_ctl_set_auto(at_ctl_t *t, bool enabled, const at_snapshot_t *s, uint32_t
     l->enabled = true;
     update_room(t, s, now);
     if (t->held == AT_HOLD_TIMER_ENDED || t->held == AT_HOLD_THERMO_OFF) t->held = AT_HOLD_NONE;
-    float lo, hi;
-    at_ctl_working_range(t, &lo, &hi);
+    const float start_at = at_ctl_auto_start_at(t);
     uint32_t off_left = at_ctl_min_off_left_ms(t, now);
     if (t->boot_pending) {
         /* just restarted: whether a rest is still owed is decided on the heater's first status */
@@ -521,10 +535,10 @@ void at_ctl_set_auto(at_ctl_t *t, bool enabled, const at_snapshot_t *s, uint32_t
         /* never start blind: with no reading nothing could stop the run */
         set_note(l, "Auto thermostat enabled -> no temperature reading yet, waiting");
     } else if (!auto_start_ok(t, t->room)) {
-        set_note(l, "Auto thermostat enabled -> temperature %.1f above %.1f, waiting", t->room, lo);
+        set_note(l, "Auto thermostat enabled -> temperature %.1f above %.1f, waiting", t->room, start_at);
     } else if (off_left > 0) {
         set_note(l, "Auto thermostat enabled -> at %.1f, waiting: minimum off %u min left", t->room, mins_up(off_left));
-    } else if (t->room > lo + EPS) {
+    } else if (t->room > start_at + EPS) {
         set_note(l, "Auto thermostat enabled for warm by -> at %.1f, inside the range, sending start thermostat", t->room);
         send_start(t, l, ops, now, AT_OWNER_AUTO);
     } else {
@@ -904,6 +918,7 @@ static void tick_auto(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const a
     const float temp = t->room;
     float lo, hi;
     at_ctl_working_range(t, &lo, &hi);
+    const float start_at = at_ctl_auto_start_at(t);
     /* The run ends at the top of the range, less the rise the room usually still makes after a stop (learned, 1.53),
      * so the peak lands on the top. The heater is never stopped and restarted inside the range, which would
      * short-cycle it. */
@@ -926,7 +941,7 @@ static void tick_auto(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const a
     } else if (auto_start_ok(t, temp) && idle) {
         uint32_t off_left = at_ctl_min_off_left_ms(t, now);
         if (off_left > 0) {
-            set_note(l, "at %.1f, below %.1f, waiting: minimum off %u min left", temp, lo, mins_up(off_left));
+            set_note(l, "at %.1f, below %.1f, waiting: minimum off %u min left", temp, start_at, mins_up(off_left));
             return;
         }
         if (fault && !retry_ready(l, s, now)) {
@@ -934,10 +949,15 @@ static void tick_auto(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const a
         }
         if (fault) {
             set_note(l, "temperature %.1f <= %.1f -> start thermostat (fault retry %d/%d)",
-                     temp, lo, l->retry_count, N_RETRIES);
+                     temp, start_at, l->retry_count, N_RETRIES);
+        } else if (temp > start_at + EPS) {
+            set_note(l, "temperature %.1f, inside the range -> start thermostat for warm by", temp);
         } else {
-            set_note(l, "temperature %.1f <= %.1f -> start thermostat", temp, lo);
+            set_note(l, "temperature %.1f <= %.1f -> start thermostat", temp, start_at);
         }
+        /* the busy rule counts Auto's own cycling starts: not warm by's one start inside the range, and not fault
+         * retries (the heater is not cycling, it is failing to light) */
+        if (!fault && temp <= start_at + EPS) at_early_auto_start(&t->early_start, now, hi - lo);
         send_start(t, l, ops, now, AT_OWNER_AUTO);
     }
 }
@@ -1082,6 +1102,7 @@ void at_ctl_status(const at_ctl_t *t, uint32_t now, at_ctl_status_t *o)
     o->stop_at = o->work_high - o->stop_early;
     o->have_coast = at_coast_typical(&t->coast, &o->coast_typical);
     o->coast_samples = t->coast.st.n;
+    at_ctl_early_point(t, &o->early);
     o->last_run_end = t->last_end;
     if (t->n_early) {
         o->have_last_early = true;

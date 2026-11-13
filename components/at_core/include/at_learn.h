@@ -35,6 +35,9 @@ extern "C" {
 #define AT_LEARN_MAX_WARM_MS (20u * 60000u)        /* warm-up delay longer than this: not enough data */
 #define AT_LEARN_MIN_FIT_MS  (10u * 60000u)        /* fewer minutes of readings to fit than this: not enough data */
 #define AT_LEARN_MIN_RATE    0.005f                /* C per minute: below this the room lost heat */
+#define AT_LEARN_COOL_MIN_FALL  0.2f               /* a run started above the working bottom (1.60): the room fell at
+                                                    * least this far from its peak for its cooling time to be kept, */
+#define AT_LEARN_COOL_MAX_SCALE 5.0f               /* scaled to the whole fall by at most this much */
 #define AT_LEARN_LOST_HEAT   0.5f                  /* a fall this far below the run's highest reading: lost heat */
 
 typedef enum { AT_SENS_EXT = 0, AT_SENS_CTL = 1 } at_sensor_t;
@@ -129,7 +132,8 @@ typedef struct {
     uint16_t warm_s;         /* this run's warm-up delay, 0xffff if never seen */
     /* the off period before this run */
     bool have_cool;
-    uint32_t cool_s;         /* peak after the stop to the working bottom */
+    uint32_t cool_s;         /* peak after the stop to the working bottom (from 1.60 scaled to it when the next run
+                              * started higher up, docs/EARLY_START.md §6) */
     float dip;               /* how far below the bottom the room fell during the off lock */
 } at_learn_run_t;
 
@@ -173,6 +177,10 @@ typedef struct {
     uint32_t peak_ms;
     bool reached_bottom;
     uint32_t cool_ms;
+    bool cool_last_ok;       /* the latest reading on the way down (1.60): a run started above the working bottom */
+    float cool_last_temp;    /* scales the cooling seen so far to the whole fall (at_learn_run_start) */
+    uint32_t cool_last_ms;
+    float cool_low;          /* the working bottom at that reading */
     float dip;               /* during the current/last off lock, for the status */
     bool last_have_cool;
     uint8_t last_cool_sensor;

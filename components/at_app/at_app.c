@@ -206,6 +206,7 @@ static const at_ctl_ops_t s_ops = {ops_start, ops_stop, NULL};
 #define KEY_COAST "ctl_coast"
 #define KEY_RUNS  "ctl_runs"
 #define KEY_WARM  "ctl_warm"
+#define KEY_EARLY "ctl_early"
 #define REST_VERSION 2
 
 typedef struct {
@@ -231,6 +232,7 @@ static at_learn_store_t s_learn_save;   /* a copy to write outside the lock (too
 static at_cd_store_t s_cool_save;      /* learned cooldown lengths (1.52) */
 static at_coast_store_t s_coast_save;  /* learned rise after a stop at the top (1.53) */
 static at_warm_store_t s_warm_save;    /* warm by: light-up times, rates, arrival errors (1.56) */
+static at_early_store_t s_early_save;  /* early start: the busy widening (1.60) */
 static at_runlog_store_t s_runs_save;  /* Heater Care's run log (1.55): the "Why?" screen survives a restart */
 
 /* The firmware's build date (a clock earlier than this is wrong), from __DATE__ "Mmm dd yyyy". */
@@ -250,7 +252,7 @@ static int64_t build_epoch(void)
 /* Called from the thermostat task after each tick: the writes the control loop asked for. */
 static void persist_ctl(void)
 {
-    bool w_learn = false, w_rest = false, w_cool = false, w_coast = false, w_runs = false, w_warm = false;
+    bool w_learn = false, w_rest = false, w_cool = false, w_coast = false, w_runs = false, w_warm = false, w_early = false;
     /* called from the thermostat task and the HTTP task (Reset learning, a backup restore): one at a time, so the
      * copies are not overwritten while NVS is writing them */
     xSemaphoreTake(s_persist_lock, portMAX_DELAY);
@@ -274,6 +276,11 @@ static void persist_ctl(void)
         s_warm_save = s_ctl.warm.st;
         s_ctl.warm.dirty = false;
         w_warm = true;
+    }
+    if (s_ctl.early_start.dirty) {
+        s_early_save = s_ctl.early_start.st;
+        s_ctl.early_start.dirty = false;
+        w_early = true;
     }
     if (at_runlog_changed(&s_ctl.learn, &s_runs_save)) {
         at_runlog_save(&s_ctl.learn, &s_runs_save);
@@ -308,6 +315,7 @@ static void persist_ctl(void)
     if (w_coast) at_settings_blob_save(KEY_COAST, &s_coast_save, sizeof(s_coast_save));
     if (w_runs) at_settings_blob_save(KEY_RUNS, &s_runs_save, sizeof(s_runs_save));
     if (w_warm) at_settings_blob_save(KEY_WARM, &s_warm_save, sizeof(s_warm_save));
+    if (w_early) at_settings_blob_save(KEY_EARLY, &s_early_save, sizeof(s_early_save));
     if (w_rest) {
         s_rest.version = REST_VERSION;
         at_settings_blob_save(KEY_REST, &s_rest, sizeof(s_rest));
@@ -433,6 +441,9 @@ esp_err_t at_app_start(void)
     }
     if (at_settings_blob_load(KEY_WARM, &s_warm_save, sizeof(s_warm_save))) {
         if (!at_warm_restore(&s_ctl.warm, &s_warm_save)) ESP_LOGW(TAG, "saved warm-by learning rejected");
+    }
+    if (at_settings_blob_load(KEY_EARLY, &s_early_save, sizeof(s_early_save))) {
+        if (!at_early_restore(&s_ctl.early_start, &s_early_save)) ESP_LOGW(TAG, "saved early-start state rejected");
     }
     /* a different size (the run's layout changed in an update) does not load: the log starts again, nothing else */
     if (at_settings_blob_load(KEY_RUNS, &s_runs_save, sizeof(s_runs_save))) {
@@ -712,6 +723,7 @@ void at_app_thermo_learn_reset(void)
     at_learn_reset(&s_ctl.learn);
     at_coast_reset(&s_ctl.coast);
     at_warm_reset(&s_ctl.warm);
+    at_early_reset(&s_ctl.early_start);
     xSemaphoreGive(s_ctl_lock);
     ESP_LOGI(TAG, "Heater Care learning reset");
     persist_ctl();
@@ -962,6 +974,24 @@ bool at_app_coast_snapshot(at_coast_store_t *out)
     *out = s_ctl.coast.st;
     xSemaphoreGive(s_ctl_lock);
     return true;
+}
+
+bool at_app_early_snapshot(at_early_store_t *out)
+{
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    *out = s_ctl.early_start.st;
+    xSemaphoreGive(s_ctl_lock);
+    return true;
+}
+
+bool at_app_early_put(const at_early_store_t *st)
+{
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    bool ok = at_early_restore(&s_ctl.early_start, st);
+    if (ok) s_ctl.early_start.dirty = true;
+    xSemaphoreGive(s_ctl_lock);
+    if (ok) persist_ctl();
+    return ok;
 }
 
 bool at_app_coast_put(const at_coast_store_t *st)

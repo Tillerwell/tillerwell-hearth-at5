@@ -20,6 +20,8 @@ bool at_app_warm_snapshot(at_warm_store_t *o) { *o = C.warm.st; return true; }
 bool at_app_warm_put(const at_warm_store_t *st) { return at_warm_restore(&C.warm, st); }
 bool at_app_coast_snapshot(at_coast_store_t *o) { *o = C.coast.st; return true; }
 bool at_app_coast_put(const at_coast_store_t *st) { return at_coast_restore(&C.coast, st); }
+bool at_app_early_snapshot(at_early_store_t *o) { *o = C.early_start.st; return true; }
+bool at_app_early_put(const at_early_store_t *st) { return at_early_restore(&C.early_start, st); }
 bool at_app_cd_snapshot(at_cd_store_t *o) { *o = C.cd.st; return true; }
 bool at_app_cd_put(const at_cd_store_t *st) { return at_cd_restore(&C.cd, st); }
 bool at_app_runlog_merge(const at_learn_run_t *in, int n) { return at_runlog_merge(&C.learn, in, n); }
@@ -52,6 +54,7 @@ static void fill(void)
     w->nrec = AT_WARM_REC;
     for (int i = 0; i < AT_WARM_REC; i++) w->rec[i] = (at_warm_rec_t){1800000000 + i, 1799997120 + i, 1800000000, i ? 1800000120 : 0, 142, 20, AT_WARM_EST_MODEL, (uint8_t)(i + 1), (int8_t)(i - 2), (uint16_t)(48 + i)};
     C.coast.st.n = 7; for (int i = 0; i < 7; i++) C.coast.st.rise_cc[i] = 30 + i;
+    C.early_start.st.busy_cc = 40;
     C.cd.st.n = 10; for (int i = 0; i < 10; i++) C.cd.st.s[i] = 280 + i;
 }
 
@@ -82,6 +85,7 @@ int main(void)
     CHECK(x->nerr == y->nerr && !memcmp(x->err_min, y->err_min, 5) && x->nlead == y->nlead && !memcmp(x->lead_min, y->lead_min, sizeof(x->lead_min)));
     CHECK(x->nrec == y->nrec && !memcmp(x->rec, y->rec, sizeof(x->rec)));
     CHECK(!memcmp(&before.coast.st, &C.coast.st, sizeof(C.coast.st)));
+    CHECK(C.early_start.st.busy_cc == 40);
     CHECK(!memcmp(&before.cd.st, &C.cd.st, sizeof(C.cd.st)));
     /* the backup out of the restored box is the same text */
     cJSON *b2 = at_app_thermo_learn_backup();
@@ -89,10 +93,10 @@ int main(void)
     CHECK(!strcmp(js, js2));
     /* an older backup (no new keys) still restores and leaves the new stores alone */
     cJSON *old = cJSON_Parse(js);
-    const char *drop[] = {"runs", "cooldown", "warm_by_runs", "light", "gross_ext", "gross_ctl", "rise_ext", "rise_ctl", "warm_by_err", "warm_by_lead", "coast"};
+    const char *drop[] = {"runs", "cooldown", "warm_by_runs", "light", "gross_ext", "gross_ctl", "rise_ext", "rise_ctl", "warm_by_err", "warm_by_lead", "coast", "early"};
     for (unsigned i = 0; i < sizeof(drop) / sizeof(drop[0]); i++) cJSON_DeleteItemFromObject(old, drop[i]);
     CHECK(at_app_thermo_learn_restore(old));
-    CHECK(C.learn.nruns == AT_LEARN_RUNS && C.cd.st.n == 10 && C.warm.st.nrec == AT_WARM_REC);
+    CHECK(C.learn.nruns == AT_LEARN_RUNS && C.cd.st.n == 10 && C.warm.st.nrec == AT_WARM_REC && C.early_start.st.busy_cc == 40);
     /* junk in a run is turned down */
     cJSON *bad = cJSON_Parse(js);
     cJSON *r0 = cJSON_GetArrayItem(cJSON_GetObjectItem(bad, "runs"), 0);

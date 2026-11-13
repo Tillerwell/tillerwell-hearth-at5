@@ -466,16 +466,16 @@ static void test_ctl_thermostat_off(void)
 static void test_ctl_sensors(void)
 {
     printf("Heater Care: filter, stuck sensor, readings lost\n");
-    /* one bad reading (0.6 low, 6 high): no start, no stop, no ceiling */
+    /* one bad reading (0.6 low, 6 high): no start, no stop, no ceiling. 20.8: above the halfway start (20.5, 1.60) */
     {
         at_ctl_t t;
         hsim_t m;
-        hsim_init(&m, &t, 20.4f);
+        hsim_init(&m, &t, 20.8f);
         m.rate_off = 0;
         hsim_arm(&m);
         hsim_run(&m, 2 * MIN_MS);
         CHECK(m.l.starts == 0);
-        at_ctl_set_external(&t, 19.8f, m.now);
+        at_ctl_set_external(&t, 20.2f, m.now);
         m.last_ext = m.now;
         hsim_run(&m, 20000);
         CHECK(m.l.starts == 0);

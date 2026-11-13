@@ -631,14 +631,15 @@ static void test_warm_in_range(void)
     printf("warm by: one start inside the range\n");
     at_ctl_t t;
     hsim_t m;
-    /* room 20.5, range 20..21: Auto alone waits */
-    hsim_init(&m, &t, 20.5f);
+    /* room 20.7, range 20..21: Auto alone waits (its start is halfway, 20.5, with nothing learned: 1.60) */
+    hsim_init(&m, &t, 20.7f);
+    m.rate_off = 0;
     hsim_run(&m, 30000);
     hsim_arm(&m);
     hsim_run(&m, 10 * MIN_MS);
     CHECK(m.l.starts == 0);
     /* armed by a warm-by timer that may start inside the range: starts at once */
-    hsim_init(&m, &t, 20.5f);
+    hsim_init(&m, &t, 20.7f);
     hsim_run(&m, 30000);
     at_ctl_allow_warm_start(&t, true);
     hsim_arm(&m);
@@ -648,8 +649,8 @@ static void test_warm_in_range(void)
     CHECK(HSIM_UNTIL(&m, m.state == 0 && m.l.stops >= 1, 120 * MIN_MS));
     CHECK(m.room >= 20.95f);
     m.rate_off = 0.01f;
-    hsim_run(&m, 40 * MIN_MS);
-    CHECK(m.l.starts == 1);   /* 21 less 0.4: still in the range, no second start */
+    hsim_run(&m, 30 * MIN_MS);
+    CHECK(m.l.starts == 1);   /* 21 less 0.3: above Auto's halfway start (20.5), no second start */
     /* above the stop point: no start even when allowed */
     hsim_init(&m, &t, 21.2f);
     hsim_run(&m, 30000);

@@ -331,6 +331,9 @@ cJSON *at_app_thermo_learn_backup(void)
         for (int i = 0; i < cs.n; i++) sb_add(&b, "%s%.2f", i ? "," : "", cs.rise_cc[i] / 100.0);
         sb_add(&b, "]");
     }
+    /* early start's busy widening (1.60) */
+    at_early_store_t es;
+    if (at_app_early_snapshot(&es)) sb_add(&b, ",\"early\":{\"busy_w\":%.2f}", es.busy_cc / 100.0);
     /* the heater's cooldown lengths (1.52) and Heater Care's run log (1.55), so a replacement box keeps them (1.58).
      * Runs oldest first, compact: [at, light_s, burn_s, sensor, end, why, vote, rate|null, need, climb_min,
      * start_temp, peak_temp, warmup_s|null, cooling_s|null, dip, rate_ok] with the at_learn enum numbers */
@@ -633,6 +636,17 @@ static bool restore_warm(const cJSON *o)
         cs.n = (uint8_t)n;
         for (int i = 0; i < n; i++) cs.rise_cc[i] = (int16_t)lround(c[i] * 100.0);
         ok = ok && at_app_coast_put(&cs);
+    }
+    /* early start's busy widening (1.60): optional, an older backup has none */
+    const cJSON *eo = cJSON_GetObjectItemCaseSensitive(o, "early");
+    if (ok && eo) {
+        const cJSON *bw = cJSON_GetObjectItemCaseSensitive(eo, "busy_w");
+        if (!cJSON_IsNumber(bw) || bw->valuedouble < 0 || bw->valuedouble > AT_EARLY_MAX_BUSY) {
+            ok = false;
+        } else {
+            at_early_store_t es = {.version = AT_EARLY_VERSION, .busy_cc = (int16_t)lround(bw->valuedouble * 100.0)};
+            ok = at_app_early_put(&es);
+        }
     }
     return ok;
 }

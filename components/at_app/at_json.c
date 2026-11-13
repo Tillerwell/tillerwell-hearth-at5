@@ -448,6 +448,15 @@ static void add_thermo(cJSON *root, const at_view_t *v)
     cJSON_AddNumberToObject(o, "stop_early", round(t->stop_early * 10.0) / 10.0);
     add_num_or_null(o, "coast_typical", t->have_coast, round(t->coast_typical * 100.0) / 100.0);
     cJSON_AddNumberToObject(o, "coast_samples", t->coast_samples);
+    /* early start inside the range (1.60, docs/EARLY_START.md) */
+    cJSON *es = cJSON_AddObjectToObject(o, "early");
+    if (es) {
+        cJSON_AddNumberToObject(es, "start_at", round(t->early.start_at * 10.0) / 10.0);
+        cJSON_AddStringToObject(es, "est", at_early_est_name((at_early_est_t)t->early.est));
+        add_num_or_null(es, "net_rate", t->early.have_rate, round(t->early.net_rate * 10000.0) / 10000.0);
+        add_num_or_null(es, "climb", t->early.have_rate, round(t->early.climb * 100.0) / 100.0);
+        cJSON_AddNumberToObject(es, "busy_w", round(t->early.busy_w * 100.0) / 100.0);
+    }
     cJSON_AddNumberToObject(o, "dip_below", round3(t->dip_below));
     cJSON_AddNumberToObject(o, "early_stop_unseen", t->early_stop_unseen);
     add_str_or_null(o, "last_run_end", t->last_run_end ? at_learn_end_name((at_run_end_t)t->last_run_end) : NULL);
@@ -512,7 +521,7 @@ static cJSON *build_state_tree(void)
     cJSON_AddNumberToObject(o, "auto_high", v.auto_high);
     cJSON_AddNumberToObject(o, "hyst_min", v.hyst_min);
     cJSON_AddNumberToObject(o, "hyst_max", v.hyst_max);
-    cJSON_AddNumberToObject(o, "auto_start_at", v.auto_start_at);
+    cJSON_AddNumberToObject(o, "auto_start_at", round(v.auto_start_at * 10.0) / 10.0);
     add_thermo(o, &v);
     cJSON_AddNumberToObject(o, "preheat_temp", v.preheat_temp);
     cJSON_AddStringToObject(o, "model", CONFIG_AUTOTERM_MODEL);

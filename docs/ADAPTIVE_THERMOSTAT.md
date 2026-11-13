@@ -1,6 +1,6 @@
 # Heater Care (adaptive thermostat range and run locks): plan
 
-> **IMPLEMENTED.** Everything in this plan (§1 to §8, and §10, warm by) is built and released, in firmware 1.47 to 1.59. It is kept as the record of how Heater Care works. New work on top of it goes in its own plan: starting earlier inside the range is [EARLY_START.md](EARLY_START.md) (not built yet).
+> **IMPLEMENTED.** Everything in this plan (§1 to §8, and §10, warm by) is built and released, in firmware 1.47 to 1.59. It is kept as the record of how Heater Care works. New work on top of it goes in its own plan: starting earlier inside the range is [EARLY_START.md](EARLY_START.md) (built, firmware 1.60): from 1.60 a thermostat run on the external room sensor may start above the working bottom, up to the top less 0.3 C, where this document says every run starts at or below it.
 
 Status: **§1 to §8 are built**: firmware 1.47 (RoamOS 1.0047, 2026-11-11) with the review fixes in 1.48, plus the apps and Home Assistant. Later changes are marked where they apply: one set temperature (1.49), the stuck-sensor rule (1.50), a restart keeping a run's true age (1.51), stopping early by the rise after a stop (1.53), Heater Care's history sent to the cloud in the backup as `heater_care` (1.54, API_SPEC §7.5), the run log kept across a restart (1.55), and warm by a set time (§10, firmware 1.56). Still not bench tested on the test heater (§7 step 6, §10.10 step 5).
 

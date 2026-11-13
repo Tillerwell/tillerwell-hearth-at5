@@ -3,8 +3,9 @@
  * (docs/ADAPTIVE_THERMOSTAT.md): run locks, the ceiling and the learned range width. Pure tick functions over an
  * at_snapshot_t so they can be tested on a host.
  *
- * Auto:    keep the room in the working range [work_low, auto_high]: start at or below work_low, run until the
- *          room reaches auto_high, and never stop inside the range. The working range is the user's range widened
+ * Auto:    keep the room in the working range [work_low, auto_high]: start at or below work_low (on the external
+ *          sensor higher up, when the run will still last 30 minutes: at_early.h), run until the room reaches
+ *          auto_high, and never stop inside the range. The working range is the user's range widened
  *          by the learned width (at_learn), at least 2 C on the controller's whole-degree sensor.
  * Freeze:  start whenever the temperature reaches the floor, regardless of Auto or a previous Stop, even inside
  *          the minimum off; only stops runs it started itself.
@@ -27,6 +28,7 @@
 #include "at_cooldown.h"
 #include "at_coast.h"
 #include "at_warm.h"
+#include "at_early.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -199,6 +201,7 @@ typedef struct {
     at_coast_t coast;           /* how far the room rises after a stop at the top: Hearth stops that much early (1.53) */
     at_warm_t warm;             /* warm by a set time: idle cooling, gross rates, arrival errors (1.56) */
     bool warm_in_range;         /* a warm-by timer may make one start inside the range (below the stop point) */
+    at_early_t early_start;     /* where Auto's next start happens, and the busy widening (1.60, docs/EARLY_START.md) */
 } at_ctl_t;
 
 /* Thermostat status for the apps (the "thermo" object). */
@@ -240,6 +243,8 @@ typedef struct {
     bool have_coast;
     float coast_typical;        /* the typical rise after a stop at the top, C */
     uint8_t coast_samples;
+    /* early start inside the range (1.60) */
+    at_early_out_t early;
 } at_ctl_status_t;
 
 void at_ctl_init(at_ctl_t *t, float auto_target, float freeze_target);
@@ -269,8 +274,11 @@ void at_ctl_set_auto(at_ctl_t *t, bool enabled, const at_snapshot_t *s, uint32_t
 void at_ctl_auto_off(at_ctl_t *t, bool finish, at_hold_t hold, at_src_t src, const at_snapshot_t *s, uint32_t now_ms,
                      const at_ctl_ops_t *ops);
 void at_ctl_disarm_auto(at_ctl_t *t, const char *note);
-/* The room temperature Auto's next start happens at: the bottom of the working range. */
+/* The room temperature Auto's next start happens at: on the external sensor up to 0.3 C below the top when the run
+ * will still last its 30 minutes (1.60, docs/EARLY_START.md), else the bottom of the working range. */
 float at_ctl_auto_start_at(const at_ctl_t *t);
+/* The same, with how it was worked out. */
+void at_ctl_early_point(const at_ctl_t *t, at_early_out_t *out);
 /* How far below the top Hearth's thermostat stops (the learned rise after a stop, 1.53; 0 on the controller's sensor
  * or until learned), and the reading it stops at. */
 float at_ctl_stop_early(const at_ctl_t *t);

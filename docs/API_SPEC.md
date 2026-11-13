@@ -180,7 +180,7 @@ When an owner's box dies, the app sets up the new box and the cloud moves the ol
 
 `thermo_learn` (firmware 1.47, §9.10) is what Heater Care learned about the space, so a replacement box restored from the cloud carries on from it. It is optional and older boxes ignore it; `v` stays 1. `hyst_min`/`hyst_max` in a backup are ignored since 1.47.
 
-Since firmware 1.56 `thermo_learn` also carries what warm by (docs/ADAPTIVE_THERMOSTAT.md §10) learns, and the early stop's rises: `light` (light-up seconds, the last 10), `gross_ext`/`gross_ctl` (gross heating rates, C per minute, the last 10 per sensor), `rise_ext`/`rise_ctl` (plain rise rates), `warm_by_err` (arrival errors in minutes, positive late, the last 5), `warm_by_lead` (leads used in minutes, the last 5) and `coast` (rises after a stop at the top in C, the last 7; before 1.56 a replacement box learned these again). Each is optional on `PUT`: a key that is missing leaves that list as it is, so an older backup still restores, and an older box ignores them. They change once per run at most.
+Since firmware 1.56 `thermo_learn` also carries what warm by (docs/ADAPTIVE_THERMOSTAT.md §10) learns, and the early stop's rises: `light` (light-up seconds, the last 10), `gross_ext`/`gross_ctl` (gross heating rates, C per minute, the last 10 per sensor), `rise_ext`/`rise_ctl` (plain rise rates), `warm_by_err` (arrival errors in minutes, positive late, the last 5), `warm_by_lead` (leads used in minutes, the last 5) and `coast` (rises after a stop at the top in C, the last 7; before 1.56 a replacement box learned these again). Each is optional on `PUT`: a key that is missing leaves that list as it is, so an older backup still restores, and an older box ignores them. They change once per run at most. From 1.60 it also carries `early` (`{"busy_w":0.2}`, §9.13), optional on `PUT` in the same way.
 
 Since firmware 1.58 `thermo_learn` carries the rest of what the box learns, so a replacement box restored from the cloud loses nothing:
 - `cooldown`: the heater's cooldown lengths in seconds (1.52), the last 10.
@@ -442,6 +442,23 @@ After Hearth's thermostat stops the heater at the top, the room usually keeps ri
 - `stop_early`: how far below the top it stops, 0 until learned or on the controller's sensor.
 - `coast_typical`: the typical rise after a stop at the top, C; null until 3 are known.
 - `coast_samples`: how many are kept. Kept across a restart (NVS `ctl_coast`); cleared by Reset learning, since it belongs to the space.
+
+### 9.13 Starting early inside the range (firmware 1.60)
+
+Plan and reasons: `docs/EARLY_START.md`. On the external room sensor Auto's next start is no longer always the bottom of the working range: it may be as high as the top less 0.3 C, as long as the run will still last its 30 minutes. With a set temperature of 19 it starts at 18.5 until anything is learned, and at up to 18.7 once the room is known to heat slowly. The working range (`work_low`, `work_high`), the stop point and the width learning are unchanged. On the controller's whole-degree sensor the start stays at `work_low`.
+
+`auto_start_at` (top level) is this start point, in 0.1 C steps. Added to `thermo`:
+
+```json
+"early": {"start_at": 18.7, "est": "model", "net_rate": 0.0255, "climb": 0.31, "busy_w": 0}
+```
+
+- `start_at`: the same as `auto_start_at`.
+- `est`: how it was worked out. `"model"`: warm by's gross heating rate on the external sensor less the room's current idle cooling (§9.10's `gross_ext`). `"gross"`: the gross rate alone, because there is no current cooling figure yet (a faster climb than the real one, so a lower start). `"halfway"`: no rate learned yet, the top less 0.5. `"off"`: on the controller's sensor, the bottom of the working range.
+- `net_rate`: the rate used, C per minute; `climb`: how far below the stop point a run must start to last its 30 minutes (rate × (30 min − typical warm-up) × 1.2). Both null for `halfway` and `off`. The start is the stop point less `climb`, never above the top less 0.3 less `busy_w`, never less than 0.1 below `stop_at`, never below `work_low`, rounded down to 0.1.
+- `busy_w`: the busy widening, C. A thermostat start that makes 3 of Auto's own starts within 2 hours (Auto switched on, warm by's start and fault retries do not count) widens the band by 0.2, up to the working width less 0.3 (the start is then `work_low`); after each widening it takes 3 new starts for the next. A start more than 2 hours after the one before narrows it by 0.1, down to 0. Kept across a restart (NVS `ctl_early`), in the backup (`thermo_learn.early.busy_w`), and cleared by Reset learning.
+
+From 1.60 a cooling time (`cool_typical_s`, the cold-spell guard) is also kept when the next run starts before the room reaches the working bottom: the time from the peak to the last reading before the start, scaled to the whole fall to the bottom, when the room fell at least 0.2 C and the scale is at most 5 times.
 
 ## 10. Test vectors
 

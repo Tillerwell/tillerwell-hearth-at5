@@ -1766,6 +1766,7 @@ static void test_cooldown(void)
 }
 
 #include "test_warm.inc"
+#include "test_early.inc"
 
 int main(void)
 {
@@ -1796,6 +1797,7 @@ int main(void)
     test_fuel();
     test_cooldown();
     test_warm();
+    test_early();
     printf("\n%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

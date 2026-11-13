@@ -254,9 +254,16 @@ function hcLine(){
       :t.reason==='narrowed'?'This space heats more slowly now, so Hearth has brought the range back towards yours.'
       :'This space heats quickly, so Hearth widened the range to rest the heater longer.'));
   }
+  const e=t.early;
+  if(st.auto_enabled&&e&&typeof e.start_at==='number'&&e.est&&e.est!=='off'&&(e.start_at>t.work_low+0.05||e.busy_w>0)){
+    out.push(e.start_at<=t.work_low+0.05?'Starts the heater at '+f(e.start_at)+' °C: it has been starting often, so Heater Care has moved the start back down to rest it longer.'
+      :e.busy_w>0?'Starts the heater at '+f(e.start_at)+' °C, a little lower than it could: it has been starting often, so Heater Care rests it longer.'
+      :e.est==='halfway'?'Starts the heater at '+f(e.start_at)+' °C, halfway, until Heater Care has learned how fast this space heats.'
+      :'Starts the heater at '+f(e.start_at)+' °C, before the bottom of the range: this space heats slowly, so a run from there still lasts 30 minutes.');
+  }
   if(t.holding==='timer_ended')out.push('Timer ended, finishing minimum run: '+mins(t.min_run_left_s)+' min left');
   else if(running()&&t.min_run_left_s>0)out.push(t.flame_on_at==null&&!s.burner_active&&s.state==='running'?'Heater Care: lighting up':'Heater Care: running at least '+mins(t.min_run_left_s)+' more min'+(t.run_adopted?' (box restarted)':''));
-  else if(!running()&&t.min_off_left_s>0&&s.auto_enabled&&s.effective_temp!=null&&s.effective_temp<=t.work_low)out.push('Heater Care: resting, '+mins(t.min_off_left_s)+' min before the next start');
+  else if(!running()&&t.min_off_left_s>0&&s.auto_enabled&&s.effective_temp!=null&&s.effective_temp<=(s.auto_start_at!=null?s.auto_start_at:t.work_low)+0.001)out.push('Heater Care: resting, '+mins(t.min_off_left_s)+' min before the next start');
   if(t.dip_below>0&&s.effective_temp!=null)out.push('Losing heat fast. Dropped '+f(t.dip_below)+' °C below the range while the heater rested its minimum 20 minutes.');
   if(t.last_run_end==='ceiling'&&!running())out.push('Stopped early: the room reached '+f(t.ceiling)+' °C, 5 °C above where Hearth stops the heater.');
   if(t.no_reading)out.push('No temperature reading. The heater will stop after its minimum run.');

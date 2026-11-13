@@ -305,6 +305,9 @@ bool at_app_warm_snapshot(at_warm_store_t *out);
 bool at_app_warm_put(const at_warm_store_t *st);
 bool at_app_coast_snapshot(at_coast_store_t *out);
 bool at_app_coast_put(const at_coast_store_t *st);
+/* Early start's busy widening (1.60), for the backup. */
+bool at_app_early_snapshot(at_early_store_t *out);
+bool at_app_early_put(const at_early_store_t *st);
 /* The heater's learned cooldown lengths (1.52) and Heater Care's run log (1.55), for the backup (1.58): copy out / put
  * back and save. False if what is put back does not make sense. */
 bool at_app_cd_snapshot(at_cd_store_t *out);

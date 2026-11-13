@@ -295,7 +295,18 @@ static void decide(at_learn_t *L, at_sensor_t s, float user_w)
 void at_learn_run_start(at_learn_t *L, uint32_t now, at_sensor_t sensor, bool by_thermo, bool off_known,
                         uint32_t off_ms)
 {
-    /* the off period before this run ends here */
+    /* the off period before this run ends here. A run started above the working bottom (an early start, 1.60, warm by
+     * or someone's start): the time from the peak to the latest reading, scaled up to the whole fall to the bottom,
+     * so cooling times are still kept when the room never gets there */
+    if (L->cool_on && !L->cool_bad && !L->reached_bottom && L->have_peak && L->cool_last_ok) {
+        float fell = L->peak - L->cool_last_temp, need = L->peak - L->cool_low;
+        if (fell >= AT_LEARN_COOL_MIN_FALL - EPS && need > 0 && need <= fell * AT_LEARN_COOL_MAX_SCALE + EPS) {
+            double ms = (double)(L->cool_last_ms - L->peak_ms) * (need > fell ? need / fell : 1.0);
+            if (ms > 24.0 * 3600.0 * 1000.0) ms = 24.0 * 3600.0 * 1000.0;
+            L->reached_bottom = true;
+            L->cool_ms = (uint32_t)ms;
+        }
+    }
     L->last_have_cool = L->cool_on && !L->cool_bad && L->reached_bottom;
     L->last_cool_s = L->last_have_cool ? L->cool_ms / 1000u : 0;
     L->last_cool_sensor = L->cool_sensor;
@@ -361,6 +372,10 @@ void at_learn_sample(at_learn_t *L, uint32_t now, float temp, at_sensor_t sensor
                 L->reached_bottom = true;
                 L->cool_ms = now - L->peak_ms;
             }
+            L->cool_last_ok = true;
+            L->cool_last_temp = temp;
+            L->cool_last_ms = now;
+            L->cool_low = work_low;
         }
     }
     if (L->in_run) {
@@ -410,6 +425,7 @@ void at_learn_stop(at_learn_t *L, uint32_t now, bool at_top)
         L->have_peak = false;
         L->reached_bottom = false;
         L->cool_ms = 0;
+        L->cool_last_ok = false;
     }
 }
 

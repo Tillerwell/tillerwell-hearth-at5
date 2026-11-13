@@ -1,6 +1,6 @@
 # Early start inside the range: plan
 
-Status: **planned, not built.** Decisions agreed with Chris on 2026-11-13. This adds to Heater Care ([ADAPTIVE_THERMOSTAT.md](ADAPTIVE_THERMOSTAT.md), which is built) and changes one of its rules: today every thermostat run starts at or below the bottom of the working range. After this, a run may start higher, between the bottom and the top, when Hearth is sure the run will still last its 30 minute minimum.
+Status: **built, firmware 1.60 (RoamOS 1.0060, 2026-11-13).** See §11 for where the build differs from the plan below. Decisions agreed with Chris on 2026-11-13. This adds to Heater Care ([ADAPTIVE_THERMOSTAT.md](ADAPTIVE_THERMOSTAT.md), which is built) and changes one of its rules: today every thermostat run starts at or below the bottom of the working range. After this, a run may start higher, between the bottom and the top, when Hearth is sure the run will still last its 30 minute minimum.
 
 ## 1. Why
 
@@ -111,3 +111,18 @@ The 3-in-2-hours and step figures are first guesses. Check them against real cyc
 - **Overshoot on a fast day.** If the room heats faster than the live rate said, it reaches 19 before 30 minutes and the minimum run carries it over. The 1.2 margin and the 0.3 floor limit how far.
 - **Sensor noise at 0.3°C.** The external sensor reads to 0.1°C. A noisy reading near `start_at` could start a run a little early; the 20 minute rest and 30 minute run stop that becoming short cycling.
 - **Old cooling figures** until the §6 fix is in.
+
+## 11. As built (firmware 1.60)
+
+Code: `components/at_core/at_early.c` / `include/at_early.h`, wired in `at_ctl.c` (`at_ctl_early_point`, `auto_start_ok`, `tick_auto`), saved as NVS `ctl_early` in `at_app.c`, backup key `early` in `at_app_thermo.c`, status `thermo.early` in `at_json.c` (API_SPEC §9.13). Tests: `host_tests/test_early.inc`.
+
+Where it differs from the plan above:
+
+- **A fourth estimate, `gross`.** When warm by has the gross heating rate but no current idle cooling figure yet (it needs 30 minutes of idle readings after the room has fallen 0.3 below its peak, which in normal cycling often comes after the start point), the gross rate is used with no loss taken off. That is a faster climb than the real one, so a lower start: the safe side, and better than dropping to halfway every time.
+- **Never less than 0.1 below the stop point.** With the early stop (coast) the stop point can sit below `hi − 0.3`; the start is capped at `stop_at − 0.1` so a run always has something to climb.
+- **Rounded down to 0.1.** The cabin's fastest run (net 0.0255, 20 min warm-up) gives 18.69, so 18.6, not 18.7.
+- **Warm-up not known: none assumed** (the whole 30 minutes of climb), the cautious side.
+- **The busy rule counts Auto's own cycling starts only**: not Auto being switched on (by a person or a thermostat timer), not warm by's start inside the range, not fault retries. After a widening it takes 3 new starts for the next step, so one fast burst widens once rather than on every start. The start times are RAM only; only `busy_w` is saved, so the first start after a restart is never judged calm.
+- **Cooling-time fix (§6):** the first option. At the next run's start, if the room never reached the working bottom, the time from the peak to the last reading is scaled to the whole fall to the bottom (`at_learn_run_start`), when the room fell at least 0.2 C and the scale is at most 5×. It applies to any run started above the bottom (early start, warm by, a manual start). Runtime fields only: the `at_learn` store is unchanged.
+
+Known limit, seen in the simulator: on a room that heats very slowly the warm-up (a 0.2 C rise from flame) can take more than 20 minutes, and `at_learn` then gives the run no rate (`AT_LEARN_MAX_WARM_MS`), so warm by never gets a gross rate and the start stays at halfway (18.5 for 19). The cabin's runs had 15 to 49 minute warm-ups. Check the run log after release (§9 step 5): if `thermo.early.est` stays `halfway`, the warm-up cap is what to look at next.
