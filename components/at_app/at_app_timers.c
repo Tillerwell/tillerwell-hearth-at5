@@ -21,7 +21,7 @@ static const char *TAG = "timers";
 #define NVS_NS        "autoterm"
 #define KEY_TIMERS    "timers"
 #define KEY_TZ        "tz"
-#define STORE_VERSION 1
+#define STORE_VERSION 2         /* 2 (1.56): warm_by, in what was padding in version 1 (same size) */
 #define MIN_EPOCH     1704067200LL   /* 2024-01-01: anything earlier is a clock that was never set */
 #define MAX_EPOCH     4102444800LL   /* 2100-01-01 */
 
@@ -76,10 +76,14 @@ static void load_list(void)
         if (buf && nvs_get_blob(h, KEY_TIMERS, buf, &size) == ESP_OK) {
             store_hdr_t hdr;
             memcpy(&hdr, buf, sizeof(hdr));
-            if (hdr.version == STORE_VERSION && hdr.item_size == sizeof(at_timer_t) && hdr.count <= AT_TIMERS_MAX &&
-                size == sizeof(hdr) + hdr.count * sizeof(at_timer_t)) {
+            if ((hdr.version == STORE_VERSION || hdr.version == 1) && hdr.item_size == sizeof(at_timer_t) &&
+                hdr.count <= AT_TIMERS_MAX && size == sizeof(hdr) + hdr.count * sizeof(at_timer_t)) {
                 at_timer_t tmp[AT_TIMERS_MAX];
                 memcpy(tmp, buf + sizeof(hdr), hdr.count * sizeof(at_timer_t));
+                /* version 1 had padding where warm_by now is: never trust what was in it */
+                if (hdr.version == 1) {
+                    for (uint32_t k = 0; k < hdr.count; k++) tmp[k].warm_by = 0;
+                }
                 at_localtime_t noclock = {0};   /* nothing is "in the past" without a clock */
                 at_timer_problem_t p = at_timers_validate(tmp, (int)hdr.count, tmp, (int)hdr.count, &noclock, 0);
                 if (p.err == AT_TERR_NONE) {
@@ -230,14 +234,16 @@ esp_err_t at_app_timers_set(const at_timer_t *list, int n, at_timer_problem_t *p
     xSemaphoreTake(s_lock, portMAX_DELAY);
     at_localtime_t now;
     local_now(&now);
-    at_timer_problem_t p = at_timers_validate(list, n, s_list, s_n, &now, gap);
+    /* a sender that did not send warm_by keeps the stored value for that id */
+    memcpy(cand, list, (size_t)n * sizeof(at_timer_t));
+    at_timers_resolve_warm_by(cand, n, s_list, s_n);
+    at_timer_problem_t p = at_timers_validate(cand, n, s_list, s_n, &now, gap);
     if (problem) *problem = p;
     if (p.err != AT_TERR_NONE) {
         xSemaphoreGive(s_lock);
         free(cand);
         return ESP_ERR_INVALID_ARG;
     }
-    memcpy(cand, list, (size_t)n * sizeof(at_timer_t));
     int n2 = at_timers_prune_expired(cand, n, &now, s_runner.active ? s_runner.id : NULL);
     esp_err_t err = save_list_locked(cand, n2);
     if (err == ESP_OK) {
@@ -266,6 +272,24 @@ void at_app_timer_status(at_timer_status_t *o)
         o->have_next = true;
         strlcpy(o->next_id, s_list[idx].id, sizeof(o->next_id));
         o->next_start_epoch = local_minute_to_epoch(lm);
+        o->next_earliest_epoch = o->next_start_epoch;
+        const at_timer_t *t = &s_list[idx];
+        if (t->mode == AT_TMODE_THERMOSTAT && t->warm_by == 1) {
+            o->next_warm_by = true;
+            o->next_earliest_epoch = o->next_start_epoch - AT_TIMER_WARM_MIN * 60;
+            if (s_runner.warm_on && !strcmp(s_runner.warm_id, t->id) &&
+                s_runner.warm_start_epoch == o->next_start_epoch && s_runner.warm_expected_epoch > 0) {
+                /* inside the warming window: the live prediction, or when it fired */
+                o->next_expected_epoch = s_runner.warm_expected_epoch;
+                o->next_estimate = s_runner.warm_est;
+            } else {
+                /* before the window: the typical lead of the last warm-by runs, no forecast of the room */
+                uint32_t lead;
+                if (!at_app_warm_typical_lead(&lead)) lead = AT_WARM_FIXED_LEAD_MIN;
+                o->next_expected_epoch = o->next_start_epoch - (int64_t)lead * 60;
+                o->next_estimate = at_app_warm_estimate((float)t->high_c);
+            }
+        }
     }
     o->active = s_runner.active;
     if (s_runner.active) strlcpy(o->active_id, s_runner.id, sizeof(o->active_id));
@@ -279,7 +303,19 @@ static bool op_preheat(void *ctx, int minutes) { return at_app_start_preheat(min
 static bool op_begin(void *ctx, int low, int high) { return at_app_timer_thermostat_begin(low, high); }
 static void op_end(void *ctx, bool disarm) { at_app_timer_thermostat_end(disarm); }
 static bool op_take_over(void *ctx) { return at_app_timer_can_take_over(); }
-static const at_timer_ops_t s_ops = {op_preheat, op_begin, op_end, NULL, op_take_over};
+static bool op_warm_plan(void *ctx, const at_timer_t *t, int64_t start_epoch, at_warm_plan_t *out)
+{
+    return at_app_warm_plan(t, start_epoch, out);
+}
+static bool op_warm_begin(void *ctx, const at_timer_t *t, int64_t start_epoch, const at_warm_plan_t *plan, uint8_t hint,
+                          float *room)
+{
+    return at_app_warm_begin(t, start_epoch, plan, hint, room);
+}
+static bool op_frost_run(void *ctx) { return at_app_timer_frost_run(); }
+static int64_t op_local_to_epoch(void *ctx, int64_t lm) { return local_minute_to_epoch(lm); }
+static const at_timer_ops_t s_ops = {op_preheat, op_begin, op_end, NULL, op_take_over,
+                                     op_warm_plan, op_warm_begin, op_frost_run, op_local_to_epoch};
 
 static void timers_task(void *arg)
 {

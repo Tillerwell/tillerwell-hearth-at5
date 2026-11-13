@@ -1,6 +1,6 @@
 # Heater Care (adaptive thermostat range and run locks): plan
 
-Status: **built (the fixes are in firmware RoamOS 1.0048, apps, Home Assistant), 2026-11-11.** Still not bench tested on the test heater (§7 step 6).
+Status: **§1 to §8 are built**: firmware 1.47 (RoamOS 1.0047, 2026-11-11) with the review fixes in 1.48, plus the apps and Home Assistant. Later changes are marked where they apply: one set temperature (1.49), the stuck-sensor rule (1.50), a restart keeping a run's true age (1.51), stopping early by the rise after a stop (1.53), Heater Care's history sent to the cloud in the backup as `heater_care` (1.54, API_SPEC §7.5), the run log kept across a restart (1.55), and warm by a set time (§10, firmware 1.56). Still not bench tested on the test heater (§7 step 6, §10.10 step 5).
 
 **Since 1.49 the user sets one temperature, not a range.** It is the top of the range, and the user's range is always the 1°C below it (set 20 → 19–20). Where this document says "the user's range", read that fixed 1°C. Everything else (the working range, the learning, the locks) is unchanged.
 
@@ -24,7 +24,7 @@ The 30 minute minimum run and 20 minute rest are Hearth's own control choice. Th
 | Narrowing | Slow runs work out a narrower width. Never narrower than the user's range. Runs after an unusually fast cool-down do not count (cold-night guard). |
 | Sensor drops out | While on the controller's whole-degree reading, the working range is at least 2°C. Back to the learned range when the external sensor returns. **Learning continues** on both sensors. |
 | Learning and the two sensors | **Each sensor keeps its own last 3 runs**, so a decision is only ever made from runs measured on the same sensor. The learned width is still **one number for the space**, changed by whichever sensor is in use. |
-| Stuck sensor | If the **external** sensor's reading has not moved at all for **15 min** while the heater is giving heat, Hearth treats it as failed and switches to the controller's reading. Not applied to the controller's whole-degree sensor, which often sits still. |
+| Stuck sensor | If the **external** sensor's reading has not moved at all for **15 min** while the heater is burning **and the controller's own reading has risen 2°C or more in that time** (the second half added in 1.50, §3.1), Hearth treats it as failed and switches to the controller's reading. Not applied to the controller's whole-degree sensor, which often sits still. |
 | Minimum run | **30 min from when the flame is established** (the heater reports it is burning), not from switch-on. Light-up time comes on top. Hearth's own stops (thermostat, timer end, lost readings) are held until the minimum run is up, even if the room goes over the top. A heater fault, reaching the temperature ceiling, or a stop the user asks for always takes effect at once. |
 | Frost protection minimum run | **20 min from flame established.** Shorter than the thermostat's, so an empty space is not heated far past its frost target. |
 | Ceiling | **Top of the range + 5°C** (for frost protection, its stop point + 5°C). If the room reaches it, Hearth stops the heater even inside the minimum run. A backstop for a very small space or something gone wrong. It should never fire in normal use. |
@@ -60,7 +60,7 @@ The 30 minute minimum run and 20 minute rest are Hearth's own control choice. Th
 ### 3.1 Control loop: `at_ctl.c` / `at_ctl.h`
 
 - **Room reading filter:** the room reading used by the thermostat, frost protection, the ceiling and the learning is the middle value of the last 3 readings from the sensor in use. One bad reading then cannot start or stop a run, trip the ceiling, or upset the learning. The filter restarts when the sensor changes. First check what filtering the sensor code already does, so it is not done twice.
-- `tick_auto` uses the working range in place of `low`/`high`. The rule "a run only ends at the top" stays.
+- `tick_auto` uses the working range in place of `low`/`high`. The rule "a run only ends at the top" stays. From 1.53 the stop point is the top less the learned early stop (§3.2, "Stopping early"), so the room's peak lands on the top.
 - **Minimum run lock:** record `run_on_ms` when the heater leaves idle and `flame_on_ms` when it first reports burning in that run. Hearth's thermostat stop is held back until `now - flame_on_ms >= 30 min`, and for the whole of light-up before that, even if the room is above the top. Confirm in `docs/PROTOCOL.md` which `state_raw` value means the flame is established. Both times use the uptime clock, never the wall clock, so a clock change cannot shorten a lock. The note says so: "at 22.4, above 21.0, holding: minimum run 8 min left".
 - **What the run lock holds back:** every stop Hearth would send by itself. That is the stop at the top, the stop when a timer ends (§3.4), the stop when the thermostat is turned off or the range is lowered with "Let it finish", and the stop after every temperature reading is lost.
 - **What the run lock never holds back:** a fault, the ceiling, and a stop the user asked for.
@@ -133,7 +133,7 @@ Cooling never widens or narrows the range by itself (it moves with the weather, 
 
 **Stopping early (1.53).** The rise from the stop to that peak is also learned on its own (`at_coast.c`, API_SPEC §9.12). From 3 stops at the top on the external sensor, Hearth stops by the median rise below the top (at most 1°C and half the working range), so the room peaks at the set temperature instead of over it. The top of the range itself never moves, and a stop still waits for the 30-minute minimum run. Not on the controller's whole-degree sensor.
 
-The typical cooling time is also what a later "warm by a set time" feature for timers will need (§9), so it is stored from the start.
+The typical cooling time is also what a later "warm by a set time" feature for timers will need (§10), so it is stored from the start.
 
 Store in NVS (one blob, versioned): learned width, the 3-run window for each sensor, the last 10 warm-up delays and the last 10 cooling times for each sensor, the limit state of each sensor, and a history ring of the last 20 changes and events (width changes, "limit reached", "limit cleared", resets), each with its time, sensor, reason, the widths, and the rise rates that caused it. Write only when something changes, never every tick.
 
@@ -142,7 +142,7 @@ Store in NVS (one blob, versioned): learned width, the 3-run window for each sen
 - Today `hyst_min` is clamped 2–7 and `hyst_max` 1–3, the default is 2 + 1 (`at_app.c:285-289`, `621-628`), and `at_app.c:543`/`608` require `range >= hyst_min + hyst_max`.
 - New: the minimum user range is 1°C on either sensor. `hyst_min`/`hyst_max` become **read-only compatibility fields**, always reported as 0.5 + 0.5, so older apps that add them up get a 1°C minimum. (iOS and tvOS read them as decimals and round the sum up, so this works with today's builds. Check Android does the same.) The `hysteresis` command is accepted and ignored with `"skipped"`, and older apps keep working.
 - **No migration.** The default range on a fresh box becomes 20–21 (`at_app.c:288`, now 19–22). A range already saved on a box is loaded as it is. Learned width starts at 0.
-- `auto_target` stays the middle of the user range.
+- `auto_target` was the middle of the user range in 1.47 and 1.48. Since 1.49 it is the one set temperature, the same as `auto_high` (API_SPEC §9.10).
 
 ### 3.4 Timers: `at_timers.c` / `at_timers.h`
 
@@ -180,7 +180,7 @@ New fields in `/api/status` (and the MQTT state):
 }
 ```
 
-`min_width` is the narrowest working range on the current sensor (1.0 external, 2.0 controller). The user's own range may be 1°C on either. `rise_rate`, `warmup_typical_s` and `cool_typical_s` are the values for the sensor in use.
+`min_width` is the narrowest working range on the current sensor (1.0 external, 2.0 controller). The user's own range may be 1°C on either. `rise_rate`, `warmup_typical_s` and `cool_typical_s` are the values for the sensor in use. Added since: `run_adopted` (1.51, §3.1 Boot), and `stop_at`, `stop_early`, `coast_typical` and `coast_samples` (1.53, API_SPEC §9.12). API_SPEC §9.10 to §9.12 is the full list.
 
 - `GET /api/thermo/history`: the learning history ring and the last 20 runs (with whether each counted and why not, and the cooling of the off period before each), for the apps' "Why?" screen.
 - `POST /api/cmd {"cmd":"thermo_learn_reset"}` (manager): clears the learned width and history, logged.
@@ -204,7 +204,7 @@ Cases to cover before any hardware test:
 - Timer ends 10 min into a run: the stop waits until the minimum run is up, then goes. A new or edited timer shorter than 30 min is refused. One already saved still loads.
 - Minimum run counts from flame established: a run with a 12 min light-up is held for 42 min from switch-on. A stop asked for during light-up is held too.
 - Frost protection reaches target + 1°C after 12 min: it stops at 20 min from flame established, not 30. Its ceiling is its stop point + 5°C.
-- Stuck sensor: the external reading sits at exactly 20.0°C for 15 min while burning → Hearth switches to the controller's reading. The same on the controller's sensor does nothing. A reading that then moves is trusted again.
+- Stuck sensor: a flat reading on the controller's own sensor never sets anything aside. (The external sensor's cases, as changed in 1.50, are further down.)
 - Sensor disappears 2 min into a run: the run carries on to the end of its minimum run, then stops.
 - External sensor drops out and returns several times: each run goes into its own sensor's window, and no decision mixes the two.
 - Power cut mid-run: boot with the "run in progress" mark set and the heater idle → 20 min rest from boot. Boot with the heater still running → run lock from the saved flame time, or from boot when that is not known (`run_adopted`).
@@ -249,7 +249,6 @@ Cases to cover before any hardware test:
 - Sensor drop mid-run: working range jumps to at least 2°C, returns afterwards.
 - No migration: a saved 18–21 range loads unchanged. A fresh box defaults to 20–21, and its working range is 19–21 on the controller's sensor.
 - Backup round trip keeps the learned width and history.
-- Boot with the heater already running: run lock counted from boot.
 
 ## 4. Apps
 
@@ -266,7 +265,7 @@ The wording below is a draft for Chris to adjust. Short, plain, no jargon. The f
 - **Thermostat off, or range lowered below the room, inside 30 min:** the same sheet. **Let it finish** makes the change and lets the run reach 30 min. **Stop anyway** stops at once.
 - **Manual start inside 20 min of a stop:** the same kind of sheet: "The heater stopped 12 minutes ago. Heater Care rests it for 20 minutes between runs." Buttons: **Wait** / **Start anyway**.
 - **Early stop explainer:** when `early_stop_unseen > 0`, a one-time card: "The heater was stopped after 9 minutes (from HomeKit). Heaters like this last longer with fewer, longer runs, so Heater Care's own thermostat always runs at least 30 minutes." Then send `early_stop_seen`.
-- **Ceiling and lost readings:** a plain line when either happens: "Stopped early: the room reached 26°C, 5°C over your range." / "No temperature reading. The heater will stop after its minimum run." / "The room sensor has not changed for 15 minutes, so Hearth is using the controller's reading."
+- **Ceiling and lost readings:** a plain line when either happens: "Stopped early: the room reached 26°C, 5°C over your range." / "No temperature reading. The heater will stop after its minimum run." / "The room sensor has stopped changing while the heater warms the space, so Hearth is using the controller's reading."
 - **Timers:** shortest timer 30 min.
 - **First time the thermostat is turned on** (stored per phone): a 3-line Heater Care explainer of the 1°C range, learning, and the two locks.
 
@@ -293,7 +292,7 @@ The wording below is a draft for Chris to adjust. Short, plain, no jargon. The f
 - `docs/PROTOCOL.md`, "Start, thermostat mode": the working range, the locks, the ceiling, learning, and how the heater's own burner pause is read.
 - `docs/API_SPEC.md`: §3.5 above.
 - `docs/TIMERS.md`: the new minimum width, the 30 min shortest timer, and the overrun at a timer's end.
-- Tillerwell `CLAUDE.md`: replace the "18–21 acts like the Comfort Controller set to high − 1" paragraph with the new rules (1°C range, learning lowers the bottom, 30/20 min locks, never stopped inside 30 min except by a fault or the ceiling). Done with the firmware change, not after it, so agents do not follow the old rule in between.
+- Tillerwell `CLAUDE.md` (done, and kept up to date through 1.53): replace the "18–21 acts like the Comfort Controller set to high − 1" paragraph with the new rules (1°C range, learning lowers the bottom, 30/20 min locks, never stopped inside 30 min except by a fault or the ceiling). Done with the firmware change, not after it, so agents do not follow the old rule in between.
 
 ## 7. Order of work and release
 
@@ -304,14 +303,14 @@ The wording below is a draft for Chris to adjust. Short, plain, no jargon. The f
 5. Device web UI (§4.4).
 6. Bench test on the test heater (192.168.10.157): run lock, off lock, ceiling, timer overrun, early stop logging, sensor drop, restart during the rest, frost protection's 20 min run. Also run several cycles on each sensor in turn and watch the shared learned width: if the two sensors keep pulling it wider and narrower, give each sensor its own width. **Short taps only, never hold Start.**
 7. iOS + tvOS, then Android, each built and installed on the real devices and tested against the bench firmware.
-8. **Release everything the same day:** firmware (e.g. 1.47, with clean-up of the build files afterwards) and the apps. The apps also work with the old firmware, so they can be approved and waiting before the firmware goes out.
+8. **Release everything the same day:** firmware (it went out as 1.47, with clean-up of the build files afterwards) and the apps. The apps also work with the old firmware, so they can be approved and waiting before the firmware goes out.
 
 ## 8. Risks
 
 - **Overshoot in small spaces** until learning catches up. With the heater at full output for 30 min, the first few runs can take a small space several degrees over the top. The ceiling limits it to 5°C over.
 - **Whole-degree sensor** makes learning coarse, so it may widen one step late.
 - **No reading mid-run:** up to a full minimum run with no room reading and no ceiling. Only the heater's own coolant limit applies (decision: accepted, both sensors failing together is rare).
-- **Stuck-sensor check** could set aside a good external sensor in a space so large that the reading truly does not move in 15 min of burning. It falls back to the controller's reading, so the cost is a wider range for a while, not a wrong stop.
+- **Stuck-sensor check:** before 1.50 it set aside a good external sensor whenever the room held steady for 15 min of burning, and that happened in use. Since 1.50 it also needs the controller's reading to climb 2°C in that time. What is left: a sensor that is truly stuck is not caught when the controller's reading does not climb either, and the run then ends at the ceiling on the controller's reading or with someone's stop.
 - **Runs are longer than 30 min** from switch-on, by the light-up time (up to about 15 min by Autoterm's figures).
 - **Timers overrun:** a thermostat timer can now end up to 30 min plus light-up late. The status line says why.
 - **Old apps on new firmware** show the user range, not the working range, until updated. The thermostat itself behaves correctly.
@@ -319,4 +318,146 @@ The wording below is a draft for Chris to adjust. Short, plain, no jargon. The f
 
 ## 9. Later (not part of this build)
 
-- **Warm by a set time:** a timer starts early enough that the room reaches its range at the timer's start time, using the learned heating speed, the typical warm-up delay and the typical cooling time recorded from this build.
+- **Warm by a set time:** built in firmware 1.56 (§10).
+
+## 10. Warm by a set time (firmware 1.56)
+
+Status: **firmware built, 2026-11-13 (1.56), with host tests (`host_tests/test_warm.inc`).** Chris agreed three of the decisions in §10.1 on 2026-11-13 and asked for the plan to be built the same day, which took the remaining recommendations as they stand. Not bench tested on the test heater yet (§10.10 step 5).
+
+What the build settled that the plan left open:
+- Code: `components/at_core/at_warm.c` (the tracker, the saved lists, the prediction, following a warm-by run), the warming window in `at_timers.c` (`tick_warm`), the one start inside the range in `at_ctl.c` (`at_ctl_allow_warm_start`), and the glue in `at_app.c` (`at_app_warm_*`). The saved blob is `ctl_warm`.
+- Before anything is learned the prediction takes 5 minutes each for light-up and warm-up (`AT_WARM_DEF_LIGHT_S`, `AT_WARM_DEF_WARM_S`). A light-up time is kept from any run that reached flame (under 30 minutes); a rise rate from any run with a good fit, however it ended.
+- The idle tracker's current loss needs 30 minutes of idle readings for the full model; a run's gross rate needs 15.
+- A warm-by timer's start at the start time (the prediction never got there) fires as normal and is logged `at_start`. A busy heater that delays it is logged `delayed`, and so is a start made while the 20 minute rest still had time to run. A warm-by run that never started the heater (the room was warm enough) is logged `in_range`.
+- The arrival is the reading reaching Auto's stop point (`stop_at`) while the warm-by run is followed. It is followed until then, until the start + 30 minutes, or until the run ends or the timer's window ends.
+- Timers are saved as version 2 of the `timers` blob: `warm_by` sits in what was padding, so the size is unchanged and a version 1 list loads with it cleared.
+- Firmware auto-update treats the next timer as starting 2 hours early when it is a warm-by timer, so an update never lands in a warming window.
+
+A thermostat timer marked **warm by** starts early enough that the room is at the timer's set temperature at the timer's start time. "Warm by 07:00 at 20°C" means 20°C at 07:00, not the heater lighting at 07:00.
+
+### 10.1 Decisions to make first
+
+| Question | Recommendation |
+|---|---|
+| What counts as "warm" (built as recommended) | **The timer's top (`high_c`, the set temperature).** That is what a user means. Reaching only the bottom would leave the room a degree short at the time they asked for. With the early stop (1.53) Hearth stops a little under the top and the room coasts up to it, so "reached" means the reading getting to Auto's stop point (`stop_at`), which is the top until an early stop is learned. |
+| A room already inside the range at the planned start | Auto's rule is that a run only starts at or below the working bottom (§3.1). For a warm-by timer, allow **one** start inside the range, but only when the predicted climb to the top, from flame established, is at least **30 min** (agreed 2026-11-13). Hearth's stop waits for 30 min of burning (§3.1), so a shorter climb would carry on past the top until the 30 min is up. Leave it and accept the room a little under the top. (The first draft said 20 min, which would overshoot for up to 10 min.) |
+| Longest early start (built as recommended) | **120 min** before the start time. A longer prediction is capped, and the status says the room may not be fully warm by then. |
+| Not enough learned data yet (built as recommended) | Fall back in steps (§10.3): the plain typical rise rate, then a fixed **60 min** lead. The status says it is still learning. |
+| The controller's whole-degree sensor (built as recommended) | Use the fallback rise rate with a bigger margin. Its cooling slope over an hour is one or two tick-overs, too coarse to measure heat loss (the same reason the early stop in 1.53 is external-sensor only). |
+| Preheat timers (built as recommended) | **Not offered.** They have no room target. |
+| Heater busy when the early start comes due | **Wait, do not skip** (agreed 2026-11-13). Today a firing that finds the heater busy is skipped for good (TIMERS.md). The warming window is checked every minute anyway, so a warm-by timer keeps trying until its start time and starts as soon as the heater is free, the 20 min rest included. Only the last try, at the start time, is skipped with a note as now. |
+| Frost protection running in the window | **The warm-by timer takes the run over** (agreed 2026-11-13). Frost protection runs on the same cold mornings, and today its run makes a timer skip as "heater already running". A run going while Auto is on already belongs to Auto (§3.1), so arming Auto with the timer's range is enough: the run carries on to the timer's top with Auto's 30 min lock. Needs `can_take_over` to say yes for a frost run, for warm-by timers only. |
+| A restart after the early start (built as recommended) | **The same as any thermostat timer today:** nothing about a timer's Auto run is saved, so Auto is not armed again and the running heater is left as it is (TIMERS.md). The timer does not fire a second time for that start. Accepted, because a restart in that hour is rare. |
+| Outside temperature or weather data (built as recommended) | **Not used.** The room's own cooling just before the start measures the heat loss right now, including wind, sun and a door left open. A box on a boat may have no internet, so weather data would fail exactly where it is needed. Revisit only if the bench results show the cooling slope is not good enough. |
+
+### 10.2 The model
+
+How fast the room climbs is the heater's output minus what the space loses, and the loss grows with the gap to outside. So a single typical rise rate starts too late on the cold mornings, which are the ones that matter.
+
+- **Gross heating rate** (°C/min): for each run, its fitted rise rate (as now, §3.2) **plus** the cooling slope measured in the off period just before it. The cooling slope is always written as a positive number of °C lost per minute, and a room that was warming while the heater was off (sun, a stove) counts as a loss of 0, never a negative one. This is roughly the heater's output divided by how much heat the space holds, so it should stay much the same from season to season.
+- **Current loss** (°C/min): the room's cooling slope over the last 30–60 min, with the heater off.
+- **Predicted rise rate** = gross heating rate − current loss. If it comes out under 0.005°C/min (`AT_LEARN_MIN_RATE`, the same floor the learning uses), the heater cannot be shown to win against the loss, and the lead is the longest early start.
+- **Lead time** = light-up + warm-up delay + (top − current reading) ÷ predicted rise rate + margin + learned correction, plus any remaining 20 min off lock (§3.1), capped at the longest early start.
+
+The cooling slope is measured at the room's temperature before the run, but the loss grows as the room warms, so the straight line underestimates the end of the climb. The margin (10% of the climb, at least 5 min) and the learned correction (§10.4) cover that.
+
+The prediction aims at the top itself, not at Auto's early stop point. That is a few minutes on the safe side, and the learned correction takes it out again if it turns out to matter.
+
+### 10.3 Learning: `at_learn.c` / `at_learn.h`, and a new `at_warm.c`
+
+**Keep the new saved data out of the `at_learn` store.** The prediction, its saved lists and the idle cooling tracker go in a new pure-C file, `at_warm.c`, with its own small versioned NVS blob, the way `at_coast.c` was added in 1.53 (`ctl_coast`). `at_learn_store_t` and `AT_LEARN_VERSION` then do not change, nothing already learned can be lost on the update, and no migration is needed. `at_learn.c` only hands over each run's numbers when the run ends. Reset learning clears the new blob too, as it does for the early stop.
+
+What is there today, and what is missing:
+
+- Warm-up delays and cooling times: median of the last 10 for each sensor, saved. **Reused as they are.**
+- Light-up time: worked out per run (`light_s`), but kept only in the run log in RAM. **Add** a saved median of the last 10 (one list, it does not depend on the sensor).
+- Rise rates: kept only in the 3-run decision window, which is cleared on every width change. **Add** a saved median of the last 10 gross heating rates for each sensor, never cleared by a width change, and a saved median of the last 10 plain rise rates for the fallback.
+- Cooling is only followed after Hearth's own stop at the top (`cool_on`), and only as a time from the peak to the bottom. **Add an idle cooling tracker** that runs whenever the heater is idle and the reading is fresh, however the last run ended. It keeps a straight-line fit over the last 60 min of readings, held as one averaged reading a minute (60 values, RAM only, empty after a restart). It restarts on a sensor change or a start, and after a stop it only begins once the room has passed its peak (0.3°C below it, the same test `at_coast.c` uses), so the rise from the warm coolant after a stop is never read as a loss of 0. It is used two ways: as the current loss for the prediction, and, at each run's start, as the loss to add to that run's rise rate. A run with less than 15 min of idle readings before it adds no gross rate. That includes back-to-back runs and any start after a power loss.
+- All runs with a good rise rate count, including those after more than 2 hours off. The 2 hour rule (`AT_LEARN_MAX_OFF_MS`) only keeps a run out of the width decision. Warm-by runs nearly always follow a long night off, and they are exactly the runs the prediction needs.
+
+Fallback order for the predicted rise rate:
+1. External sensor, at least 3 gross rates and a current cooling slope: the full model.
+2. At least 3 plain rise rates on the sensor in use: their median, with a margin of 20% (25% on the controller's sensor).
+3. Otherwise a fixed 60 min lead.
+
+**Saved store:** the new blob (`ctl_warm`, its own version 1) holds the light-up times, the gross and plain rise rates for each sensor, and the warm-by errors and leads (§10.4). The first draft put these in the `at_learn` store and raised `AT_LEARN_VERSION` to 2; `at_learn_restore` refuses any version but its own (`at_learn.c:529`), so that needed a migration to avoid a box forgetting everything it had learned. A separate blob avoids the question. The backup's `thermo_learn` gains `light`, `gross_ext`, `gross_ctl`, `rise_ext`, `rise_ctl`, `warm_by_err` and `warm_by_lead`. They are optional on `PUT`, so an older backup still restores, and an older box ignores them.
+
+### 10.4 Learning from how it went
+
+For each warm-by run, record the predicted time the room reaches the top and the time it actually did (the reading at Auto's stop point, §10.1). The error is actual minus predicted, in minutes: positive means the room was late. A room that has not got there by the timer's start + 30 min counts as +30. Keep the last 5 errors, saved, and add their median to the lead, clamped to ±30 min.
+
+Only a run that started when the prediction asked for it counts. A start that was capped at 120 min, held back by a busy heater or the off lock, made inside the range, or fired at the start time because the prediction never got there says nothing about the prediction, so it is logged and not counted. The same goes for a run that someone stopped or that ended on a fault. The errors are kept for the full model only; the two fallback steps have their own fixed margins and take no correction.
+
+Also keep the lead actually used on the last 5 warm-by runs (`warm_by_lead`), for the estimate the apps show before the window opens (§10.6). Each run's log entry carries the prediction, the actual time and which fallback step was used, for the "Why?" screen.
+
+### 10.5 Timers: `at_timers.c` / `at_timers.h`, `at_app_timers.c`
+
+- **New field:** `"warm_by": true|false` on a timer, default false. It is refused on a preheat timer.
+- **Old apps and other senders:** anything that does not know the field and writes timers would drop it: an older app's `PUT /api/timers`, `timer_set` from away, the MQTT `cmd/timers/set` topic, Home Assistant, the website's heater page. In all of them a timer that comes in **without** the key keeps the stored value for that id. Only an explicit `false` clears it. A backup restored onto a replacement box carries the field as it is.
+- **Gap rule:** a warm-by timer is treated as `[start − 120 min, start + duration + 30 min)` against the others, so its early start cannot run into the timer before it. This only applies to newly saved or edited timers. One saved earlier that now clashes is left alone, and its early start is held back to the end of the other timer's gap.
+- **Fires once:** a warm-by timer that has made its early start is remembered for that start (the `recent` list in `at_sched_t` already does this for the daylight saving case), so it does not fire again when the start minute passes or after a clock step.
+- **Firing:** `at_sched_poll` today fires once, as the start minute passes. A warm-by timer instead has a **warming window** from start − 120 min to the start. Once a minute in that window the runner asks the predictor for the lead (a new `at_timer_ops_t` callback, so `at_timers.c` stays pure C and host-testable). When now + lead reaches the start, it arms Auto with the timer's range through `thermostat_begin`, as a normal thermostat timer does, marked as warm-by so §10.1's one start inside the range is allowed. At the start time a warm-by timer that has not fired yet fires as normal.
+- The lead is worked out on epoch seconds, not local minutes, so the clock changing for daylight saving inside the window does not move it.
+- **Clock becoming trusted inside the window:** a warm-by timer may still fire, as long as its start time has not passed. That is an early start, not a missed one run late (the rule in TIMERS.md "When a timer fires").
+- **Busy heater:** the same checks as now (a heater already running, a fault, bypass, another timer's run, the user's own Auto), but inside the warming window they make the timer wait and try again the next minute, with `timer_note` saying what it is waiting for. Only at the start time is the firing skipped for good, as now. Frost protection's run is taken over (§10.1). A run started by hand during the window counts as the user taking over: the timer waits, and skips at the start time if that run is still going.
+- **Ceiling and locks:** nothing changes. The early run is Auto's run on the timer's range, so the 30 min minimum run, the 20 min rest and the timer's top + 5°C ceiling all apply from the early start.
+- Window end, the 30 min minimum run and a following timer taking the run over: unchanged (§3.4).
+
+### 10.6 Status, API and docs
+
+- `next_timer` gains `"warm_by": true`, `"expected_start_epoch"` (inside the warming window, the current prediction, recomputed each minute; before the window opens, the start time less the median lead of the last 5 warm-by runs, or less the fixed 60 min until there is one. Hearth does not try to forecast the room temperature hours ahead.) and `"estimate"`: `"model"`, `"typical"` or `"fixed"` (the fallback step from §10.3).
+- `timer_note` holds 63 characters (`AT_TIMER_NOTE_LEN`), and °C takes 3 of them, so the notes are kept short.
+- `timer_note` examples: `Warming for 07:00: started 06:12 (room 14.2°C, about 48 min)`, `Warm by 07:00: room reached 20°C at 06:58`, `Warm by 07:00: capped at 2 h, may be late`.
+- Docs: TIMERS.md (the field, the window, the gap rule), API_SPEC.md (timers, `next_timer`, backup), this section moved into §3 once built, and CLAUDE.md's Heater Care paragraph.
+- MQTT and Home Assistant: the timers topic carries the field. The "Last timer event" entity shows the new notes, and nothing else changes.
+
+### 10.7 The cloud copy (firmware 1.54)
+
+Since 1.54 the box sends its backup to the cloud whenever it changes (checked once a minute by a hash of the whole document, `at_cloudlink.c` `watch_backup`). The backup carries `thermo_learn` (what a replacement box restores), `heater_care` (the `GET /api/thermo/history` document, which the website keeps so apps away from the box can show the Heater Care screen) and `timers` (the list the apps show away from home). Warm-by fits into that with no new route, as long as these hold:
+
+- **Nothing in the backup may change by the minute.** A value that moves every minute makes the box publish the whole backup every minute, which is why 1.54 left the early stops out of `heater_care`. So the live prediction, the idle cooling slope and `expected_start_epoch` stay in the status only. The new lists in `thermo_learn` change once per run at most.
+- **Warm-by runs in the history are fixed once written.** Each entry holds epoch times (predicted and actual arrival), never an age worked out from the uptime, and is added when the run ends. It then reaches `heater_care` and the apps away from home by itself.
+- **`thermo_learn` gains the new lists** (§10.3), so the cloud holds them and a replacement box restores them. `heater_care` is still ignored on `PUT`.
+- **The early stop's learning (1.53, `ctl_coast`) is not in the backup today**, so a replacement box learns it again over 3 stops. Add it to `thermo_learn` as `coast` in the same change, since the code is being touched anyway.
+- **Timers away from home:** `warm_by` is in the backup's `timers`, so the cloud's copy has it. `timer_set` from away follows the rule in §10.5: no key keeps the stored value.
+- **The estimate away from home** comes from the state document (`next_timer`), which the box sends on a timer and when the run changes. It can be a few minutes behind the box. That is fine for "Starts about 06:10".
+- **Website (Hearth module):** the Heater Care tab (`components/public/heater/HeaterCarePanel.tsx`, `lib/heater-care.ts`) passes `heater_care` through as it comes, so new fields do no harm, but it will not show the warm-by runs until a module release adds them. Module only, released to GitHub only, and Chris installs it from the admin.
+
+### 10.8 Apps
+
+- **iOS, tvOS (shows only), Android:** a "Warm by the start time" switch in the thermostat timer editor, shown only when the box's firmware supports it (version check on `/api/info`). The timer list shows "Starts about 06:10" from `expected_start_epoch`, with "(learning)" while the estimate is not `model`. The "Why?" screen gets the warm-by runs: predicted against actual, and which estimate was used.
+- The timer models gain the field and must send it back unchanged when saving, so a newer app never drops it either.
+- Each app built, installed on the real devices and tested against the bench firmware, as usual.
+
+### 10.9 Host tests
+
+- Prediction: full model, each fallback step, the cap, the off lock added, the clamp on the learned correction.
+- Idle cooling fit: steady fall, a sensor change, a start in the middle, too few readings, whole-degree tick-overs.
+- Gross rate per run: with and without an idle slope before it.
+- Store: the `at_learn` store is untouched by the update and still restores. The new blob saves, restores and is cleared by Reset learning. A backup with and without the new fields, `coast` included.
+- The backup document is byte-for-byte the same from one minute to the next through a warming window with no run ending, so it is not sent to the cloud again.
+- Timers: the `warm_by` field in and out, absent versus `false` on `PUT` and on `timer_set`, refused on preheat, the wider gap rule, firing at now + lead, firing once only (not again at the start minute), firing at the start when the prediction never got there, the clock becoming trusted inside the window, a daylight saving change inside the window, a busy heater that frees up inside the window and one that does not, a frost protection run taken over, a start by hand, the one allowed start inside the range and the 30 min minimum climb for it.
+- Errors: a capped, delayed or in-range start is not counted, a late arrival counts as +30 at most, and the sign is right (a late room lengthens the next lead).
+- The loss never goes negative, and a predicted rise rate under 0.005°C/min gives the longest early start, not a divide by zero.
+- Idle cooling after a stop: the rise from the warm coolant is not in the fit.
+
+### 10.10 Order of work and release
+
+0. Chris agrees the remaining decisions in §10.1. (Done 2026-11-13: built as recommended.)
+1. Idle cooling tracker and the new saved lists in `at_warm.c` (§10.3), with host tests. (Done, 1.56.)
+2. Predictor and the learned correction (§10.2, §10.4), with host tests. (Done, 1.56.)
+3. Timers (§10.5), with host tests. (Done, 1.56.)
+4. Status, API, the cloud copy and docs (§10.6, §10.7). (Done, 1.56.)
+5. Bench test on the test heater (192.168.10.157): a warm-by timer an hour ahead from a cooled room, the fallback before any data, a busy heater, a start by hand. **Short taps only, never hold Start.** Then a week of real mornings, watching the arrival errors.
+6. Apps (§10.8), and the Hearth module's Heater Care tab (§10.7).
+7. Firmware release (it went out as 1.56; 1.54 and 1.55 were taken by the Heater Care backup and run log changes) and the apps on the same day.
+
+### 10.11 Risks
+
+- **Fuel at night:** a cold night can start the heater up to 2 hours early. That is the point of the feature, but the timer editor should say so.
+- **Frost protection on the same morning:** without the take-over in §10.1, a frost run in the window makes the timer skip, on exactly the mornings it is wanted.
+- **A restart after the early start** leaves the heater running with Auto not armed (§10.1), as for any thermostat timer today.
+- **First cold mornings** run on the fallback until 3 gross rates are learned, so they may be late. The status says "learning".
+- **Light-up retries:** a heater that fails to light first time adds minutes the prediction did not expect. The learned correction absorbs the usual case, not a one-off.
+- **Sun and opened doors** during the climb change the loss after the prediction was made. The prediction is not revised once the heater has started.
+- **One shared heat capacity:** a space whose contents change a lot (a hold full of cargo, then empty) shifts the gross rate. The median of 10 follows it within a few days.

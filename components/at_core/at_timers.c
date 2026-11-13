@@ -1,5 +1,7 @@
 #include "at_timers.h"
+#include "at_warm.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -88,6 +90,7 @@ const char *at_timer_err_text(at_timer_err_t e)
     case AT_TERR_BAD_RANGE: return "thermostat range must be 0 to 30 C, low below high, and at least 1 C apart";
     case AT_TERR_IN_PAST: return "that time has already passed";
     case AT_TERR_TOO_CLOSE: return "too close to another timer: leave 30 minutes between one ending and the next starting";
+    case AT_TERR_WARM_PREHEAT: return "warm by is for thermostat timers only";
     }
     return "invalid";
 }
@@ -99,6 +102,12 @@ bool at_timer_expired(const at_timer_t *t, const at_localtime_t *now)
 }
 
 typedef struct { int64_t start; int length; } span_t;
+
+/* Warm by: the timer may start up to this much before its start time, so it counts from then in the gap rule. */
+static int early_min(const at_timer_t *t)
+{
+    return t->mode == AT_TMODE_THERMOSTAT && t->warm_by == 1 ? AT_TIMER_WARM_MIN : 0;
+}
 
 static int64_t floor_mod(int64_t a, int64_t m) { return ((a % m) + m) % m; }
 
@@ -114,8 +123,8 @@ static int rep_spans(const at_timer_t *t, span_t out[7])
     int n = 0;
     for (int wd = 1; wd <= 7; wd++) {
         if (t->days & (1u << (wd - 1))) {
-            out[n].start = (wd - 1) * 1440 + t->start_minute;
-            out[n].length = t->duration_min + AT_TIMER_GAP_MIN;
+            out[n].start = (wd - 1) * 1440 + t->start_minute - early_min(t);
+            out[n].length = t->duration_min + AT_TIMER_GAP_MIN + early_min(t);
             n++;
         }
     }
@@ -124,8 +133,8 @@ static int rep_spans(const at_timer_t *t, span_t out[7])
 
 static bool clash_once_rep(const at_timer_t *once, const at_timer_t *rep)
 {
-    span_t mine = {(int64_t)(at_iso_weekday(once->date_day) - 1) * 1440 + once->start_minute,
-                   once->duration_min + AT_TIMER_GAP_MIN};
+    span_t mine = {(int64_t)(at_iso_weekday(once->date_day) - 1) * 1440 + once->start_minute - early_min(once),
+                   once->duration_min + AT_TIMER_GAP_MIN + early_min(once)};
     span_t r[7];
     int n = rep_spans(rep, r);
     for (int i = 0; i < n; i++) {
@@ -137,8 +146,10 @@ static bool clash_once_rep(const at_timer_t *once, const at_timer_t *rep)
 static bool clash(const at_timer_t *a, const at_timer_t *b)
 {
     if (a->one_off && b->one_off) {
-        int64_t x = (int64_t)a->date_day * 1440 + a->start_minute, lx = a->duration_min + AT_TIMER_GAP_MIN;
-        int64_t y = (int64_t)b->date_day * 1440 + b->start_minute, ly = b->duration_min + AT_TIMER_GAP_MIN;
+        int64_t x = (int64_t)a->date_day * 1440 + a->start_minute - early_min(a),
+                lx = a->duration_min + AT_TIMER_GAP_MIN + early_min(a);
+        int64_t y = (int64_t)b->date_day * 1440 + b->start_minute - early_min(b),
+                ly = b->duration_min + AT_TIMER_GAP_MIN + early_min(b);
         return x < y + ly && y < x + lx;
     }
     if (a->one_off) return clash_once_rep(a, b);
@@ -157,7 +168,40 @@ static bool same_timer(const at_timer_t *a, const at_timer_t *b)
 {
     return !strcmp(a->id, b->id) && a->enabled == b->enabled && a->mode == b->mode && a->start_minute == b->start_minute &&
            a->duration_min == b->duration_min && a->days == b->days && a->one_off == b->one_off &&
-           a->date_day == b->date_day && a->low_c == b->low_c && a->high_c == b->high_c;
+           a->date_day == b->date_day && a->low_c == b->low_c && a->high_c == b->high_c && a->warm_by == b->warm_by;
+}
+
+/* The two clash only because of warm by's early start, and neither is new or edited: saved before, left alone (its
+ * early start is held back to the end of the other's gap by the runner). */
+static bool unchanged_in(const at_timer_t *t, const at_timer_t *existing, int n_existing)
+{
+    for (int k = 0; k < n_existing; k++) {
+        if (same_timer(&existing[k], t)) return true;
+    }
+    return false;
+}
+
+static bool clash_plain(const at_timer_t *a, const at_timer_t *b)
+{
+    at_timer_t x = *a, y = *b;
+    x.warm_by = y.warm_by = 0;
+    return clash(&x, &y);
+}
+
+void at_timers_resolve_warm_by(at_timer_t *list, int n, const at_timer_t *existing, int n_existing)
+{
+    for (int i = 0; i < n; i++) {
+        at_timer_t *t = &list[i];
+        if (t->warm_by != AT_TIMER_WARM_ABSENT) continue;
+        t->warm_by = 0;
+        if (t->mode != AT_TMODE_THERMOSTAT) continue;
+        for (int k = 0; k < n_existing; k++) {
+            if (!strcmp(existing[k].id, t->id)) {
+                t->warm_by = existing[k].warm_by == 1;
+                break;
+            }
+        }
+    }
 }
 
 static bool id_ok(const char *id)
@@ -190,6 +234,8 @@ at_timer_problem_t at_timers_validate(const at_timer_t *list, int n, const at_ti
             if (!strcmp(list[j].id, t->id)) return problem(AT_TERR_DUPLICATE_ID, i, j);
         }
         if (t->mode != AT_TMODE_PREHEAT && t->mode != AT_TMODE_THERMOSTAT) return problem(AT_TERR_BAD_MODE, i, -1);
+        if (t->warm_by > 1) return problem(AT_TERR_BAD_MODE, i, -1);
+        if (t->warm_by && t->mode == AT_TMODE_PREHEAT) return problem(AT_TERR_WARM_PREHEAT, i, -1);
         if (t->one_off) {
             if (t->date_day < 0 || t->date_day > 365 * 1100) return problem(AT_TERR_BAD_DATE, i, -1);
         } else if ((t->days & 0x7F) == 0 || (t->days & 0x80)) {
@@ -222,7 +268,11 @@ at_timer_problem_t at_timers_validate(const at_timer_t *list, int n, const at_ti
         if (!list[i].enabled || ignore[i]) continue;
         for (int j = 0; j < i; j++) {
             if (!list[j].enabled || ignore[j]) continue;
-            if (clash(&list[i], &list[j])) return problem(AT_TERR_TOO_CLOSE, i, j);
+            if (!clash(&list[i], &list[j])) continue;
+            if (!clash_plain(&list[i], &list[j]) && unchanged_in(&list[i], existing, n_existing) &&
+                unchanged_in(&list[j], existing, n_existing))
+                continue;
+            return problem(AT_TERR_TOO_CLOSE, i, j);
         }
     }
     return problem(AT_TERR_NONE, -1, -1);
@@ -337,6 +387,144 @@ static void note(at_runner_t *r, const at_timer_t *t, const char *what)
     snprintf(r->note, sizeof(r->note), "%02u:%02u %s", (unsigned)(t->start_minute / 60), (unsigned)(t->start_minute % 60), what);
 }
 
+static const char *busy_reason(const at_runner_t *r, const at_timer_t *t, const at_snapshot_t *snap, bool auto_enabled,
+                               const at_timer_ops_t *ops)
+{
+    const bool warm = t->mode == AT_TMODE_THERMOSTAT && t->warm_by == 1;
+    if (r->active) return "another timer is running";
+    if (!snap->have_status || snap->stale) return "no heater data";
+    if (snap->bypass) return "bypass is on";
+    if (snap->status.fault) return "heater fault";
+    if (snap->status.state_raw != 0x00) {
+        bool take = t->mode == AT_TMODE_THERMOSTAT && ops->can_take_over && ops->can_take_over(ops->ctx);
+        /* warm by takes frost protection's run over: the same cold mornings, and the run carries on to the top */
+        if (!take && warm && !auto_enabled && ops->frost_run && ops->frost_run(ops->ctx)) take = true;
+        if (!take) return "heater already running";
+    }
+    if (t->mode == AT_TMODE_THERMOSTAT && auto_enabled) return "Auto already on";
+    return NULL;
+}
+
+static int64_t lm_epoch(const at_timer_ops_t *ops, const at_localtime_t *now, int64_t lm)
+{
+    if (ops->local_to_epoch) return ops->local_to_epoch(ops->ctx, lm);
+    return now->epoch_s - now->epoch_s % 60 + (lm - at_local_minutes(now)) * 60;
+}
+
+/* The enabled warm-by timer whose start is soonest within its warming window, or -1. */
+static int warm_due(const at_timer_t *list, int n, const at_localtime_t *now, const at_timer_ops_t *ops,
+                    int64_t *start_epoch)
+{
+    int best = -1;
+    int64_t be = 0;
+    for (int i = 0; i < n; i++) {
+        const at_timer_t *t = &list[i];
+        if (!t->enabled || t->mode != AT_TMODE_THERMOSTAT || t->warm_by != 1) continue;
+        for (int d = 0; d <= 1; d++) {
+            int32_t day = now->day + d;
+            if (!starts_at(t, day, t->start_minute)) continue;
+            int64_t e = lm_epoch(ops, now, (int64_t)day * 1440 + t->start_minute);
+            if (e <= now->epoch_s || e - now->epoch_s > (int64_t)AT_TIMER_WARM_MIN * 60) continue;
+            if (best < 0 || e < be) {
+                best = i;
+                be = e;
+            }
+        }
+    }
+    *start_epoch = be;
+    return best;
+}
+
+static void remember_fired(at_sched_t *s, const char *id, int64_t epoch_s)
+{
+    strlcpy(s->recent[s->recent_next].id, id, AT_TIMER_ID_LEN);
+    s->recent[s->recent_next].epoch_s = epoch_s;
+    s->recent_next = (s->recent_next + 1) % AT_SCHED_RECENT;
+}
+
+static void begin_run(at_runner_t *r, const at_timer_t *t, uint32_t now_ms, uint32_t length_ms)
+{
+    r->active = true;
+    strlcpy(r->id, t->id, sizeof(r->id));
+    r->mode = t->mode;
+    r->start_ms = now_ms;
+    r->length_ms = length_ms;
+}
+
+/* The warming window: work out the lead once a minute, and arm the thermostat once now + lead reaches the start. */
+static void tick_warm(at_runner_t *r, const at_timer_t *list, int n, const at_localtime_t *now, uint32_t now_ms,
+                      const at_snapshot_t *snap, bool auto_enabled, const at_timer_ops_t *ops)
+{
+    int64_t ws = 0;
+    int wi = now->ok ? warm_due(list, n, now, ops, &ws) : -1;
+    if (wi < 0) {
+        r->warm_on = false;
+        return;
+    }
+    const at_timer_t *t = &list[wi];
+    if (!r->warm_on || strcmp(r->warm_id, t->id) || r->warm_start_epoch != ws) {
+        r->warm_on = true;
+        strlcpy(r->warm_id, t->id, sizeof(r->warm_id));
+        r->warm_start_epoch = ws;
+        r->warm_fired = false;
+        r->warm_waited = false;
+        r->warm_checked_min = -1;
+        r->warm_capped = false;
+        r->warm_est = 0;
+        r->warm_expected_epoch = 0;
+    }
+    if (r->warm_fired || !ops->warm_plan) return;
+    if (fired_recently(&r->sched, t->id, now->epoch_s)) {
+        r->warm_fired = true;   /* the clock went back over it: it fires once per start */
+        return;
+    }
+    const int64_t m = now->epoch_s / 60;
+    if (m != r->warm_checked_min) {
+        at_warm_plan_t p;
+        if (ops->warm_plan(ops->ctx, t, ws, &p)) {
+            r->warm_plan = p;
+            r->warm_checked_min = m;
+            r->warm_est = p.est;
+            r->warm_capped = p.capped;
+            r->warm_expected_epoch = ws - (int64_t)p.lead_s;
+        }
+    }
+    if (r->warm_checked_min < 0 || now->epoch_s + (int64_t)r->warm_plan.lead_s < ws) return;
+
+    char hm[8];
+    snprintf(hm, sizeof(hm), "%02u:%02u", (unsigned)(t->start_minute / 60), (unsigned)(t->start_minute % 60));
+    const char *busy = busy_reason(r, t, snap, auto_enabled, ops);
+    if (!busy && r->last_end_epoch > 0 && now->epoch_s < r->last_end_epoch + AT_TIMER_GAP_MIN * 60)
+        busy = "the last timer's gap";
+    if (busy) {
+        r->warm_waited = true;
+        snprintf(r->note, sizeof(r->note), "Warm by %s: waiting (%s)", hm, busy);
+        return;
+    }
+    uint8_t hint = r->warm_capped ? AT_WARM_RES_CAPPED : r->warm_waited ? AT_WARM_RES_DELAYED : AT_WARM_RES_PENDING;
+    float room = NAN;
+    bool ok = ops->warm_begin ? ops->warm_begin(ops->ctx, t, ws, &r->warm_plan, hint, &room)
+                              : ops->thermostat_begin(ops->ctx, t->low_c, t->high_c);
+    if (!ok) {
+        r->warm_waited = true;
+        snprintf(r->note, sizeof(r->note), "Warm by %s: waiting (command not sent)", hm);
+        return;
+    }
+    const int64_t left_s = ws - now->epoch_s;
+    begin_run(r, t, now_ms, (uint32_t)left_s * 1000u + (uint32_t)t->duration_min * 60000u);
+    r->warm_fired = true;
+    r->warm_expected_epoch = now->epoch_s;
+    remember_fired(&r->sched, t->id, now->epoch_s);
+    const unsigned nh = now->minute / 60, nm = now->minute % 60, about = (unsigned)((left_s + 30) / 60);
+    if (r->warm_capped)
+        snprintf(r->note, sizeof(r->note), "Warm by %s: started %02u:%02u, capped at 2 h, may be late", hm, nh, nm);
+    else if (room == room)
+        snprintf(r->note, sizeof(r->note), "Warming for %s: started %02u:%02u (room %.1f\xC2\xB0" "C, about %u min)", hm, nh,
+                 nm, (double)room, about);
+    else
+        snprintf(r->note, sizeof(r->note), "Warming for %s: started %02u:%02u (about %u min)", hm, nh, nm, about);
+}
+
 void at_runner_tick(at_runner_t *r, const at_timer_t *list, int n, const at_localtime_t *now, uint32_t now_ms,
                     const at_snapshot_t *snap, bool auto_enabled, const at_timer_ops_t *ops)
 {
@@ -360,37 +548,44 @@ void at_runner_tick(at_runner_t *r, const at_timer_t *list, int n, const at_loca
             r->active = false;
             r->note[0] = 0;
             snprintf(r->note, sizeof(r->note), "last run %s", why);
+            r->last_end_epoch = now->ok ? now->epoch_s : 0;
         }
     }
+
+    tick_warm(r, list, n, now, now_ms, snap, auto_enabled, ops);
 
     int i = at_sched_poll(&r->sched, list, n, now);
     if (i < 0) return;
     const at_timer_t *t = &list[i];
+    const bool warm = t->mode == AT_TMODE_THERMOSTAT && t->warm_by == 1;
 
-    const char *skip = NULL;
-    if (r->active) skip = "skipped: another timer is running";
-    else if (!snap->have_status || snap->stale) skip = "skipped: no heater data";
-    else if (snap->bypass) skip = "skipped: bypass is on";
-    else if (snap->status.fault) skip = "skipped: heater fault";
-    else if (snap->status.state_raw != 0x00 &&
-             !(t->mode == AT_TMODE_THERMOSTAT && ops->can_take_over && ops->can_take_over(ops->ctx)))
-        skip = "skipped: heater already running";
-    else if (t->mode == AT_TMODE_THERMOSTAT && auto_enabled) skip = "skipped: Auto already on";
+    const char *skip = busy_reason(r, t, snap, auto_enabled, ops);
     if (skip) {
-        note(r, t, skip);
+        char what[48];
+        snprintf(what, sizeof(what), "skipped: %s", skip);
+        note(r, t, what);
         return;
     }
 
-    bool ok = t->mode == AT_TMODE_PREHEAT ? ops->start_preheat(ops->ctx, t->duration_min)
-                                          : ops->thermostat_begin(ops->ctx, t->low_c, t->high_c);
+    bool ok;
+    if (t->mode == AT_TMODE_PREHEAT) {
+        ok = ops->start_preheat(ops->ctx, t->duration_min);
+    } else if (warm && ops->warm_begin) {
+        /* the prediction never got there (or the clock arrived at the start): fires as normal, logged, not counted */
+        at_warm_plan_t p = {0, false, r->warm_est, false};
+        float room;
+        ok = ops->warm_begin(ops->ctx, t, now->epoch_s, &p, AT_WARM_RES_AT_START, &room);
+    } else {
+        ok = ops->thermostat_begin(ops->ctx, t->low_c, t->high_c);
+    }
     if (!ok) {
         note(r, t, "skipped: command not sent");
         return;
     }
-    r->active = true;
-    strlcpy(r->id, t->id, sizeof(r->id));
-    r->mode = t->mode;
-    r->start_ms = now_ms;
-    r->length_ms = (uint32_t)t->duration_min * 60000u;
+    begin_run(r, t, now_ms, (uint32_t)t->duration_min * 60000u);
+    if (warm) {
+        r->warm_fired = true;
+        r->warm_expected_epoch = now->epoch_s;
+    }
     note(r, t, "started");
 }

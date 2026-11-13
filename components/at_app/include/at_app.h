@@ -288,6 +288,22 @@ bool at_app_timer_thermostat_begin(int low_c, int high_c);
 void at_app_timer_thermostat_end(bool disarm);
 /* True while the heater runs on only to finish a timer's minimum run: the next thermostat timer may take it over. */
 bool at_app_timer_can_take_over(void);
+/* Warm by (1.56, docs/ADAPTIVE_THERMOSTAT.md §10). Plan: the lead for timer t starting at start_epoch, worked out from
+ * the room now. Begin: as at_app_timer_thermostat_begin, following the run for the arrival error; result_hint an
+ * at_warm_res_t, *room the reading now (NAN if none). Frost run: the run going is frost protection's. */
+bool at_app_warm_plan(const at_timer_t *t, int64_t start_epoch, at_warm_plan_t *out);
+bool at_app_warm_begin(const at_timer_t *t, int64_t start_epoch, const at_warm_plan_t *plan, uint8_t result_hint,
+                       float *room);
+bool at_app_timer_frost_run(void);
+/* The median lead of the last warm-by runs in minutes (false if none), and the estimate a prediction would use now
+ * (at_warm_est_t) for a set temperature of top. */
+bool at_app_warm_typical_lead(uint32_t *min);
+uint8_t at_app_warm_estimate(float top);
+/* The warm-by store as the backup's lists / put lists back (only the keys present). */
+bool at_app_warm_snapshot(at_warm_store_t *out);
+bool at_app_warm_put(const at_warm_store_t *st);
+bool at_app_coast_snapshot(at_coast_store_t *out);
+bool at_app_coast_put(const at_coast_store_t *st);
 /* Smallest allowed width of an Auto range: 1 C (Heater Care widens the working range itself). */
 float at_app_band_min_gap(void);
 
@@ -313,6 +329,10 @@ typedef struct {
     bool have_next;
     char next_id[AT_TIMER_ID_LEN];
     int64_t next_start_epoch;
+    bool next_warm_by;          /* the next timer starts early to be warm by its start (1.56) */
+    int64_t next_expected_epoch; /* warm by: when it is expected to start (or did) */
+    uint8_t next_estimate;      /* warm by: at_warm_est_t behind that */
+    int64_t next_earliest_epoch; /* the soonest the next timer can start the heater (start less 2 h for warm by) */
     bool active;
     char active_id[AT_TIMER_ID_LEN];
     char note[AT_TIMER_NOTE_LEN];

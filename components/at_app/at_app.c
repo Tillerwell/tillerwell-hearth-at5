@@ -1,3 +1,4 @@
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -204,6 +205,7 @@ static const at_ctl_ops_t s_ops = {ops_start, ops_stop, NULL};
 #define KEY_COOL  "ctl_cool"
 #define KEY_COAST "ctl_coast"
 #define KEY_RUNS  "ctl_runs"
+#define KEY_WARM  "ctl_warm"
 #define REST_VERSION 2
 
 typedef struct {
@@ -228,6 +230,7 @@ static rest_blob_t s_rest;
 static at_learn_store_t s_learn_save;   /* a copy to write outside the lock (too big for the task's stack) */
 static at_cd_store_t s_cool_save;      /* learned cooldown lengths (1.52) */
 static at_coast_store_t s_coast_save;  /* learned rise after a stop at the top (1.53) */
+static at_warm_store_t s_warm_save;    /* warm by: light-up times, rates, arrival errors (1.56) */
 static at_runlog_store_t s_runs_save;  /* Heater Care's run log (1.55): the "Why?" screen survives a restart */
 
 /* The firmware's build date (a clock earlier than this is wrong), from __DATE__ "Mmm dd yyyy". */
@@ -247,7 +250,7 @@ static int64_t build_epoch(void)
 /* Called from the thermostat task after each tick: the writes the control loop asked for. */
 static void persist_ctl(void)
 {
-    bool w_learn = false, w_rest = false, w_cool = false, w_coast = false, w_runs = false;
+    bool w_learn = false, w_rest = false, w_cool = false, w_coast = false, w_runs = false, w_warm = false;
     /* called from the thermostat task and the HTTP task (Reset learning, a backup restore): one at a time, so the
      * copies are not overwritten while NVS is writing them */
     xSemaphoreTake(s_persist_lock, portMAX_DELAY);
@@ -266,6 +269,11 @@ static void persist_ctl(void)
         s_coast_save = s_ctl.coast.st;
         s_ctl.coast.dirty = false;
         w_coast = true;
+    }
+    if (s_ctl.warm.dirty) {
+        s_warm_save = s_ctl.warm.st;
+        s_ctl.warm.dirty = false;
+        w_warm = true;
     }
     if (at_runlog_changed(&s_ctl.learn, &s_runs_save)) {
         at_runlog_save(&s_ctl.learn, &s_runs_save);
@@ -299,6 +307,7 @@ static void persist_ctl(void)
     if (w_cool) at_settings_blob_save(KEY_COOL, &s_cool_save, sizeof(s_cool_save));
     if (w_coast) at_settings_blob_save(KEY_COAST, &s_coast_save, sizeof(s_coast_save));
     if (w_runs) at_settings_blob_save(KEY_RUNS, &s_runs_save, sizeof(s_runs_save));
+    if (w_warm) at_settings_blob_save(KEY_WARM, &s_warm_save, sizeof(s_warm_save));
     if (w_rest) {
         s_rest.version = REST_VERSION;
         at_settings_blob_save(KEY_REST, &s_rest, sizeof(s_rest));
@@ -421,6 +430,9 @@ esp_err_t at_app_start(void)
     }
     if (at_settings_blob_load(KEY_COAST, &s_coast_save, sizeof(s_coast_save))) {
         if (!at_coast_restore(&s_ctl.coast, &s_coast_save)) ESP_LOGW(TAG, "saved rise after a stop rejected");
+    }
+    if (at_settings_blob_load(KEY_WARM, &s_warm_save, sizeof(s_warm_save))) {
+        if (!at_warm_restore(&s_ctl.warm, &s_warm_save)) ESP_LOGW(TAG, "saved warm-by learning rejected");
     }
     /* a different size (the run's layout changed in an update) does not load: the log starts again, nothing else */
     if (at_settings_blob_load(KEY_RUNS, &s_runs_save, sizeof(s_runs_save))) {
@@ -699,6 +711,7 @@ void at_app_thermo_learn_reset(void)
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
     at_learn_reset(&s_ctl.learn);
     at_coast_reset(&s_ctl.coast);
+    at_warm_reset(&s_ctl.warm);
     xSemaphoreGive(s_ctl_lock);
     ESP_LOGI(TAG, "Heater Care learning reset");
     persist_ctl();
@@ -788,21 +801,149 @@ void at_app_set_auto_range_from(float low, float high, bool finish_run, at_src_t
 static float s_tm_prev_low, s_tm_prev_high, s_tm_low, s_tm_high;
 static bool s_tm_have;
 
+/* Call with s_ctl_lock held: remember the user's range and set the timer's. */
+static void timer_range_locked(int high_c)
+{
+    s_tm_prev_low = s_ctl.autot.low;
+    s_tm_prev_high = s_ctl.autot.high;
+    set_temp_locked((float)high_c);
+    s_tm_low = s_ctl.autot.low;
+    s_tm_high = s_ctl.autot.high;
+    s_tm_have = true;
+}
+
 bool at_app_timer_thermostat_begin(int low_c, int high_c)
 {
     at_snapshot_t snap;
     snapshot_locked(&snap);
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
-    s_tm_prev_low = s_ctl.autot.low;
-    s_tm_prev_high = s_ctl.autot.high;
     (void)low_c;
-    set_temp_locked((float)high_c);
-    s_tm_low = s_ctl.autot.low;
-    s_tm_high = s_ctl.autot.high;
-    s_tm_have = true;
+    timer_range_locked(high_c);
     at_ctl_set_auto(&s_ctl, true, &snap, at_now_ms(), &s_ops);
     xSemaphoreGive(s_ctl_lock);
     return true;
+}
+
+/* ---- warm by (1.56, docs/ADAPTIVE_THERMOSTAT.md §10) ---------------------------------------------- */
+
+/* Call with s_ctl_lock held. */
+static void warm_predict_locked(float top, uint32_t now, at_warm_pred_t *p)
+{
+    at_warm_in_t in = {0};
+    in.have_temp = s_ctl.room_ok;
+    in.temp = s_ctl.room;
+    in.sensor = s_ctl.sensor;
+    in.top = top;
+    in.off_left_s = at_ctl_min_off_left_ms(&s_ctl, now) / 1000u;
+    in.have_warm = at_learn_warm_typical(&s_ctl.learn, (at_sensor_t)s_ctl.sensor, &in.warm_s);
+    at_warm_predict(&s_ctl.warm, &in, p);
+}
+
+bool at_app_warm_plan(const at_timer_t *t, int64_t start_epoch, at_warm_plan_t *out)
+{
+    (void)start_epoch;
+    at_warm_pred_t p;
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    warm_predict_locked((float)t->high_c, at_now_ms(), &p);
+    xSemaphoreGive(s_ctl_lock);
+    out->lead_s = p.lead_s;
+    out->capped = p.capped;
+    out->est = p.est;
+    out->in_range_ok = p.flame_climb_min >= AT_WARM_MIN_CLIMB_MIN;
+    return true;
+}
+
+bool at_app_warm_begin(const at_timer_t *t, int64_t start_epoch, const at_warm_plan_t *plan, uint8_t hint, float *room)
+{
+    at_snapshot_t snap;
+    snapshot_locked(&snap);
+    int64_t epoch;
+    bool clock = wall_clock(&epoch);
+    uint32_t now = at_now_ms();
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    timer_range_locked(t->high_c);
+    float lo, hi;
+    at_ctl_working_range(&s_ctl, &lo, &hi);
+    const bool have = s_ctl.room_ok;
+    const float temp = s_ctl.room;
+    *room = have ? temp : NAN;
+    /* inside the range: one start is allowed only for a climb from flame of 30 min or more (Hearth's stop waits for
+     * 30 min of burning, so a shorter one would carry on past the top). Either way it says nothing about the
+     * prediction */
+    const bool inside = have && temp > lo + 1e-3f;
+    if (hint == AT_WARM_RES_PENDING && at_ctl_min_off_left_ms(&s_ctl, now) > 0) hint = AT_WARM_RES_DELAYED;
+    if (hint == AT_WARM_RES_PENDING && inside) hint = AT_WARM_RES_IN_RANGE;
+    at_warm_pred_t p;
+    warm_predict_locked((float)t->high_c, now, &p);
+    const int64_t left = clock ? start_epoch - epoch : 0;
+    at_warm_fired(&s_ctl.warm, clock ? epoch : 0, start_epoch, &p, (float)t->high_c, have, temp, (at_warm_res_t)hint,
+                  left > 0 ? (uint32_t)left : 0);
+    at_ctl_allow_warm_start(&s_ctl, inside && plan->in_range_ok);
+    at_ctl_set_auto(&s_ctl, true, &snap, now, &s_ops);
+    xSemaphoreGive(s_ctl_lock);
+    /* saved by the thermostat task's next tick (the timers task's stack is small for NVS) */
+    return true;
+}
+
+bool at_app_timer_frost_run(void)
+{
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    bool ok = s_ctl.run.running && !s_ctl.run.stopping && s_ctl.run.owner == AT_OWNER_FREEZE;
+    xSemaphoreGive(s_ctl_lock);
+    return ok;
+}
+
+bool at_app_warm_typical_lead(uint32_t *min)
+{
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    bool ok = at_warm_typical_lead(&s_ctl.warm, min);
+    xSemaphoreGive(s_ctl_lock);
+    return ok;
+}
+
+uint8_t at_app_warm_estimate(float top)
+{
+    at_warm_pred_t p;
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    warm_predict_locked(top, at_now_ms(), &p);
+    xSemaphoreGive(s_ctl_lock);
+    return p.est;
+}
+
+bool at_app_warm_snapshot(at_warm_store_t *out)
+{
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    *out = s_ctl.warm.st;
+    xSemaphoreGive(s_ctl_lock);
+    return true;
+}
+
+bool at_app_warm_put(const at_warm_store_t *st)
+{
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    bool ok = at_warm_restore(&s_ctl.warm, st);
+    if (ok) s_ctl.warm.dirty = true;
+    xSemaphoreGive(s_ctl_lock);
+    if (ok) persist_ctl();
+    return ok;
+}
+
+bool at_app_coast_snapshot(at_coast_store_t *out)
+{
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    *out = s_ctl.coast.st;
+    xSemaphoreGive(s_ctl_lock);
+    return true;
+}
+
+bool at_app_coast_put(const at_coast_store_t *st)
+{
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    bool ok = at_coast_restore(&s_ctl.coast, st);
+    if (ok) s_ctl.coast.dirty = true;
+    xSemaphoreGive(s_ctl_lock);
+    if (ok) persist_ctl();
+    return ok;
 }
 
 void at_app_timer_thermostat_end(bool disarm)
@@ -810,6 +951,8 @@ void at_app_timer_thermostat_end(bool disarm)
     at_snapshot_t snap;
     snapshot_locked(&snap);
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    /* a warm-by run still being followed: the timer's window ended, or someone switched Auto off */
+    at_warm_abandon(&s_ctl.warm, s_ctl.epoch);
     if (disarm) {
         /* inside the run's minimum run the timer's stop waits for it (Heater Care) */
         at_ctl_auto_off(&s_ctl, true, AT_HOLD_TIMER_ENDED, AT_SRC_TIMER, &snap, at_now_ms(), &s_ops);

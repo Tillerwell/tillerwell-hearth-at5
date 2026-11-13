@@ -180,7 +180,9 @@ When an owner's box dies, the app sets up the new box and the cloud moves the ol
 
 `thermo_learn` (firmware 1.47, §9.10) is what Heater Care learned about the space, so a replacement box restored from the cloud carries on from it. It is optional and older boxes ignore it; `v` stays 1. `hyst_min`/`hyst_max` in a backup are ignored since 1.47.
 
-`heater_care` (firmware 1.54) is the `GET /api/thermo/history` document (§9.10) without `early_stops`: Heater Care's changes and its last runs. The website keeps it so apps away from the box can show the Heater Care screen. `PUT` ignores it: the runs belong to the old box.
+Since firmware 1.56 `thermo_learn` also carries what warm by (docs/ADAPTIVE_THERMOSTAT.md §10) learns, and the early stop's rises: `light` (light-up seconds, the last 10), `gross_ext`/`gross_ctl` (gross heating rates, C per minute, the last 10 per sensor), `rise_ext`/`rise_ctl` (plain rise rates), `warm_by_err` (arrival errors in minutes, positive late, the last 5), `warm_by_lead` (leads used in minutes, the last 5) and `coast` (rises after a stop at the top in C, the last 7; before 1.56 a replacement box learned these again). Each is optional on `PUT`: a key that is missing leaves that list as it is, so an older backup still restores, and an older box ignores them. They change once per run at most.
+
+`heater_care` (firmware 1.54) is the `GET /api/thermo/history` document (§9.10) without `early_stops`: Heater Care's changes and its last runs (and since 1.56 the warm-by runs). The website keeps it so apps away from the box can show the Heater Care screen. `PUT` ignores it: the runs belong to the old box.
 
 `timers` is the `GET /api/timers` array. Nothing in it belongs to one box alone (Wi-Fi, users, keys, the fuel log) or to the moment (whether the heater is running, whether the thermostat is on), so restoring never starts or stops the heater. `PUT` applies each field through the same checks as `POST /api/cmd`; a field the box turns down is named in `{"ok":true,"skipped":[…]}` and the rest still apply. `ml_per_pulse` and `tank_capacity` of 0 mean "never set" and are left alone. A changed `display_name` restarts the box, so it is applied last.
 
@@ -394,6 +396,8 @@ once.
  "runs":[{"at":1762871100,"sensor":"external","end":"top","counted":true,"why":"counted","vote":"fast",
           "light_s":300,"burn_s":1900,"warmup_s":360,"rate":0.05,"need":1.7,"climb_min":26,
           "start_temp":19.9,"peak_temp":21.6,"cooling_s":2700,"dip":0}],
+ "warm_by":[{"start":1762930800,"fired":1762927920,"predicted":1762930800,"actual":1762930920,"start_temp":14.2,
+             "target":20,"lead_min":48,"estimate":"model","result":"counted","error_min":2}],
  "early_stops":[{"at":1762871940,"after_s":540,"source":"matter"}]}
 ```
 
@@ -401,6 +405,8 @@ Newest first. In a `history` entry `old` and `new` are the learned width (the re
 working width on that entry's sensor (on the controller's, the learned width in whole degrees plus 1 C). `history`
 (kinds `widened`, `narrowed`, `limit_reached`, `limit_cleared`, `reset`) is kept across a restart, and so are `runs` (the last 20) from firmware 1.55 (before that a restart or update emptied them); `early_stops` (the last 8) are not. `why` is `counted`, `not_thermostat`,
 `long_off`, `not_at_top`, `sensor_changed`, `lost_heat`, `not_enough_data` or `cold_spell`.
+
+`warm_by` (firmware 1.56): the last 5 warm-by timer runs, newest first, kept across a restart. Each is fixed once written. `start` is the timer's start time, `fired` when it armed the thermostat, `predicted` when the prediction said the room would reach `target`, `actual` when it got to Hearth's stop point (null if not by the start + 30 min), `lead_min` the lead used, `estimate` `model`, `typical` or `fixed`. `result` is `counted` (its `error_min`, actual less predicted, positive late and +30 at most, goes into the learned correction), or why it was not: `capped` (the prediction wanted more than 2 hours), `delayed` (held back by a busy heater, the 20 minute rest or another timer), `in_range` (the room was already inside the range), `at_start` (it fired at the start time), `fallback` (not the full model), `stopped` (someone stopped the run, a fault, or the timer ended before the room got there).
 
 Commands (`POST /api/cmd`, and the cloud `cmd`):
 

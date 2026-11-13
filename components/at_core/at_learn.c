@@ -466,6 +466,9 @@ void at_learn_run_end(at_learn_t *L, uint32_t now, at_run_end_t end, float user_
     bool enough = fit_ok && warm_ms <= AT_LEARN_MAX_WARM_MS &&
                   (whole(s) ? L->n >= 2 : L->fit_last_ms - L->fit_first_ms >= AT_LEARN_MIN_FIT_MS);
 
+    /* a good fit, however the run ended or was started: what warm by (at_warm) learns its rates from */
+    r.rate_ok = L->flame && enough && !L->sensor_changed && !L->lost_heat && !L->resumed && r.rate >= AT_LEARN_MIN_RATE;
+
     if (!L->by_thermo) r.why = AT_WHY_NOT_THERMOSTAT;
     else if (!L->off_ok) r.why = AT_WHY_LONG_OFF;
     else if (end != AT_END_TOP || L->resumed) r.why = AT_WHY_ENDED;

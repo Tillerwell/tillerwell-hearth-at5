@@ -27,6 +27,10 @@ extern "C" {
 #define AT_TIMER_MIN_DUR_OLD 20          /* the shortest before 1.47: a saved timer this short still loads, unchanged */
 #define AT_TIMER_MAX_DUR     480
 #define AT_TIMER_GAP_MIN     30          /* a timer may not start sooner than this after another ended */
+#define AT_TIMER_WARM_MIN    120         /* warm by: the longest early start, and how far before its start the timer
+                                          * counts against the others in the gap rule */
+#define AT_TIMER_WARM_ABSENT 2           /* warm_by as parsed from a sender that did not send the key: keep the
+                                          * stored value (at_timers_resolve_warm_by) */
 
 typedef enum { AT_TMODE_PREHEAT = 0, AT_TMODE_THERMOSTAT = 1 } at_timer_mode_t;
 
@@ -40,6 +44,8 @@ typedef struct {
     bool one_off;
     int32_t date_day;           /* one-off: local date as days since 1970-01-01 */
     int8_t low_c, high_c;       /* thermostat only */
+    uint8_t warm_by;            /* thermostat only: start early so the room is at high_c at the start time (1.56).
+                                 * Sits in what was padding, so the struct is the same size as before */
 } at_timer_t;
 
 /* The box's local time at one instant. ok is false until the clock and time zone can be trusted. */
@@ -77,6 +83,7 @@ typedef enum {
     AT_TERR_BAD_RANGE,
     AT_TERR_IN_PAST,
     AT_TERR_TOO_CLOSE,
+    AT_TERR_WARM_PREHEAT,
 } at_timer_err_t;
 
 typedef struct {
@@ -98,6 +105,10 @@ bool at_timer_expired(const at_timer_t *t, const at_localtime_t *now);
  * thermostat range (1 C). Disabled timers and finished one-offs are left out of the 30 minute check. */
 at_timer_problem_t at_timers_validate(const at_timer_t *list, int n, const at_timer_t *existing, int n_existing,
                                       const at_localtime_t *now, float min_gap_c);
+
+/* A sender that does not know warm_by (an older app, the cloud, MQTT, Home Assistant, the website) leaves it out:
+ * each timer parsed with AT_TIMER_WARM_ABSENT takes the stored value for its id (false if new, or now a preheat). */
+void at_timers_resolve_warm_by(at_timer_t *list, int n, const at_timer_t *existing, int n_existing);
 
 /* Remove finished one-offs (except `keep_id`, the run in progress) in place; returns the new count. */
 int at_timers_prune_expired(at_timer_t *list, int n, const at_localtime_t *now, const char *keep_id);
@@ -127,6 +138,14 @@ bool at_sched_next(const at_timer_t *list, int n, const at_localtime_t *now, int
 
 /* ---- the run a timer starts ------------------------------------------------------------------------ */
 
+/* A warm-by timer's lead, worked out by the heater side (at_warm). */
+typedef struct {
+    uint32_t lead_s;            /* start this long before the start time (capped at AT_TIMER_WARM_MIN) */
+    bool capped;                /* the prediction wanted more */
+    uint8_t est;                /* at_warm_est_t */
+    bool in_range_ok;           /* the climb from flame is at least 30 min: one start inside the range is allowed */
+} at_warm_plan_t;
+
 /* What the runner needs from the heater side. Each returns false if nothing was started. */
 typedef struct {
     bool (*start_preheat)(void *ctx, int minutes);
@@ -137,6 +156,21 @@ typedef struct {
     /* Optional: true while the heater is still running only to finish a previous thermostat timer's minimum run,
      * so a thermostat timer may start and take that run over. NULL: never. */
     bool (*can_take_over)(void *ctx);
+
+    /* ---- warm by (1.56, docs/ADAPTIVE_THERMOSTAT.md §10). All optional: NULL and warm-by timers fire at their start
+     * like any thermostat timer. */
+    /* The lead for timer t starting at start_epoch, worked out now. */
+    bool (*warm_plan)(void *ctx, const at_timer_t *t, int64_t start_epoch, at_warm_plan_t *out);
+    /* Arm the thermostat for warm-by timer t: as thermostat_begin, with one start inside the range allowed if
+     * plan->in_range_ok. result_hint is an at_warm_res_t (0: started when the prediction asked). *room is the
+     * reading at the start (NAN if none), for the note. */
+    bool (*warm_begin)(void *ctx, const at_timer_t *t, int64_t start_epoch, const at_warm_plan_t *plan,
+                       uint8_t result_hint, float *room);
+    /* True while the run going is frost protection's: a warm-by timer takes it over. */
+    bool (*frost_run)(void *ctx);
+    /* Local minute (at_local_minutes) to epoch, honouring daylight saving. NULL: worked out from `now`, which is
+     * only right when no clock change falls between. */
+    int64_t (*local_to_epoch)(void *ctx, int64_t local_minute);
 } at_timer_ops_t;
 
 #define AT_RUN_START_GRACE_MS 120000u   /* a started heater may still report idle for this long */
@@ -150,6 +184,19 @@ typedef struct {
     uint32_t start_ms;
     uint32_t length_ms;
     char note[AT_TIMER_NOTE_LEN];   /* the last firing and what came of it, for status and the console */
+    int64_t last_end_epoch;     /* when the last timer run ended (0: none since boot or no clock) */
+
+    /* warm by: the timer in its warming window */
+    bool warm_on;
+    char warm_id[AT_TIMER_ID_LEN];
+    int64_t warm_start_epoch;
+    int64_t warm_expected_epoch;    /* now + lead at the last check, or when it fired */
+    uint8_t warm_est;
+    bool warm_capped;
+    bool warm_waited;               /* it was due but had to wait */
+    bool warm_fired;                /* fired early for warm_start_epoch */
+    int64_t warm_checked_min;       /* epoch minute of the last prediction */
+    at_warm_plan_t warm_plan;
 } at_runner_t;
 
 void at_runner_init(at_runner_t *r);
@@ -162,6 +209,11 @@ void at_runner_init(at_runner_t *r);
  * timer's minimum run, see can_take_over). A preheat run ends with its duration, or earlier if the heater went back to
  * idle (stopped by hand, or at the coolant limit); a thermostat run ends with its window, or earlier if
  * the user switched Auto off. */
+/* Warm by: a warm-by thermostat timer has a warming window from AT_TIMER_WARM_MIN before its start to the start. Once
+ * a minute in it the runner asks ops->warm_plan for the lead, and arms the thermostat (ops->warm_begin) once now +
+ * lead reaches the start. A busy heater (the same checks as a firing) makes it wait and try again; only at the start
+ * time is the firing skipped for good. Frost protection's run is taken over. It fires once per start: not again at
+ * the start minute. Its run ends with the timer's window (start + duration), however early it began. */
 void at_runner_tick(at_runner_t *r, const at_timer_t *list, int n, const at_localtime_t *now, uint32_t now_ms,
                     const at_snapshot_t *snap, bool auto_enabled, const at_timer_ops_t *ops);
 

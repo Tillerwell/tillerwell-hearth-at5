@@ -86,7 +86,7 @@ static bool idle_now(void)
     // "Off" means the heater is seen, idle, and nothing of ours is running it.
     bool off = v.snap.have_status && !v.snap.stale && v.snap.status.state_raw == 0x00 &&
                v.snap.run_mode == AT_RUN_NONE && !v.snap.hearth_run;
-    return at_autoupdate_idle(t.clock_ok && at_app_clock_synced(), off, t.active, t.have_next, t.next_start_epoch,
+    return at_autoupdate_idle(t.clock_ok && at_app_clock_synced(), off, t.active, t.have_next, t.next_earliest_epoch,
                               (int64_t)time(NULL));
 }
 

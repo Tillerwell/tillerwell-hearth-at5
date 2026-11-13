@@ -123,6 +123,7 @@ typedef struct {
     uint8_t why;             /* at_learn_why_t */
     uint8_t vote;            /* at_vote_t, counted runs only */
     bool have_rate;
+    bool rate_ok;            /* the rise rate is a good fit, whatever the run's end (warm by, at_warm) */
     float start_temp, peak_temp;
     float rate, need, climb_min;
     uint16_t warm_s;         /* this run's warm-up delay, 0xffff if never seen */

@@ -197,6 +197,33 @@ static char *history_json(bool early_stops)
         sb_add(&b, "}");
     }
     sb_add(&b, "]");
+    /* warm-by runs (1.56), newest first: fixed once written (epochs, never ages), so the backup does not churn */
+    at_warm_store_t *ws = malloc(sizeof(*ws));
+    sb_add(&b, ",\"warm_by\":[");
+    if (ws && at_app_warm_snapshot(ws)) {
+        for (int i = ws->nrec - 1; i >= 0; i--) {
+            const at_warm_rec_t *r = &ws->rec[i];
+            if (i != ws->nrec - 1) sb_add(&b, ",");
+            sb_add(&b, "{");
+            sb_epoch(&b, "start", r->start_epoch);
+            sb_add(&b, ",");
+            sb_epoch(&b, "fired", r->fired_epoch);
+            sb_add(&b, ",");
+            sb_epoch(&b, "predicted", r->predicted_epoch);
+            sb_add(&b, ",");
+            sb_epoch(&b, "actual", r->actual_epoch);
+            sb_add(&b, ",");
+            sb_num(&b, "start_temp", r->start_temp_dc / 10.0);
+            sb_add(&b, ",\"target\":%d,\"lead_min\":%u,", (int)r->target_c, (unsigned)r->lead_min);
+            sb_str(&b, "estimate", at_warm_est_name((at_warm_est_t)r->est));
+            sb_add(&b, ",");
+            sb_str(&b, "result", at_warm_res_name((at_warm_res_t)r->result));
+            if (r->result == AT_WARM_RES_COUNTED) sb_add(&b, ",\"error_min\":%d}", (int)r->err_min);
+            else sb_add(&b, ",\"error_min\":null}");
+        }
+    }
+    free(ws);
+    sb_add(&b, "]");
     if (early_stops) sb_add(&b, ",\"early_stops\":[");
     for (int i = n_early - 1; early_stops && i >= 0; i--) {
         if (i != n_early - 1) sb_add(&b, ",");
@@ -271,6 +298,30 @@ cJSON *at_app_thermo_learn_backup(void)
         snprintf(key, sizeof(key), "limit_%s", sfx[s]);
         sb_str(&b, key, at_learn_limit_name((at_limit_t)st->s[s].limit));
     }
+    /* warm by's lists and the early stop's rises (1.56): they change once per run at most */
+    at_warm_store_t *ws = malloc(sizeof(*ws));
+    if (ws && at_app_warm_snapshot(ws)) {
+        sb_add(&b, ",\"light\":[");
+        for (int i = 0; i < ws->nlight; i++) sb_add(&b, "%s%u", i ? "," : "", (unsigned)ws->light_s[i]);
+        for (int s = 0; s < 2; s++) {
+            sb_add(&b, "],\"gross_%s\":[", sfx[s]);
+            for (int i = 0; i < ws->ngross[s]; i++) sb_add(&b, "%s%.4f", i ? "," : "", (double)ws->gross[s][i]);
+            sb_add(&b, "],\"rise_%s\":[", sfx[s]);
+            for (int i = 0; i < ws->nrise[s]; i++) sb_add(&b, "%s%.4f", i ? "," : "", (double)ws->rise[s][i]);
+        }
+        sb_add(&b, "],\"warm_by_err\":[");
+        for (int i = 0; i < ws->nerr; i++) sb_add(&b, "%s%d", i ? "," : "", (int)ws->err_min[i]);
+        sb_add(&b, "],\"warm_by_lead\":[");
+        for (int i = 0; i < ws->nlead; i++) sb_add(&b, "%s%u", i ? "," : "", (unsigned)ws->lead_min[i]);
+        sb_add(&b, "]");
+    }
+    free(ws);
+    at_coast_store_t cs;
+    if (at_app_coast_snapshot(&cs)) {
+        sb_add(&b, ",\"coast\":[");
+        for (int i = 0; i < cs.n; i++) sb_add(&b, "%s%.2f", i ? "," : "", cs.rise_cc[i] / 100.0);
+        sb_add(&b, "]");
+    }
     sb_add(&b, ",\"history\":[");
     for (int i = 0; i < st->nhist; i++) {   /* oldest first, as stored */
         if (i) sb_add(&b, ",");
@@ -310,6 +361,80 @@ static const char *const LIMITS[] = {NULL, "max", "min"};
 static const char *const VOTES[] = {"ok", "fast", "slow"};
 static const char *const SENSORS[] = {"external", "controller"};
 static const char *const KINDS[] = {"none", "widened", "narrowed", "limit_reached", "limit_cleared", "reset"};
+
+/* A number list into v (at most max); false if anything in it is not a number in [lo, hi]. Absent: n stays. */
+static bool num_list(const cJSON *o, const char *key, double lo, double hi, double *v, int max, int *n)
+{
+    const cJSON *a = cJSON_GetObjectItemCaseSensitive(o, key), *it;
+    if (!a) return true;
+    if (!cJSON_IsArray(a)) return false;
+    *n = 0;
+    cJSON_ArrayForEach(it, a)
+    {
+        if (!cJSON_IsNumber(it) || it->valuedouble < lo || it->valuedouble > hi) return false;
+        if (*n < max) v[(*n)++] = it->valuedouble;
+        else {
+            memmove(&v[0], &v[1], (size_t)(max - 1) * sizeof(v[0]));   /* keep the newest */
+            v[max - 1] = it->valuedouble;
+        }
+    }
+    return true;
+}
+
+/* warm by's lists and coast (1.56): optional, so an older backup still restores; only the keys present change */
+static bool restore_warm(const cJSON *o)
+{
+    at_warm_store_t *ws = malloc(sizeof(*ws));
+    if (!ws) return false;
+    bool ok = at_app_warm_snapshot(ws);
+    double v[AT_WARM_KEEP];
+    int n;
+    static const char *const sfx[2] = {"ext", "ctl"};
+    char key[24];
+    n = ws->nlight;
+    ok = ok && num_list(o, "light", 1, 1799, v, AT_WARM_KEEP, &n);
+    if (ok && cJSON_GetObjectItemCaseSensitive(o, "light")) {
+        ws->nlight = (uint8_t)n;
+        for (int i = 0; i < n; i++) ws->light_s[i] = (uint16_t)v[i];
+    }
+    for (int s = 0; s < 2 && ok; s++) {
+        snprintf(key, sizeof(key), "gross_%s", sfx[s]);
+        if (cJSON_GetObjectItemCaseSensitive(o, key)) {
+            ok = num_list(o, key, 1e-4, 10, v, AT_WARM_KEEP, &n);
+            ws->ngross[s] = ok ? (uint8_t)n : 0;
+            for (int i = 0; ok && i < n; i++) ws->gross[s][i] = (float)v[i];
+        }
+        snprintf(key, sizeof(key), "rise_%s", sfx[s]);
+        if (ok && cJSON_GetObjectItemCaseSensitive(o, key)) {
+            ok = num_list(o, key, 1e-4, 10, v, AT_WARM_KEEP, &n);
+            ws->nrise[s] = ok ? (uint8_t)n : 0;
+            for (int i = 0; ok && i < n; i++) ws->rise[s][i] = (float)v[i];
+        }
+    }
+    if (ok && cJSON_GetObjectItemCaseSensitive(o, "warm_by_err")) {
+        ok = num_list(o, "warm_by_err", -120, AT_WARM_LATE_MIN, v, AT_WARM_ERR_KEEP, &n);
+        ws->nerr = ok ? (uint8_t)n : 0;
+        for (int i = 0; ok && i < n; i++) ws->err_min[i] = (int8_t)v[i];
+    }
+    if (ok && cJSON_GetObjectItemCaseSensitive(o, "warm_by_lead")) {
+        ok = num_list(o, "warm_by_lead", 0, AT_WARM_MAX_LEAD_MIN, v, AT_WARM_ERR_KEEP, &n);
+        ws->nlead = ok ? (uint8_t)n : 0;
+        for (int i = 0; ok && i < n; i++) ws->lead_min[i] = (uint16_t)v[i];
+    }
+    ok = ok && at_app_warm_put(ws);
+    free(ws);
+    if (ok && cJSON_GetObjectItemCaseSensitive(o, "coast")) {
+        at_coast_store_t cs = {0};
+        double c[AT_COAST_KEEP];
+        n = 0;
+        ok = num_list(o, "coast", 0, AT_COAST_MAX_KEPT, c, AT_COAST_KEEP, &n);
+        cs.version = AT_COAST_VERSION;
+        cs.n = (uint8_t)n;
+        for (int i = 0; i < n; i++) cs.rise_cc[i] = (int16_t)lround(c[i] * 100.0);
+        ok = ok && at_app_coast_put(&cs);
+    }
+    return ok;
+}
 
 bool at_app_thermo_learn_restore(const cJSON *o)
 {
@@ -382,5 +507,6 @@ bool at_app_thermo_learn_restore(const cJSON *o)
     }
     ok = ok && at_app_learn_put(st);
     free(st);
+    if (ok) ok = restore_warm(o);
     return ok;
 }

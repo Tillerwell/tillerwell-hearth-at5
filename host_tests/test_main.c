@@ -1765,6 +1765,8 @@ static void test_cooldown(void)
     CHECK(!at_cd_restore(&r, &bad));
 }
 
+#include "test_warm.inc"
+
 int main(void)
 {
     test_frames();
@@ -1793,6 +1795,7 @@ int main(void)
     test_version();
     test_fuel();
     test_cooldown();
+    test_warm();
     printf("\n%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

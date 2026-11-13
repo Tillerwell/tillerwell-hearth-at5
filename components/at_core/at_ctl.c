@@ -44,6 +44,7 @@ void at_ctl_init(at_ctl_t *t, float auto_target, float freeze_target)
     at_learn_init(&t->learn);
     at_cd_init(&t->cd);
     at_coast_init(&t->coast);
+    at_warm_init(&t->warm);
 }
 
 void at_ctl_boot(at_ctl_t *t, const at_ctl_saved_t *saved, int64_t build_epoch, uint32_t now_ms)
@@ -247,6 +248,18 @@ void at_ctl_set_freeze_target(at_ctl_t *t, float target)
     t->freeze.target = target;
 }
 
+void at_ctl_allow_warm_start(at_ctl_t *t, bool allow) { t->warm_in_range = allow; }
+
+/* Auto may start at this reading: at or below the bottom of the working range, or below the stop point once for a
+ * warm-by timer. */
+static bool auto_start_ok(const at_ctl_t *t, float temp)
+{
+    float lo, hi;
+    at_ctl_working_range(t, &lo, &hi);
+    if (temp <= lo + EPS) return true;
+    return t->warm_in_range && temp < at_ctl_stop_at(t) - EPS;
+}
+
 /* ---- locks ------------------------------------------------------------------------------------------------- */
 
 static uint32_t run_len(const at_ctl_t *t)
@@ -423,6 +436,7 @@ static bool is_idle(const at_snapshot_t *s)
 static void send_start(at_ctl_t *t, at_ctl_loop_t *l, const at_ctl_ops_t *ops, uint32_t now, at_owner_t owner)
 {
     ops->start_thermostat(ops->ctx);
+    if (owner == AT_OWNER_AUTO) t->warm_in_range = false;
     t->pending_owner = (uint8_t)owner;
     t->pending_ms = now;
     l->last_action_ms = now;
@@ -440,9 +454,7 @@ static bool start_pending(const at_ctl_t *t, uint32_t now)
 static bool auto_wants_start(const at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
 {
     if (!t->autot.enabled || !t->room_ok || t->boot_pending) return false;
-    float lo, hi;
-    at_ctl_working_range(t, &lo, &hi);
-    if (t->room > lo + EPS || at_ctl_min_off_left_ms(t, now) > 0) return false;
+    if (!auto_start_ok(t, t->room) || at_ctl_min_off_left_ms(t, now) > 0) return false;
     if (s->have_status && s->status.fault && t->autot.retry_count >= N_RETRIES) return false;
     return true;
 }
@@ -487,10 +499,13 @@ void at_ctl_set_auto(at_ctl_t *t, bool enabled, const at_snapshot_t *s, uint32_t
     } else if (!t->room_ok) {
         /* never start blind: with no reading nothing could stop the run */
         set_note(l, "Auto thermostat enabled -> no temperature reading yet, waiting");
-    } else if (t->room > lo) {
+    } else if (!auto_start_ok(t, t->room)) {
         set_note(l, "Auto thermostat enabled -> temperature %.1f above %.1f, waiting", t->room, lo);
     } else if (off_left > 0) {
         set_note(l, "Auto thermostat enabled -> at %.1f, waiting: minimum off %u min left", t->room, mins_up(off_left));
+    } else if (t->room > lo + EPS) {
+        set_note(l, "Auto thermostat enabled for warm by -> at %.1f, inside the range, sending start thermostat", t->room);
+        send_start(t, l, ops, now, AT_OWNER_AUTO);
     } else {
         set_note(l, "Auto thermostat enabled -> sending start thermostat");
         send_start(t, l, ops, now, AT_OWNER_AUTO);
@@ -507,6 +522,7 @@ void at_ctl_auto_off(at_ctl_t *t, bool finish, at_hold_t hold, at_src_t src, con
     if (!l->enabled) return;
     l->enabled = false;
     l->stop_pending = false;
+    t->warm_in_range = false;
     uint32_t left = at_ctl_min_run_left_ms(t, now);
     bool in_run = t->run.running && !t->run.stopping;
     bool fault = s->have_status && s->status.fault;
@@ -533,6 +549,7 @@ void at_ctl_disarm_auto(at_ctl_t *t, const char *note)
     t->autot.enabled = false;
     t->autot.stop_pending = false;
     t->autot.has_acted = false;
+    t->warm_in_range = false;
     if (t->held == AT_HOLD_TOP || t->held == AT_HOLD_NO_READING) t->held = AT_HOLD_NONE;
     reset_retry(&t->autot);
     set_note(&t->autot, "%s", note ? note : "physical controller took control");
@@ -609,6 +626,7 @@ static void boot_decide(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
         }
         at_learn_run_start(&t->learn, now, (at_sensor_t)t->sensor, false, false, 0);
         if (t->run.flame) at_learn_flame(&t->learn, now);
+        at_warm_run_start(&t->warm);
         return;
     }
     if (t->saved.run_mark) {
@@ -650,6 +668,7 @@ static void run_begin(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
     at_learn_run_start(&t->learn, now, (at_sensor_t)t->sensor, t->run.owner == AT_OWNER_AUTO, t->run.off_known,
                        t->run.off_ms);
     at_coast_cancel(&t->coast);
+    at_warm_run_start(&t->warm);
     if (t->run.owner == AT_OWNER_FREEZE && t->autot.enabled) take_from_frost(t);
 }
 
@@ -672,6 +691,11 @@ static void run_end(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
         }
     }
     at_learn_run_end(&t->learn, now, end, user_width(t));
+    if (t->learn.nruns > 0) {
+        const at_learn_run_t *r = &t->learn.runs[t->learn.nruns - 1];
+        at_warm_run_end(&t->warm, r, r->rate_ok);
+    }
+    at_warm_run_ended(&t->warm, t->epoch, end);
     t->last_end = (uint8_t)end;
     t->run.running = false;
     t->flame_fix_pending = false;
@@ -878,7 +902,7 @@ static void tick_auto(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const a
         }
     } else if (in_run && t->held == AT_HOLD_TOP && temp < stop_at - EPS) {
         t->held = AT_HOLD_NONE;
-    } else if (temp <= lo + EPS && idle) {
+    } else if (auto_start_ok(t, temp) && idle) {
         uint32_t off_left = at_ctl_min_off_left_ms(t, now);
         if (off_left > 0) {
             set_note(l, "at %.1f, below %.1f, waiting: minimum off %u min left", temp, lo, mins_up(off_left));
@@ -976,7 +1000,9 @@ void at_ctl_tick(at_ctl_t *t, const at_snapshot_t *s, uint32_t now_ms, const at_
         at_learn_sample(&t->learn, now_ms, t->room, (at_sensor_t)t->sensor, lo,
                         at_ctl_min_off_left_ms(t, now_ms) > 0);
         at_coast_sample(&t->coast, now_ms, t->room, t->sensor == AT_SENS_EXT);
+        at_warm_sample(&t->warm, now_ms, t->room, t->sensor, t->run.running);
     }
+    at_warm_watch(&t->warm, t->epoch, t->room_ok, t->room, at_ctl_stop_at(t), t->run.running);
     check_ceiling(t, s, now_ms, ops);
     retry_stop(t, s, now_ms, ops);
     service_held(t, s, now_ms, ops);

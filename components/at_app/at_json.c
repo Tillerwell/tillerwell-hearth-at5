@@ -61,6 +61,7 @@ static cJSON *timer_to_json(const at_timer_t *t)
     }
     cJSON_AddNumberToObject(o, "low_c", t->low_c);
     cJSON_AddNumberToObject(o, "high_c", t->high_c);
+    cJSON_AddBoolToObject(o, "warm_by", t->warm_by == 1);
     return o;
 }
 
@@ -133,6 +134,11 @@ static bool timer_from_json(const cJSON *o, at_timer_t *t, char *err, size_t err
     i = cJSON_GetObjectItemCaseSensitive(o, "high_c");
     if (i && (!jint(i, &v) || v < -128 || v > 127)) FAIL("high_c must be a whole number");
     if (i) t->high_c = (int8_t)v;
+    /* warm by (1.56): a sender that does not know it leaves it out, and the stored value is kept for that id. Only
+     * an explicit false clears it */
+    i = cJSON_GetObjectItemCaseSensitive(o, "warm_by");
+    if (i && !cJSON_IsNull(i) && !cJSON_IsBool(i)) FAIL("warm_by must be true or false");
+    t->warm_by = cJSON_IsBool(i) ? (cJSON_IsTrue(i) ? 1 : 0) : AT_TIMER_WARM_ABSENT;
     return true;
 #undef FAIL
 }
@@ -568,6 +574,12 @@ static cJSON *build_state_tree(void)
         cJSON *nx = cJSON_AddObjectToObject(o, "next_timer");
         cJSON_AddStringToObject(nx, "id", ts.next_id);
         cJSON_AddNumberToObject(nx, "start_epoch", (double)ts.next_start_epoch);
+        cJSON_AddBoolToObject(nx, "warm_by", ts.next_warm_by);
+        if (ts.next_warm_by) {
+            /* changes by the minute: status only, never the backup (the cloud copy is sent when the backup changes) */
+            cJSON_AddNumberToObject(nx, "expected_start_epoch", (double)ts.next_expected_epoch);
+            add_str_or_null(nx, "estimate", at_warm_est_name((at_warm_est_t)ts.next_estimate));
+        }
     } else {
         cJSON_AddNullToObject(o, "next_timer");
     }
