@@ -35,6 +35,13 @@ void at_runlog_save(const at_learn_t *L, at_runlog_store_t *out);
 bool at_runlog_changed(const at_learn_t *L, const at_runlog_store_t *saved);
 /* Put a saved log back. False, and nothing changes, if it does not make sense. */
 bool at_runlog_restore(at_learn_t *L, const at_runlog_store_t *st);
+/* A run in the log makes sense (enums in range, numbers finite). */
+bool at_runlog_run_ok(const at_learn_run_t *r);
+/* Merge runs from a backup into the log (1.58): the union with the box's own, keyed by `at` (the same `at` keeps the
+ * box's own entry; runs with no time are never matched), oldest first, the newest AT_LEARN_RUNS kept. Display only:
+ * nothing learned (the votes, warm-ups, coolings, width) changes. False, and nothing changes, if any run does not
+ * make sense. */
+bool at_runlog_merge(at_learn_t *L, const at_learn_run_t *in, int n);
 
 #ifdef __cplusplus
 }

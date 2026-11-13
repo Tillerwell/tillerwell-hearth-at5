@@ -928,6 +928,34 @@ bool at_app_warm_put(const at_warm_store_t *st)
     return ok;
 }
 
+bool at_app_cd_snapshot(at_cd_store_t *out)
+{
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    *out = s_ctl.cd.st;
+    xSemaphoreGive(s_ctl_lock);
+    return true;
+}
+
+bool at_app_cd_put(const at_cd_store_t *st)
+{
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    bool ok = at_cd_restore(&s_ctl.cd, st);
+    if (ok) s_ctl.cd.dirty = true;
+    xSemaphoreGive(s_ctl_lock);
+    if (ok) persist_ctl();
+    return ok;
+}
+
+/* the log then differs from the copy last saved, so persist_ctl writes it */
+bool at_app_runlog_merge(const at_learn_run_t *in, int n)
+{
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    bool ok = at_runlog_merge(&s_ctl.learn, in, n);
+    xSemaphoreGive(s_ctl_lock);
+    if (ok) persist_ctl();
+    return ok;
+}
+
 bool at_app_coast_snapshot(at_coast_store_t *out)
 {
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);

@@ -77,7 +77,9 @@ static bool legacy_authorised(httpd_req_t *req)
  * permission level. A request without one is the old API, which stays until an admin switches it off.
  * esp_http_server runs one request at a time, so one set of statics is enough. */
 
-#define BODY_MAX 10240
+/* 16 KB since 1.58: a full backup (32 timers, all of Heater Care's learning with the run log and warm by) is about
+ * 13 KB, over the old 10 KB, and PUT /api/backup turned it away whole. Only a signed request's body this size is read */
+#define BODY_MAX 16384
 #define OTA_PATH "/api/ota"
 
 static struct {

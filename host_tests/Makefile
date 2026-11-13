@@ -55,9 +55,18 @@ fwupdate: test_fwupdate
 test_fwupdate: test_fwupdate.c ../components/at_fwupdate/at_fwupdate_policy.c ../components/at_core/at_version.c
 	$(CC) $(AUTH_CFLAGS) -I../components/at_fwupdate/include test_fwupdate.c ../components/at_fwupdate/at_fwupdate_policy.c ../components/at_core/at_version.c $(CJSON)/cJSON.c -o $@
 
+# The backup's thermo_learn round trip (at_app_thermo.c against stubbed at_app calls), with IDF's cJSON.
+BACKUP_SRCS = test_backup.c ../components/at_app/at_app_thermo.c $(filter-out test_main.c,$(SRCS)) $(CJSON)/cJSON.c
+
+backup: test_backup
+	./test_backup
+
+test_backup: $(BACKUP_SRCS)
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations -Wno-missing-field-initializers -Istub -I../components/at_app/include -I$(CJSON) $(BACKUP_SRCS) -o $@ -lm
+
 auth-vectors:
 	cd .. && python3 host_tests/gen_auth_vectors.py
 
 clean:
-	rm -f test_main test_auth test_access test_cloudlink test_fwupdate
+	rm -f test_main test_auth test_access test_cloudlink test_fwupdate test_backup
 	rm -rf build

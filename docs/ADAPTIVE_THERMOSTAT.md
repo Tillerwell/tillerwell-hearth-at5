@@ -332,6 +332,7 @@ What the build settled that the plan left open:
 - The arrival is the reading reaching Auto's stop point (`stop_at`) while the warm-by run is followed. It is followed until then, until the start + 30 minutes, or until the run ends or the timer's window ends.
 - Timers are saved as version 2 of the `timers` blob: `warm_by` sits in what was padding, so the size is unchanged and a version 1 list loads with it cleared.
 - Firmware auto-update treats the next timer as starting 2 hours early when it is a warm-by timer, so an update never lands in a warming window.
+- From 1.58 the backup's `thermo_learn` also carries warm by's run records (`warm_by_runs`), the cooldown lengths and the run log, so a replacement box restored from the cloud keeps every piece of Heater Care and warm by (API_SPEC §7.5).
 
 A thermostat timer marked **warm by** starts early enough that the room is at the timer's set temperature at the timer's start time. "Warm by 07:00 at 20°C" means 20°C at 07:00, not the heater lighting at 07:00.
 

@@ -8,3 +8,4 @@ host_tests/test_main
 host_tests/test_auth
 host_tests/test_access
 host_tests/test_cloudlink
+host_tests/test_backup

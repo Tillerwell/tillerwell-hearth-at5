@@ -313,6 +313,15 @@ cJSON *at_app_thermo_learn_backup(void)
         for (int i = 0; i < ws->nerr; i++) sb_add(&b, "%s%d", i ? "," : "", (int)ws->err_min[i]);
         sb_add(&b, "],\"warm_by_lead\":[");
         for (int i = 0; i < ws->nlead; i++) sb_add(&b, "%s%u", i ? "," : "", (unsigned)ws->lead_min[i]);
+        /* the warm-by runs themselves (1.58), oldest first, compact: [start, fired, predicted, actual, start temp in
+         * tenths, target, estimate, result, error min, lead min] with the at_warm enum numbers */
+        sb_add(&b, "],\"warm_by_runs\":[");
+        for (int i = 0; i < ws->nrec; i++) {
+            const at_warm_rec_t *r = &ws->rec[i];
+            sb_add(&b, "%s[%.0f,%.0f,%.0f,%.0f,%d,%d,%u,%u,%d,%u]", i ? "," : "", (double)r->start_epoch,
+                   (double)r->fired_epoch, (double)r->predicted_epoch, (double)r->actual_epoch, (int)r->start_temp_dc,
+                   (int)r->target_c, (unsigned)r->est, (unsigned)r->result, (int)r->err_min, (unsigned)r->lead_min);
+        }
         sb_add(&b, "]");
     }
     free(ws);
@@ -322,6 +331,31 @@ cJSON *at_app_thermo_learn_backup(void)
         for (int i = 0; i < cs.n; i++) sb_add(&b, "%s%.2f", i ? "," : "", cs.rise_cc[i] / 100.0);
         sb_add(&b, "]");
     }
+    /* the heater's cooldown lengths (1.52) and Heater Care's run log (1.55), so a replacement box keeps them (1.58).
+     * Runs oldest first, compact: [at, light_s, burn_s, sensor, end, why, vote, rate|null, need, climb_min,
+     * start_temp, peak_temp, warmup_s|null, cooling_s|null, dip, rate_ok] with the at_learn enum numbers */
+    at_cd_store_t cd;
+    if (at_app_cd_snapshot(&cd)) {
+        sb_add(&b, ",\"cooldown\":[");
+        for (int i = 0; i < cd.n; i++) sb_add(&b, "%s%u", i ? "," : "", (unsigned)cd.s[i]);
+        sb_add(&b, "]");
+    }
+    sb_add(&b, ",\"runs\":[");
+    for (int i = 0; i < L->nruns; i++) {
+        const at_learn_run_t *r = &L->runs[i];
+        sb_add(&b, "%s[%.0f,%u,%u,%u,%u,%u,%u,", i ? "," : "", (double)r->start_epoch, (unsigned)r->light_s,
+               (unsigned)r->burn_s, (unsigned)r->sensor, (unsigned)r->end, (unsigned)r->why, (unsigned)r->vote);
+        if (r->have_rate) sb_add(&b, "%.4f,", (double)r->rate);
+        else sb_add(&b, "null,");
+        sb_add(&b, "%.3f,%.1f,%.2f,%.2f,", (double)r->need, (double)r->climb_min, (double)r->start_temp,
+               (double)r->peak_temp);
+        if (r->warm_s != 0xffff) sb_add(&b, "%u,", (unsigned)r->warm_s);
+        else sb_add(&b, "null,");
+        if (r->have_cool) sb_add(&b, "%u,", (unsigned)r->cool_s);
+        else sb_add(&b, "null,");
+        sb_add(&b, "%.2f,%u]", (double)r->dip, r->rate_ok ? 1u : 0u);
+    }
+    sb_add(&b, "]");
     sb_add(&b, ",\"history\":[");
     for (int i = 0; i < st->nhist; i++) {   /* oldest first, as stored */
         if (i) sb_add(&b, ",");
@@ -381,6 +415,140 @@ static bool num_list(const cJSON *o, const char *key, double lo, double hi, doub
     return true;
 }
 
+/* A JSON array row of n_min..n_max numbers (null reads as NAN) into f; false if it is anything else. */
+static bool num_row(const cJSON *row, double *f, int n_min, int n_max)
+{
+    if (!cJSON_IsArray(row)) return false;
+    int n = 0;
+    const cJSON *x;
+    cJSON_ArrayForEach(x, row)
+    {
+        if (n >= n_max) return false;
+        if (cJSON_IsNull(x)) f[n++] = NAN;
+        else if (cJSON_IsNumber(x) && isfinite(x->valuedouble)) f[n++] = x->valuedouble;
+        else return false;
+    }
+    return n >= n_min;
+}
+
+static const char *const END_NAMES[] = {"none", "top", "user", "external", "ceiling", "fault", "no_reading", "heater",
+                                        "timer_ended", "thermostat_off"};
+static const char *const WHY_NAMES[] = {"counted", "not_thermostat", "long_off", "not_at_top", "sensor_changed",
+                                        "lost_heat", "not_enough_data", "cold_spell"};
+
+/* One run from the backup: the compact row the backup writes, or an object in the GET /api/thermo/history "runs"
+ * shape (names as printed there), so runs rebuilt from elsewhere can be put back with a plain backup round trip. */
+static bool run_from_json(const cJSON *it, at_learn_run_t *r)
+{
+    memset(r, 0, sizeof(*r));
+    r->warm_s = 0xffff;
+    if (cJSON_IsArray(it)) {
+        double f[16];
+        /* [at, light_s, burn_s, sensor, end, why, vote, rate|null, need, climb_min, start_temp, peak_temp,
+         *  warmup_s|null, cooling_s|null, dip, rate_ok] */
+        if (!num_row(it, f, 16, 16)) return false;
+        const int must[] = {0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 14, 15};
+        for (unsigned k = 0; k < sizeof(must) / sizeof(must[0]); k++) {
+            if (isnan(f[must[k]])) return false;
+        }
+        if (f[0] < 0 || f[1] < 0 || f[2] < 0 || f[1] > 4e9 || f[2] > 4e9) return false;
+        for (int k = 3; k <= 6; k++) {
+            if (f[k] < 0 || f[k] > 255) return false;
+        }
+        r->start_epoch = (int64_t)f[0];
+        r->light_s = (uint32_t)f[1];
+        r->burn_s = (uint32_t)f[2];
+        r->sensor = (uint8_t)f[3];
+        r->end = (uint8_t)f[4];
+        r->why = (uint8_t)f[5];
+        r->vote = (uint8_t)f[6];
+        r->have_rate = !isnan(f[7]);
+        r->rate = r->have_rate ? (float)f[7] : 0;
+        r->need = (float)f[8];
+        r->climb_min = (float)f[9];
+        r->start_temp = (float)f[10];
+        r->peak_temp = (float)f[11];
+        if (!isnan(f[12]) && f[12] >= 0 && f[12] < 65535) r->warm_s = (uint16_t)f[12];
+        r->have_cool = !isnan(f[13]) && f[13] >= 0 && f[13] < 4e9;
+        r->cool_s = r->have_cool ? (uint32_t)f[13] : 0;
+        r->dip = (float)f[14];
+        r->rate_ok = f[15] != 0;
+        return true;
+    }
+    if (!cJSON_IsObject(it)) return false;
+    int sensor = name_index(str(it, "sensor"), SENSORS, 2);
+    int end = name_index(str(it, "end"), END_NAMES, 10);
+    int why = name_index(str(it, "why"), WHY_NAMES, 8);
+    int vote = str(it, "vote") ? name_index(str(it, "vote"), VOTES, 3) : 0;
+    const double at = num(it, "at", -1);
+    if (sensor < 0 || end < 0 || why < 0 || vote < 0 || at < 0) return false;
+    r->start_epoch = (int64_t)at;
+    r->sensor = (uint8_t)sensor;
+    r->end = (uint8_t)end;
+    r->why = (uint8_t)why;
+    r->vote = (uint8_t)vote;
+    double light = num(it, "light_s", 0), burn = num(it, "burn_s", 0);
+    if (light < 0 || burn < 0 || light > 4e9 || burn > 4e9) return false;
+    r->light_s = (uint32_t)light;
+    r->burn_s = (uint32_t)burn;
+    const cJSON *x = cJSON_GetObjectItemCaseSensitive(it, "rate");
+    r->have_rate = cJSON_IsNumber(x);
+    r->rate = r->have_rate ? (float)x->valuedouble : 0;
+    r->need = (float)num(it, "need", 0);
+    r->climb_min = (float)num(it, "climb_min", 0);
+    r->start_temp = (float)num(it, "start_temp", 0);
+    r->peak_temp = (float)num(it, "peak_temp", 0);
+    double w = num(it, "warmup_s", -1), c = num(it, "cooling_s", -1);
+    if (w >= 0 && w < 65535) r->warm_s = (uint16_t)w;
+    r->have_cool = c >= 0 && c < 4e9;
+    r->cool_s = r->have_cool ? (uint32_t)c : 0;
+    r->dip = (float)num(it, "dip", 0);
+    r->rate_ok = false;   /* not known from the history shape: it never feeds warm by */
+    return true;
+}
+
+/* the cooldown lengths and the run log (1.58): optional, so an older backup still restores */
+static bool restore_heater_logs(const cJSON *o)
+{
+    bool ok = true;
+    const cJSON *cd = cJSON_GetObjectItemCaseSensitive(o, "cooldown");
+    if (cd) {
+        at_cd_store_t st = {0};
+        st.version = AT_CD_VERSION;
+        double v[AT_CD_KEEP];
+        int n = 0;
+        ok = num_list(o, "cooldown", 0, 65535, v, AT_CD_KEEP, &n);
+        st.n = (uint8_t)n;
+        for (int i = 0; i < n; i++) st.s[i] = (uint16_t)v[i];
+        ok = ok && at_app_cd_put(&st);
+    }
+    const cJSON *runs = cJSON_GetObjectItemCaseSensitive(o, "runs");
+    if (ok && runs) {
+        if (!cJSON_IsArray(runs)) return false;
+        at_learn_run_t *in = calloc(AT_LEARN_RUNS, sizeof(*in));
+        if (!in) return false;
+        int n = 0;
+        const cJSON *it;
+        cJSON_ArrayForEach(it, runs)
+        {
+            at_learn_run_t r;
+            if (!run_from_json(it, &r)) {
+                ok = false;
+                break;
+            }
+            if (n == AT_LEARN_RUNS) {   /* keep the newest */
+                memmove(&in[0], &in[1], (AT_LEARN_RUNS - 1) * sizeof(in[0]));
+                n--;
+            }
+            in[n++] = r;
+        }
+        /* merged with the box's own log by `at`; at_runlog_merge checks the enums and the floats. Display only */
+        ok = ok && at_app_runlog_merge(in, n);
+        free(in);
+    }
+    return ok;
+}
+
 /* warm by's lists and coast (1.56): optional, so an older backup still restores; only the keys present change */
 static bool restore_warm(const cJSON *o)
 {
@@ -420,6 +588,39 @@ static bool restore_warm(const cJSON *o)
         ok = num_list(o, "warm_by_lead", 0, AT_WARM_MAX_LEAD_MIN, v, AT_WARM_ERR_KEEP, &n);
         ws->nlead = ok ? (uint8_t)n : 0;
         for (int i = 0; ok && i < n; i++) ws->lead_min[i] = (uint16_t)v[i];
+    }
+    const cJSON *recs = cJSON_GetObjectItemCaseSensitive(o, "warm_by_runs");
+    if (ok && recs) {
+        if (!cJSON_IsArray(recs)) ok = false;
+        ws->nrec = 0;
+        const cJSON *it;
+        cJSON_ArrayForEach(it, recs)
+        {
+            double f[10];
+            if (!num_row(it, f, 10, 10)) {
+                ok = false;
+                break;
+            }
+            if (ws->nrec == AT_WARM_REC) {   /* keep the newest */
+                memmove(&ws->rec[0], &ws->rec[1], (AT_WARM_REC - 1) * sizeof(ws->rec[0]));
+                ws->nrec--;
+            }
+            at_warm_rec_t *r = &ws->rec[ws->nrec++];
+            memset(r, 0, sizeof(*r));
+            r->start_epoch = (int64_t)f[0];
+            r->fired_epoch = (int64_t)f[1];
+            r->predicted_epoch = (int64_t)f[2];
+            r->actual_epoch = (int64_t)f[3];
+            r->start_temp_dc = (int16_t)f[4];
+            r->target_c = (int8_t)f[5];
+            r->est = (uint8_t)f[6];
+            r->result = (uint8_t)f[7];
+            r->err_min = (int8_t)f[8];
+            r->lead_min = (uint16_t)f[9];
+            if (f[4] < -400 || f[4] > 600 || f[5] < -40 || f[5] > 60 || f[8] < -120 || f[8] > 30 || f[9] < 0 ||
+                f[9] > 65535)
+                ok = false;
+        }
     }
     ok = ok && at_app_warm_put(ws);
     free(ws);
@@ -508,5 +709,6 @@ bool at_app_thermo_learn_restore(const cJSON *o)
     ok = ok && at_app_learn_put(st);
     free(st);
     if (ok) ok = restore_warm(o);
+    if (ok) ok = restore_heater_logs(o);
     return ok;
 }

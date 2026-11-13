@@ -10,6 +10,7 @@
 
 #include "at_core.h"
 #include "at_ctl.h"
+#include "at_runlog.h"
 #include "at_fuel.h"
 #include "at_timers.h"
 #include "at_tz.h"
@@ -304,6 +305,12 @@ bool at_app_warm_snapshot(at_warm_store_t *out);
 bool at_app_warm_put(const at_warm_store_t *st);
 bool at_app_coast_snapshot(at_coast_store_t *out);
 bool at_app_coast_put(const at_coast_store_t *st);
+/* The heater's learned cooldown lengths (1.52) and Heater Care's run log (1.55), for the backup (1.58): copy out / put
+ * back and save. False if what is put back does not make sense. */
+bool at_app_cd_snapshot(at_cd_store_t *out);
+bool at_app_cd_put(const at_cd_store_t *st);
+/* Merge runs into the log (at_runlog_merge): display only, nothing learned changes. */
+bool at_app_runlog_merge(const at_learn_run_t *in, int n);
 /* Smallest allowed width of an Auto range: 1 C (Heater Care widens the working range itself). */
 float at_app_band_min_gap(void);
 
