@@ -250,6 +250,15 @@ bool at_app_fuel_set_factor(float factor);
 bool at_app_fuel_detail(int32_t day, at_fuel_detail_day_t *detail, at_fuel_day_t *log_day);
 /* The days a breakdown is kept for, newest first. */
 int at_app_fuel_detail_days(int32_t *out, int max);
+/* The settings backup's "fuel" section (1.65): the whole fuel log, the last 31 days' breakdowns, the running
+ * totals, what is left in the tank, the battery-use totals and the pump's calibration count, so a replacement box
+ * restores all of it and the website can show the log. Rebuilt only on the hour, at the end of a burn or when the
+ * price changes, so the backup's hash stays put in between. NULL without a clock. Caller frees. */
+char *at_app_fuel_cloud_json(void);
+/* PUT /api/backup's "fuel" (1.65): merges it into what the box has (the box's own days win, totals are added once).
+ * False if it is malformed. */
+struct cJSON;
+bool at_app_fuel_restore(const struct cJSON *fuel);
 /* GET /api/fuel/day: JSON for one day's breakdown, or NULL if none is kept. Caller frees. */
 char *at_app_fuel_day_json(int32_t day);
 bool at_app_fuel_set_rates(float starting, float low, float middle, float high);
@@ -278,6 +287,9 @@ void at_app_battery_tick(const at_snapshot_t *snap, uint32_t now_ms);
 void at_app_battery_view(at_battery_view_t *out);
 /* AT_BATT_FACTOR_MIN to AT_BATT_FACTOR_MAX; false (and nothing changed) otherwise. */
 bool at_app_battery_set_factor(float factor);
+/* For the backup's "fuel" section (1.65): the running totals, and putting them back on a replacement box. */
+void at_app_battery_totals(double *ah, double *wh, int32_t *day, double *ah_day);
+bool at_app_battery_restore(double ah, double wh, int32_t day, double ah_day);
 
 /* Today's local date in days since 1970-01-01; false without a clock and time zone. */
 bool at_app_local_day(int32_t *day);

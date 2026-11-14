@@ -1683,6 +1683,74 @@ static void test_fuel(void)
         CHECK(sizeof(at_fuel_detail_t) <= 3400); /* NVS is 64 KB and shared: keep this small */
     }
 
+    /* the cloud backup's copy (1.65): encode, merge into a replacement box, totals added once */
+    {
+        at_fuel_log_t a, b;
+        at_fuel_detail_t da, db;
+        at_fuel_detail_run_t r1 = {0};
+        at_fuel_log_init(&a);
+        at_fuel_detail_init(&da);
+        at_fuel_run_t fr = {0};
+        at_fuel_totals_t ft;
+        at_fuel_totals_init(&ft);
+        at_fuel_cfg_t fc;
+        at_fuel_cfg_defaults(&fc);
+        fc.price = 1.5f;
+        for (int d = 0; d < 40; d++) {
+            for (int i = 0; i < 400; i++) at_fuel_tick(&ft, &a, &fr, &fc, 3, 2, true, 3, day + d);
+            for (int i = 0; i < 400; i++) at_fuel_detail_add(&da, &r1, day + d, 7, AT_FUEL_HIGH, 3, 0.62 * 3 / 3600.0);
+            at_fuel_detail_add(&da, &r1, day + d, 23, AT_FUEL_LOW, 60 * 37, 0.05);
+        }
+        static char lt[AT_FUEL_LOG_TEXT_MAX], dtx[AT_FUEL_DETAIL_TEXT_MAX];
+        CHECK(at_fuel_log_encode(&a, lt, sizeof(lt)) > 0 && at_fuel_detail_encode(&da, dtx, sizeof(dtx)) > 0);
+        CHECK(strchr(lt, ';') && strchr(dtx, ':'));
+        /* a fresh box takes it all back */
+        at_fuel_log_init(&b);
+        at_fuel_detail_init(&db);
+        CHECK(at_fuel_log_merge_text(&b, lt) == 40 && b.count == 40);
+        CHECK(memcmp(at_fuel_log_find(&b, day + 3), at_fuel_log_find(&a, day + 3), sizeof(at_fuel_day_t)) == 0);
+        CHECK(at_fuel_log_at(&b, 0)->day == day + 39 && at_fuel_log_at(&b, 39)->day == day);
+        CHECK(at_fuel_detail_merge_text(&db, dtx) == AT_FUEL_DETAIL_DAYS && db.count == AT_FUEL_DETAIL_DAYS);
+        const at_fuel_detail_day_t *x = at_fuel_detail_find(&db, day + 39), *y = at_fuel_detail_find(&da, day + 39);
+        CHECK(x && y && memcmp(x, y, sizeof(*x)) == 0 && x->min[23][AT_FUEL_LOW - 1] == 37);
+        /* restoring the same text again adds nothing; the box's own day wins over the restored one */
+        CHECK(at_fuel_log_merge_text(&b, lt) == 0 && b.count == 40);
+        at_fuel_log_t c;
+        at_fuel_log_init(&c);
+        at_fuel_run_t cr = {0};
+        at_fuel_totals_t ct;
+        at_fuel_totals_init(&ct);
+        at_fuel_tick(&ct, &c, &cr, &fc, 3, 2, true, 3, day + 39); /* the new box burned a little today */
+        uint32_t own_ml = at_fuel_log_find(&c, day + 39)->ml;
+        CHECK(at_fuel_log_merge_text(&c, lt) == 39 && at_fuel_log_find(&c, day + 39)->ml == own_ml);
+        /* malformed text changes nothing */
+        CHECK(at_fuel_log_merge_text(&c, "123:4,5;") == -1 && c.count == 40);
+        CHECK(at_fuel_detail_merge_text(&db, "20000:1,2,3,4:zz;") == -1 && db.count == AT_FUEL_DETAIL_DAYS);
+        CHECK(at_fuel_log_merge_text(&c, "") == 0);
+        /* an empty log encodes to an empty string */
+        at_fuel_log_t e;
+        at_fuel_log_init(&e);
+        CHECK(at_fuel_log_encode(&e, lt, sizeof(lt)) == 0 && lt[0] == 0);
+        /* a full year fits the text buffer */
+        at_fuel_log_t full;
+        at_fuel_log_init(&full);
+        for (int d = 0; d < AT_FUEL_DAYS; d++) {
+            at_fuel_day_t big = { .day = 99999 + d, .ml = 4000000000u, .cost_m = 4000000000u, .burn_min = 65535, .starts = 65535 };
+            full.d[d] = big;
+        }
+        full.count = AT_FUEL_DAYS;
+        full.head = AT_FUEL_DAYS - 1;
+        CHECK(at_fuel_log_encode(&full, lt, sizeof(lt)) > 0);
+        /* totals: added once, only when bigger than the box's own */
+        at_fuel_totals_t own, rest;
+        at_fuel_totals_init(&own);
+        at_fuel_totals_init(&rest);
+        own.litres = 0.4; own.cost = 0.6; own.starts = 1;
+        rest.litres = 120; rest.cost = 180; rest.starts = 300; rest.level_s[AT_FUEL_HIGH] = 3600;
+        CHECK(at_fuel_totals_merge(&own, &rest) && fabs(own.litres - 120.4) < 1e-9 && own.starts == 301);
+        CHECK(!at_fuel_totals_merge(&own, &rest) && fabs(own.litres - 120.4) < 1e-9); /* a second restore: nothing */
+    }
+
     /* the ring keeps the newest AT_FUEL_DAYS days */
     at_fuel_log_init(&log);
     for (int d = 0; d < AT_FUEL_DAYS + 10; d++) at_fuel_tick(&t, &log, &run, &cfg, 3, 2, true, 60, day + d);

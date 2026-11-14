@@ -302,6 +302,22 @@ char *at_app_backup_json(void)
 
     char *str = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
+    /* "fuel" (1.65): the whole fuel history, spliced in as text after printing, so its year of days never becomes
+     * a cJSON tree on the box (at_app_fuel_cloud_json) */
+    char *fuel = str ? at_app_fuel_cloud_json() : NULL;
+    if (fuel) {
+        size_t a = strlen(str), f = strlen(fuel);
+        char *both = (a >= 2 && str[a - 1] == '}') ? malloc(a + f + 10) : NULL;
+        if (both) {
+            memcpy(both, str, a - 1);
+            memcpy(both + a - 1, ",\"fuel\":", 8);
+            memcpy(both + a + 7, fuel, f);
+            memcpy(both + a + 7 + f, "}", 2);
+            free(str);
+            str = both;
+        }
+        free(fuel);
+    }
     return str;
 }
 

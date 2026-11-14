@@ -1,8 +1,11 @@
 /* Fuel estimate on the box: at_fuel.c's sums, fed from the status snapshot, kept in flash. */
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 #include "at_app.h"
+#include "cJSON.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -35,6 +38,13 @@ static bool s_have_tick, s_dirty;
 static uint32_t s_last_tick_ms, s_last_save_ms;
 
 static void save_on_restart(void);
+
+/* The backup's "fuel" section (1.65), cached so the backup's hash only moves on the hour, at the end of a burn or
+ * when the price changes: the backup is re-sent to the cloud whenever its hash changes. */
+static char *s_cloud;
+static void save_locked(void);
+static int64_t s_cloud_key = -1; /* local day * 24 + hour it was built for */
+static bool s_cloud_stale = true;
 
 void at_app_fuel_init(void)
 {
@@ -103,6 +113,7 @@ void at_app_fuel_tick(const at_snapshot_t *snap, uint32_t now_ms)
     at_fuel_detail_add(&s_det, &s_det_run, day, minute / 60, s_level, dt, s_tot.litres - litres_before);
     if (s_level != AT_FUEL_OFF || hz > 0) s_dirty = true;
     bool burn_ended = was != AT_FUEL_OFF && s_level == AT_FUEL_OFF;
+    if (burn_ended) s_cloud_stale = true;
     if (s_dirty && (burn_ended || now_ms - s_last_save_ms >= SAVE_EVERY_MS)) {
         save_locked();
         s_last_save_ms = now_ms;
@@ -171,6 +182,111 @@ int at_app_fuel_detail_days(int32_t *out, int max)
     return n;
 }
 
+/* {"v":1,"log":"...","detail":"...","totals":{...},"tank_left":l,"tank_at":epoch,"battery":{...},"pump_pulses":n}
+ * (at_fuel.h has the two strings' format). */
+static char *build_cloud_locked(void)
+{
+    size_t cap = AT_FUEL_LOG_TEXT_MAX + AT_FUEL_DETAIL_TEXT_MAX + 640;
+    char *buf = malloc(cap);
+    if (!buf) return NULL;
+    size_t n = (size_t)snprintf(buf, cap, "{\"v\":1,\"log\":\"");
+    size_t w = at_fuel_log_encode(&s_log, buf + n, cap - n);
+    if (!w && s_log.count) { free(buf); return NULL; }
+    n += w;
+    n += (size_t)snprintf(buf + n, cap - n, "\",\"detail\":\"");
+    w = at_fuel_detail_encode(&s_det, buf + n, cap - n);
+    if (!w && s_det.count) { free(buf); return NULL; }
+    n += w;
+    n += (size_t)snprintf(buf + n, cap - n, "\",\"totals\":{\"litres\":%.4f,\"cost\":%.4f,\"level_s\":[%lu,%lu,%lu,%lu],\"starts\":%lu}",
+                          s_tot.litres, s_tot.cost, (unsigned long)s_tot.level_s[AT_FUEL_STARTING], (unsigned long)s_tot.level_s[AT_FUEL_LOW],
+                          (unsigned long)s_tot.level_s[AT_FUEL_MIDDLE], (unsigned long)s_tot.level_s[AT_FUEL_HIGH], (unsigned long)s_tot.starts);
+    float left;
+    if (at_fuel_tank_remaining(&s_tank, s_tot.litres, &left) && n < cap)
+        n += (size_t)snprintf(buf + n, cap - n, ",\"tank_left\":%.2f,\"tank_at\":%lld", left, (long long)s_tank.set_epoch);
+    double ah, wh, ah_day;
+    int32_t bday;
+    at_app_battery_totals(&ah, &wh, &bday, &ah_day);
+    if (n < cap)
+        n += (size_t)snprintf(buf + n, cap - n, ",\"battery\":{\"ah\":%.3f,\"wh\":%.2f,\"day\":%ld,\"ah_day\":%.3f}", ah, wh, (long)bday, ah_day);
+    if (n < cap) n += (size_t)snprintf(buf + n, cap - n, ",\"pump_pulses\":%.0f}", s_pump.pulses);
+    if (n >= cap) { free(buf); return NULL; }
+    return buf;
+}
+
+char *at_app_fuel_cloud_json(void)
+{
+    if (!s_lock) return NULL;
+    int32_t day;
+    int minute;
+    if (!at_app_local_time(&day, &minute)) return NULL; /* no dates without a clock */
+    int64_t key = (int64_t)day * 24 + minute / 60;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_cloud_stale || key != s_cloud_key || !s_cloud) {
+        char *next = build_cloud_locked();
+        if (next) {
+            free(s_cloud);
+            s_cloud = next;
+            s_cloud_key = key;
+            s_cloud_stale = false;
+        }
+    }
+    char *out = s_cloud ? strdup(s_cloud) : NULL;
+    xSemaphoreGive(s_lock);
+    return out;
+}
+
+static double jnum_or(const cJSON *o, const char *k, double dflt)
+{
+    const cJSON *v = cJSON_GetObjectItemCaseSensitive(o, k);
+    return cJSON_IsNumber(v) ? v->valuedouble : dflt;
+}
+
+bool at_app_fuel_restore(const cJSON *fuel)
+{
+    if (!s_lock || !cJSON_IsObject(fuel) || jnum_or(fuel, "v", 0) != 1) return false;
+    const cJSON *log = cJSON_GetObjectItemCaseSensitive(fuel, "log");
+    const cJSON *det = cJSON_GetObjectItemCaseSensitive(fuel, "detail");
+    const cJSON *tot = cJSON_GetObjectItemCaseSensitive(fuel, "totals");
+    const cJSON *bat = cJSON_GetObjectItemCaseSensitive(fuel, "battery");
+    bool ok = true;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (cJSON_IsString(log)) ok = at_fuel_log_merge_text(&s_log, log->valuestring) >= 0 && ok;
+    if (cJSON_IsString(det)) ok = at_fuel_detail_merge_text(&s_det, det->valuestring) >= 0 && ok;
+    float own_left;
+    bool had_level = at_fuel_tank_remaining(&s_tank, s_tot.litres, &own_left);
+    if (cJSON_IsObject(tot)) {
+        at_fuel_totals_t r;
+        at_fuel_totals_init(&r);
+        r.litres = jnum_or(tot, "litres", 0);
+        r.cost = jnum_or(tot, "cost", 0);
+        r.starts = (uint32_t)jnum_or(tot, "starts", 0);
+        const cJSON *ls = cJSON_GetObjectItemCaseSensitive(tot, "level_s");
+        for (int i = 0; i < AT_FUEL_BURN_LEVELS && cJSON_IsArray(ls); i++) {
+            const cJSON *x = cJSON_GetArrayItem(ls, i);
+            if (cJSON_IsNumber(x) && x->valuedouble >= 0) r.level_s[AT_FUEL_STARTING + i] = (uint32_t)x->valuedouble;
+        }
+        if (r.litres >= 0 && r.cost >= 0) {
+            at_fuel_totals_merge(&s_tot, &r);
+            /* the tank's level counts down from the total: keep what it showed across the change */
+            if (had_level) at_fuel_tank_set_level(&s_tank, own_left, s_tot.litres, s_tank.set_epoch);
+        }
+    }
+    /* what was left in the old box's tank, unless this box has been told a level of its own */
+    double left = jnum_or(fuel, "tank_left", -1);
+    if (!had_level && left >= 0) at_fuel_tank_set_level(&s_tank, (float)left, s_tot.litres, (int64_t)jnum_or(fuel, "tank_at", 0));
+    double pulses = jnum_or(fuel, "pump_pulses", 0);
+    if (pulses > s_pump.pulses) s_pump.pulses += pulses;
+    save_locked();
+    at_settings_blob_save(KEY_TANK, &s_tank, sizeof(s_tank));
+    s_cloud_stale = true;
+    xSemaphoreGive(s_lock);
+    if (cJSON_IsObject(bat)) {
+        at_app_battery_restore(jnum_or(bat, "ah", 0), jnum_or(bat, "wh", 0), (int32_t)jnum_or(bat, "day", -1), jnum_or(bat, "ah_day", 0));
+    }
+    ESP_LOGI(TAG, "fuel restored: %u days logged, %.2f l in all", s_log.count, s_tot.litres);
+    return ok;
+}
+
 static bool set_cfg(const at_fuel_cfg_t *next)
 {
     if (!s_lock || !at_fuel_cfg_valid(next)) return false;
@@ -195,7 +311,9 @@ bool at_app_fuel_set_price(float per_litre)
     if (!s_lock) return false;
     at_fuel_cfg_t c = cfg_copy();
     c.price = per_litre;
-    return set_cfg(&c);
+    bool ok = set_cfg(&c);
+    if (ok) s_cloud_stale = true;
+    return ok;
 }
 
 bool at_app_fuel_set_price_from(float per_litre, int32_t from_day)
@@ -209,6 +327,7 @@ bool at_app_fuel_set_price_from(float per_litre, int32_t from_day)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     int n = at_fuel_log_reprice(&s_log, &s_tot, &s_run, from_day, per_litre);
     save_locked();
+    s_cloud_stale = true;
     xSemaphoreGive(s_lock);
     ESP_LOGI(TAG, "price %.3f from day %ld: %d days costed again", per_litre, (long)from_day, n);
     return true;

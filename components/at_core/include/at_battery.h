@@ -46,6 +46,9 @@ typedef struct {
 void at_batt_totals_init(at_batt_totals_t *t);
 bool at_batt_totals_valid(const at_batt_totals_t *t);
 bool at_batt_factor_valid(float factor);
+/* Restored totals (1.65, a replacement box) are added once: only when they are bigger than the box's own, so the
+ * same backup restored twice changes nothing. Today's figure is added only if it is for the same day. */
+bool at_batt_totals_merge(at_batt_totals_t *own, double ah, double wh, int32_t day, double ah_day);
 
 at_batt_phase_t at_batt_phase(uint8_t state, uint8_t substate, bool burner_active);
 const char *at_batt_phase_name(at_batt_phase_t phase);

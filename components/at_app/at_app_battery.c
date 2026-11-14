@@ -105,6 +105,29 @@ void at_app_battery_view(at_battery_view_t *out)
     xSemaphoreGive(s_lock);
 }
 
+void at_app_battery_totals(double *ah, double *wh, int32_t *day, double *ah_day)
+{
+    *ah = *wh = *ah_day = 0;
+    *day = -1;
+    if (!s_lock) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    *ah = s_tot.ah;
+    *wh = s_tot.wh;
+    *day = s_tot.day;
+    *ah_day = s_tot.ah_day;
+    xSemaphoreGive(s_lock);
+}
+
+bool at_app_battery_restore(double ah, double wh, int32_t day, double ah_day)
+{
+    if (!s_lock) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool added = at_batt_totals_merge(&s_tot, ah, wh, day, ah_day);
+    if (added) save_locked();
+    xSemaphoreGive(s_lock);
+    return true;
+}
+
 bool at_app_battery_set_factor(float factor)
 {
     if (!s_lock || !at_batt_factor_valid(factor)) return false;

@@ -202,6 +202,20 @@ Since firmware 1.58 `thermo_learn` carries the rest of what the box learns, so a
 
 All three are optional on `PUT`, like the lists above. A maximal backup (32 timers and every list full) is about 13 KB, so since 1.58 a signed request body may be up to 16 KB (10 KB before, which turned such a backup away whole). The website hands the app the backup without `heater_care` (the display copy), so everything a restore needs is in `thermo_learn`. `make -C host_tests backup` backs a full box up, restores it into an empty one and checks every store comes back the same.
 
+Since firmware 1.65 the backup also carries `fuel`, so a replacement box gets back everything it measured, not only what it learned and the settings:
+```json
+"fuel":{"v":1,"log":"20406:1795,2836,229,1;20405:3947,6236,536,4;…","detail":"20406:20,310,350,1115:0000…;…",
+        "totals":{"litres":14.12,"cost":22.31,"level_s":[600,7200,3600,2000],"starts":12},
+        "tank_left":61.5,"tank_at":1763100000,"battery":{"ah":12.4,"wh":151,"day":20406,"ah_day":1.1},"pump_pulses":0}
+```
+- `log` is every day of the fuel log, newest first: `<day>:<ml>,<cost x1000>,<burn minutes>,<starts>;` with `<day>` in days since 1970-01-01 (local).
+- `detail` is the per-level breakdown of the last 31 days: `<day>:<ml starting>,<ml low>,<ml middle>,<ml high>:<96 chars>;`, the 96 characters being the minutes at starting, low, middle and high for hours 0 to 23, one character each (`0`-`9`, `a`-`z` for 10-35, `A`-`Y` for 36-60).
+- The two are strings so a year of days is two cJSON nodes on the box, not thousands: the box splices `fuel` in as text after printing the rest.
+- On `PUT` the section is **merged**: days the box already has keep its own figures, the rest are added (newest 366 kept); `totals` and `battery` are added only when they are bigger than the box's own, so restoring the same backup twice changes nothing; `tank_left` sets the tank level only on a box that has not been given one; the tank level the box showed is kept across the totals changing.
+- It is rebuilt only on the hour, when a burn ends or when the price changes, so the backup (re-sent when its hash changes) is not re-sent every minute while burning. A full year is about 14 KB, so a signed request body may be up to 32 KB since 1.65.
+- The website keeps `fuel` in what it hands the app for a restore (only `heater_care` is left out) and shows the fuel log from it.
+- Deliberately not in the backup: whether Auto is on (a restore never starts the heater), the Heater Care rest in progress, Wi-Fi, Matter fabrics, the cloud certificate and the debug and bypass switches, which belong to the box itself. Users come back through the website's restore (§7).
+
 `heater_care` (firmware 1.54) is the `GET /api/thermo/history` document (§9.10) without `early_stops`: Heater Care's changes and its last runs (and since 1.56 the warm-by runs). The website keeps it so apps away from the box can show the Heater Care screen. `PUT` ignores it: since 1.58 the run log and the warm-by runs come back from `thermo_learn` (`runs`, `warm_by_runs`) instead.
 
 `timers` is the `GET /api/timers` array. Nothing in it belongs to one box alone (Wi-Fi, users, keys, the fuel log) or to the moment (whether the heater is running, whether the thermostat is on), so restoring never starts or stops the heater. `PUT` applies each field through the same checks as `POST /api/cmd`; a field the box turns down is named in `{"ok":true,"skipped":[…]}` and the rest still apply. `ml_per_pulse` and `tank_capacity` of 0 mean "never set" and are left alone. A changed `display_name` restarts the box, so it is applied last.

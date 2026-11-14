@@ -27,6 +27,18 @@ bool at_batt_totals_valid(const at_batt_totals_t *t)
     return t->version == AT_BATT_TOTALS_VERSION && t->ah >= 0 && t->wh >= 0 && t->ah_day >= 0 && t->ah_run >= 0;
 }
 
+bool at_batt_totals_merge(at_batt_totals_t *own, double ah, double wh, int32_t day, double ah_day)
+{
+    if (!(ah > own->ah) || !(ah >= 0) || !(wh >= 0)) return false;
+    own->ah += ah;
+    own->wh += wh;
+    if (day >= 0 && ah_day >= 0) {
+        if (own->day == day) own->ah_day += ah_day;
+        else if (own->day < day) { own->day = day; own->ah_day = ah_day; }
+    }
+    return true;
+}
+
 bool at_batt_factor_valid(float factor)
 {
     return factor >= AT_BATT_FACTOR_MIN && factor <= AT_BATT_FACTOR_MAX;

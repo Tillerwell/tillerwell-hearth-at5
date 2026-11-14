@@ -6,6 +6,7 @@
  * Pure C, no ESP-IDF: host_tests/ covers it. */
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 typedef enum {
@@ -159,6 +160,29 @@ void at_fuel_detail_add(at_fuel_detail_t *d, at_fuel_detail_run_t *run, int32_t 
                         double dt_s, double litres);
 /* The breakdown for `day`, or NULL if none is kept. */
 const at_fuel_detail_day_t *at_fuel_detail_find(const at_fuel_detail_t *d, int32_t day);
+
+/* ---- the cloud backup's copy (1.65) -------------------------------------------------------------------------
+ * So a replacement box gets the whole fuel history back, and the website can show it, the log and the breakdowns
+ * travel in the settings backup as two compact strings (a string is one cJSON node, so a year of days costs the
+ * box no parse tree):
+ *   log:    "<day>:<ml>,<cost_m>,<burn_min>,<starts>;" for every logged day, newest first
+ *   detail: "<day>:<ml starting>,<ml low>,<ml middle>,<ml high>:<96 chars>;" newest first, where the 96 chars are
+ *           the minutes at starting, low, middle, high for hours 0 to 23, one character each (0-9, a-z = 10-35,
+ *           A-Y = 36-60).
+ * <day> is days since 1970-01-01, local time. */
+#define AT_FUEL_LOG_TEXT_MAX    (AT_FUEL_DAYS * 42 + 1) /* the widest possible row; a real day is about 28 */
+#define AT_FUEL_DETAIL_TEXT_MAX (AT_FUEL_DETAIL_DAYS * 130 + 1)
+/* Write the text into `out` (always terminated). Returns its length, or 0 if `cap` was too small. */
+size_t at_fuel_log_encode(const at_fuel_log_t *log, char *out, size_t cap);
+size_t at_fuel_detail_encode(const at_fuel_detail_t *d, char *out, size_t cap);
+/* Merge a restored text into what the box has: days the box already has keep the box's own figures, the rest are
+ * added, and the newest of the union are kept. Returns how many days were added, or -1 if the text is malformed
+ * (then nothing changes). */
+int at_fuel_log_merge_text(at_fuel_log_t *log, const char *text);
+int at_fuel_detail_merge_text(at_fuel_detail_t *d, const char *text);
+/* Restored totals are added once: only when they are bigger than the box's own (so a second restore of the same
+ * backup changes nothing). True if they were added. */
+bool at_fuel_totals_merge(at_fuel_totals_t *own, const at_fuel_totals_t *restored);
 
 /* A price backdated to `from_day` (firmware 1.63): every logged day from that date on is costed again at
  * `per_litre`, and the totals' cost moves by the same amount. Returns how many days were changed. If today's

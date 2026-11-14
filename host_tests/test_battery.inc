@@ -75,4 +75,18 @@ static void test_battery(void)
     at_batt_totals_t bad = t;
     bad.version = 7;
     CHECK(!at_batt_totals_valid(&bad));
+
+    /* restored totals (1.65) are added once, today's only for the same day */
+    {
+        at_batt_totals_t o;
+        at_batt_totals_init(&o);
+        o.ah = 0.5; o.wh = 6; o.day = 100; o.ah_day = 0.5;
+        CHECK(at_batt_totals_merge(&o, 40, 480, 100, 2));
+        CHECK(fabs(o.ah - 40.5) < 1e-9 && fabs(o.wh - 486) < 1e-9 && fabs(o.ah_day - 2.5) < 1e-9);
+        CHECK(!at_batt_totals_merge(&o, 40, 480, 100, 2) && fabs(o.ah - 40.5) < 1e-9);
+        at_batt_totals_t q;
+        at_batt_totals_init(&q);
+        q.day = 101;
+        CHECK(at_batt_totals_merge(&q, 10, 120, 100, 3) && q.day == 101 && q.ah_day == 0); /* yesterday's: not today */
+    }
 }

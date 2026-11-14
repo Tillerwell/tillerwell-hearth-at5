@@ -1,5 +1,7 @@
 #include "at_fuel.h"
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* Autoterm Flow 5 spec-sheet figures (about 0.15 to 0.62 l/h across its range), not measured on this
@@ -307,5 +309,168 @@ bool at_fuel_tank_remaining(const at_fuel_tank_t *t, double used_total, float *l
     if (left < 0) left = 0;
     if (t->capacity_l > 0 && left > t->capacity_l) left = t->capacity_l;
     *litres = (float)left;
+    return true;
+}
+
+/* ---- the cloud backup's copy (1.65) ---- */
+
+static char min_char(unsigned m)
+{
+    if (m > 60) m = 60;
+    if (m < 10) return (char)('0' + m);
+    if (m < 36) return (char)('a' + m - 10);
+    return (char)('A' + m - 36);
+}
+
+static int char_min(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'Y') return c - 'A' + 36;
+    return -1;
+}
+
+size_t at_fuel_log_encode(const at_fuel_log_t *log, char *out, size_t cap)
+{
+    if (!cap) return 0;
+    size_t n = 0;
+    out[0] = 0;
+    for (int i = 0; i < log->count; i++) {
+        const at_fuel_day_t *e = at_fuel_log_at(log, i);
+        int w = snprintf(out + n, cap - n, "%ld:%lu,%lu,%u,%u;", (long)e->day, (unsigned long)e->ml, (unsigned long)e->cost_m,
+                         (unsigned)e->burn_min, (unsigned)e->starts);
+        if (w < 0 || (size_t)w >= cap - n) { out[0] = 0; return 0; }
+        n += (size_t)w;
+    }
+    return n;
+}
+
+size_t at_fuel_detail_encode(const at_fuel_detail_t *d, char *out, size_t cap)
+{
+    if (!cap) return 0;
+    size_t n = 0;
+    out[0] = 0;
+    for (int i = 0; i < d->count; i++) {
+        const at_fuel_detail_day_t *e = &d->d[(d->head + AT_FUEL_DETAIL_DAYS - i) % AT_FUEL_DETAIL_DAYS];
+        int w = snprintf(out + n, cap - n, "%ld:%u,%u,%u,%u:", (long)e->day, e->ml[0], e->ml[1], e->ml[2], e->ml[3]);
+        if (w < 0 || (size_t)w + 24 * AT_FUEL_BURN_LEVELS + 2 > cap - n) { out[0] = 0; return 0; }
+        n += (size_t)w;
+        for (int h = 0; h < 24; h++)
+            for (int l = 0; l < AT_FUEL_BURN_LEVELS; l++) out[n++] = min_char(e->min[h][l]);
+        out[n++] = ';';
+        out[n] = 0;
+    }
+    return n;
+}
+
+/* Reads an unsigned number up to `max`; advances *p. */
+static bool read_num(const char **p, long min, long max, long *v)
+{
+    char *end;
+    long x = strtol(*p, &end, 10);
+    if (end == *p || x < min || x > max) return false;
+    *v = x;
+    *p = end;
+    return true;
+}
+
+static bool expect(const char **p, char c)
+{
+    if (**p != c) return false;
+    (*p)++;
+    return true;
+}
+
+static int cmp_day(const void *a, const void *b)
+{
+    int32_t x = *(const int32_t *)a, y = *(const int32_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+int at_fuel_log_merge_text(at_fuel_log_t *log, const char *text)
+{
+    if (!text) return -1;
+    /* everything the box has, plus the restored days it lacks, sorted oldest first; the newest AT_FUEL_DAYS kept */
+    at_fuel_day_t *all = malloc(sizeof(at_fuel_day_t) * AT_FUEL_DAYS * 2);
+    if (!all) return -1;
+    int n = 0, added = 0;
+    for (int i = 0; i < log->count; i++) all[n++] = *at_fuel_log_at(log, i);
+    int own = n;
+    const char *p = text;
+    while (*p) {
+        long day, ml, cm, burn, starts;
+        if (!read_num(&p, 0, 200000, &day) || !expect(&p, ':') || !read_num(&p, 0, 4000000000L, &ml) || !expect(&p, ',') ||
+            !read_num(&p, 0, 4000000000L, &cm) || !expect(&p, ',') || !read_num(&p, 0, 65535, &burn) || !expect(&p, ',') ||
+            !read_num(&p, 0, 65535, &starts) || !expect(&p, ';')) {
+            free(all);
+            return -1;
+        }
+        bool have = false;
+        for (int i = 0; i < own; i++) if (all[i].day == day) { have = true; break; }
+        for (int i = own; i < n && !have; i++) if (all[i].day == day) have = true; /* a day twice in the text */
+        if (have || n >= AT_FUEL_DAYS * 2) continue;
+        at_fuel_day_t e = { .day = (int32_t)day, .ml = (uint32_t)ml, .cost_m = (uint32_t)cm, .burn_min = (uint16_t)burn, .starts = (uint16_t)starts };
+        all[n++] = e;
+        added++;
+    }
+    qsort(all, (size_t)n, sizeof(at_fuel_day_t), cmp_day); /* day is the first field */
+    int first = n > AT_FUEL_DAYS ? n - AT_FUEL_DAYS : 0;
+    at_fuel_log_init(log);
+    for (int i = first; i < n; i++) log->d[i - first] = all[i];
+    log->count = (uint16_t)(n - first);
+    log->head = (uint16_t)(log->count ? log->count - 1 : 0);
+    free(all);
+    return added;
+}
+
+int at_fuel_detail_merge_text(at_fuel_detail_t *d, const char *text)
+{
+    if (!text) return -1;
+    at_fuel_detail_day_t *all = malloc(sizeof(at_fuel_detail_day_t) * AT_FUEL_DETAIL_DAYS * 2);
+    if (!all) return -1;
+    int n = 0, added = 0;
+    for (int i = 0; i < d->count; i++) all[n++] = d->d[(d->head + AT_FUEL_DETAIL_DAYS - i) % AT_FUEL_DETAIL_DAYS];
+    int own = n;
+    const char *p = text;
+    while (*p) {
+        long day, ml[AT_FUEL_BURN_LEVELS];
+        bool ok = read_num(&p, 0, 200000, &day) && expect(&p, ':');
+        for (int l = 0; ok && l < AT_FUEL_BURN_LEVELS; l++) ok = read_num(&p, 0, 65535, &ml[l]) && expect(&p, l < AT_FUEL_BURN_LEVELS - 1 ? ',' : ':');
+        at_fuel_detail_day_t e;
+        memset(&e, 0, sizeof(e));
+        for (int h = 0; ok && h < 24; h++)
+            for (int l = 0; ok && l < AT_FUEL_BURN_LEVELS; l++) {
+                int m = char_min(*p);
+                ok = m >= 0;
+                if (ok) { e.min[h][l] = (uint8_t)m; p++; }
+            }
+        ok = ok && expect(&p, ';');
+        if (!ok) { free(all); return -1; }
+        bool have = false;
+        for (int i = 0; i < n; i++) if (all[i].day == day) { have = true; break; }
+        if (have || n >= AT_FUEL_DETAIL_DAYS * 2) continue;
+        e.day = (int32_t)day;
+        for (int l = 0; l < AT_FUEL_BURN_LEVELS; l++) e.ml[l] = (uint16_t)ml[l];
+        all[n++] = e;
+        added++;
+    }
+    (void)own;
+    qsort(all, (size_t)n, sizeof(at_fuel_detail_day_t), cmp_day);
+    int first = n > AT_FUEL_DETAIL_DAYS ? n - AT_FUEL_DETAIL_DAYS : 0;
+    at_fuel_detail_init(d);
+    for (int i = first; i < n; i++) d->d[i - first] = all[i];
+    d->count = (uint16_t)(n - first);
+    d->head = (uint16_t)(d->count ? d->count - 1 : 0);
+    free(all);
+    return added;
+}
+
+bool at_fuel_totals_merge(at_fuel_totals_t *own, const at_fuel_totals_t *r)
+{
+    if (!(r->litres > own->litres)) return false;
+    own->litres += r->litres;
+    own->cost += r->cost;
+    for (int i = 0; i < AT_FUEL_LEVELS; i++) own->level_s[i] += r->level_s[i];
+    own->starts += r->starts;
     return true;
 }

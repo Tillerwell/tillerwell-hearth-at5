@@ -79,7 +79,7 @@ static bool legacy_authorised(httpd_req_t *req)
 
 /* 16 KB since 1.58: a full backup (32 timers, all of Heater Care's learning with the run log and warm by) is about
  * 13 KB, over the old 10 KB, and PUT /api/backup turned it away whole. Only a signed request's body this size is read */
-#define BODY_MAX 16384
+#define BODY_MAX 32768
 #define OTA_PATH "/api/ota"
 
 static struct {
@@ -1292,6 +1292,9 @@ static esp_err_t h_backup_put(httpd_req_t *req)
         SKIP_IF(t && at_app_timers_put_json(t, why, sizeof(why)) == 200, "timers");
         free(t);
     }
+    /* the fuel log, totals, tank level and battery use (1.65), merged into what this box has */
+    const cJSON *fuel = cJSON_GetObjectItemCaseSensitive(b, "fuel");
+    if (fuel) SKIP_IF(at_app_fuel_restore(fuel), "fuel");
     const char *name = jstr(b, "display_name");
     if (name) SKIP_IF(set_display_name(name), "display_name");
 #undef SKIP_IF
