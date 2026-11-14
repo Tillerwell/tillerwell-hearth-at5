@@ -589,6 +589,8 @@ static bool run_cmd(const cJSON *j, at_src_t def_src, bool may_override, at_care
         ok = at_app_fuel_set_price((float)jnum(j, "value", -1));
     } else if (!strcmp(c, "fuel_factor")) {
         ok = at_app_fuel_set_factor((float)jnum(j, "value", -1));
+    } else if (!strcmp(c, "battery_factor")) {
+        ok = at_app_battery_set_factor((float)jnum(j, "value", -1));
     } else if (!strcmp(c, "fuel_rates")) {
         ok = at_app_fuel_set_rates((float)jnum(j, "starting", -1), (float)jnum(j, "low", -1),
                                    (float)jnum(j, "middle", -1), (float)jnum(j, "high", -1));
@@ -1251,6 +1253,7 @@ static esp_err_t h_backup_put(httpd_req_t *req)
     SKIP_IF(backup_cmd("mqtt", b, "mqtt", "enabled"), "mqtt");
     SKIP_IF(backup_cmd("fuel_price", b, "fuel_price", "value"), "fuel_price");
     SKIP_IF(backup_cmd("fuel_factor", b, "fuel_factor", "value"), "fuel_factor");
+    SKIP_IF(backup_cmd("battery_factor", b, "battery_factor", "value"), "battery_factor");
     const cJSON *rates = cJSON_GetObjectItemCaseSensitive(b, "fuel_rates");
     if (cJSON_IsObject(rates)) {
         cJSON *c = cJSON_Duplicate(rates, true);

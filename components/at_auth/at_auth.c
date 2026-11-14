@@ -381,6 +381,7 @@ static const cmd_perm_t CMD_PERMS[] = {
     { "timezone", AT_PERM_MANAGER },      { "display_name", AT_PERM_MANAGER },
     { "fuel_price", AT_PERM_MANAGER },    { "fuel_factor", AT_PERM_MANAGER },
     { "fuel_rates", AT_PERM_MANAGER },    { "tank_capacity", AT_PERM_MANAGER },
+    { "battery_factor", AT_PERM_MANAGER },
     { "factory_reset", AT_PERM_ADMIN },   { "reboot", AT_PERM_ADMIN },
     { "ota", AT_PERM_ADMIN },             { "auto_update", AT_PERM_ADMIN },
     { "mqtt", AT_PERM_ADMIN },

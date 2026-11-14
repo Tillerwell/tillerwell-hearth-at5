@@ -366,6 +366,7 @@ static void ctl_task(void *arg)
         xSemaphoreGive(s_ctl_lock);
         persist_ctl();
         at_app_fuel_tick(&snap, now);
+        at_app_battery_tick(&snap, now);
 
         /* A timed preheat also ends when the coolant is hot enough; the thermostat has its own limits. */
         if (!thermostat && !cfg.bypass && snap.have_status && !snap.stale &&
@@ -480,6 +481,7 @@ esp_err_t at_app_start(void)
     s_ctl.freeze.enabled = cfg.freeze_enabled;
 
     at_app_fuel_init();
+    at_app_battery_init();
     at_app_state_json_init();
     xTaskCreate(bridge_task, "bridge", 6144, NULL, configMAX_PRIORITIES - 4, NULL);
     xTaskCreate(ctl_task, "thermostat", 5120, NULL, 5, NULL); /* 1.47: Heater Care saves its learning from here */

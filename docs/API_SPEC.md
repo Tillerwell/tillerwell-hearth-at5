@@ -109,7 +109,7 @@ Levels are ordered: `view` < `control` < `manager` < `admin` (cloud plan Q8).
 | Needs | Commands |
 |---|---|
 | control | `start_preheat`, `stop`, `auto`, `auto_target`, `auto_range`, `preheat_duration`, `set_time`, `tank_level`, `tank_filled`, `heater_read`, `start_pump`, `fuel_prime`, `timer_set`, `timer_delete`, `early_stop_seen` |
-| manager | `heater_unlock`, `heater_settings`, `fan_test`, `pump_minutes`, `hysteresis` (ignored since 1.47, §9.10), `thermo_learn_reset`, `preheat_temp`, `preheat_minutes`, `timezone`, `display_name`, `fuel_price`, `fuel_factor`, `fuel_rates`, `tank_capacity` |
+| manager | `heater_unlock`, `heater_settings`, `fan_test`, `pump_minutes`, `hysteresis` (ignored since 1.47, §9.10), `thermo_learn_reset`, `preheat_temp`, `preheat_minutes`, `timezone`, `display_name`, `fuel_price`, `fuel_factor`, `fuel_rates`, `tank_capacity`, `battery_factor` |
 | admin | `factory_reset`, `reboot`, `auto_update`, `ota` (cloud only, §9.7), and **any command not listed** (fail closed) |
 
 **Heater Care lock (firmware 1.61, [CARE_LOCK.md](CARE_LOCK.md)).** `stop`, `start_preheat` and `start_thermostat` are refused inside a run's minimum run (stop) or the 20 minute rest after a run (start), whatever the permission. A signed request (local or cloud) may add `"override": true` to go ahead (on `auto` `enabled:true` it clears the rest so the thermostat may start at once); an unsigned one cannot, and `"finish_run": false` from an unsigned request counts as `true`. A local refusal is `400` `{"ok":false,"error":"<message>","care":"min_run"|"min_off","left_s":<n>}`.
@@ -175,7 +175,7 @@ When an owner's box dies, the app sets up the new box and the cloud moves the ol
 {"v":1,"display_name":"Saloon","auto_low":20,"auto_high":21,"auto_target":20.5,"hyst_min":0.5,"hyst_max":0.5,
  "use_external_temp":true,"preheat_temp":88,"preheat_minutes":30,"freeze_enabled":false,"freeze_target":5,
  "timezone":"Europe/London","auto_update":false,"fuel_price":1.45,"fuel_factor":1,
- "fuel_rates":{"starting":0.3,"low":0.12,"middle":0.3,"high":0.6},"ml_per_pulse":0,"tank_capacity":0,"timers":[…],
+ "fuel_rates":{"starting":0.3,"low":0.12,"middle":0.3,"high":0.6},"ml_per_pulse":0,"tank_capacity":0,"battery_factor":1,"timers":[…],
  "thermo_learn":{"width":1.5,"last_change":"widened","window_ext":[{"need":1.7,"rate":0.05,"vote":"fast"}],"window_ctl":[],
   "warmup_ext":[360,420],"warmup_ctl":[],"cooling_ext":[2700],"cooling_ctl":[],"limit_ext":null,"limit_ctl":null,"history":[…]}}
 ```
@@ -461,6 +461,20 @@ Plan and reasons: `docs/EARLY_START.md`. On the external room sensor Auto's next
 - `busy_w`: the busy widening, C. A thermostat start that makes 3 of Auto's own starts within 2 hours (Auto switched on, warm by's start and fault retries do not count) widens the band by 0.2, up to the working width less 0.3 (the start is then `work_low`); after each widening it takes 3 new starts for the next. A start more than 2 hours after the one before narrows it by 0.1, down to 0. Kept across a restart (NVS `ctl_early`), in the backup (`thermo_learn.early.busy_w`), and cleared by Reset learning.
 
 From 1.60 a cooling time (`cool_typical_s`, the cold-spell guard) is also kept when the next run starts before the room reaches the working bottom: the time from the peak to the last reading before the start, scaled to the whole fall to the bottom, when the room fell at least 0.2 C and the scale is at most 5 times.
+
+### 9.14 Battery use (firmware 1.62)
+
+The heater reports no current, so the box estimates what it takes from the battery the same way it estimates fuel: time in each phase of the status frame (state/substate) x a power for that phase, divided by the supply voltage the heater reports (9-32 V; otherwise 12 V). Watts, before the factor: starting 35, low 18, middle 28, high 42, water pump alone (and waiting) 18, blowing (purge, cooldown) 30, idle and locked 0, plus the glow plug's extra (122 - 35) W for 100 s once per start. Starting, high and the start-up energy are Autoterm's published figures for the Flow 5D / Binar-5S; low and middle are scaled between the pump alone and high. The heater's own standby draw (30-40 mA) and the box's are not counted. Code: `components/at_core/at_battery.c`.
+
+Status (`GET /api/status`, MQTT state) adds:
+
+- `battery_w`: the estimated draw now, W (factor applied), 0 while idle.
+- `battery_ah_run`: amp-hours for the run going, or the last one; reset when a start begins.
+- `battery_ah_today`: amp-hours today by the box's local date (0 without a clock).
+- `battery_ah_total`: amp-hours since the box was set up. Kept in flash with `battery_ah_run` and today's figure (saved every 5 minutes while drawing, when the heater goes idle and before a restart).
+- `battery_factor`: the calibration, 1 = the table as it is.
+
+`{"cmd":"battery_factor","value":f}` (manager) sets the factor, 0.2 to 5, for an owner with a battery monitor to match it. It is in the backup (`battery_factor`); older boxes ignore it.
 
 ## 10. Test vectors
 

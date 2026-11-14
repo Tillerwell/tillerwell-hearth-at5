@@ -12,6 +12,7 @@
 #include "at_ctl.h"
 #include "at_runlog.h"
 #include "at_fuel.h"
+#include "at_battery.h"
 #include "at_timers.h"
 #include "at_tz.h"
 #include "esp_err.h"
@@ -252,6 +253,23 @@ bool at_app_fuel_set_ml_per_pulse(float ml);
 bool at_app_fuel_set_tank_capacity(float litres);
 bool at_app_fuel_set_tank_level(float litres);
 bool at_app_fuel_tank_filled(void);
+/* Battery-use estimate (1.62, at_battery.h). */
+typedef struct {
+    at_batt_phase_t phase;
+    float factor;
+    float watts;     /* now, factor applied */
+    float volts;     /* what the amp-hours are divided by */
+    double ah_total, wh_total;
+    double ah_today; /* 0 without a clock */
+    double ah_run;   /* the run going, or the last one */
+} at_battery_view_t;
+
+void at_app_battery_init(void);
+void at_app_battery_tick(const at_snapshot_t *snap, uint32_t now_ms);
+void at_app_battery_view(at_battery_view_t *out);
+/* AT_BATT_FACTOR_MIN to AT_BATT_FACTOR_MAX; false (and nothing changed) otherwise. */
+bool at_app_battery_set_factor(float factor);
+
 /* Today's local date in days since 1970-01-01; false without a clock and time zone. */
 bool at_app_local_day(int32_t *day);
 

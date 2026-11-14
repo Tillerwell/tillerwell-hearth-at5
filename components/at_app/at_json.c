@@ -286,6 +286,9 @@ char *at_app_backup_json(void)
     }
     cJSON_AddNumberToObject(o, "ml_per_pulse", round(fv.pump.ml_per_pulse * 1e5) / 1e5);
     cJSON_AddNumberToObject(o, "tank_capacity", round3(fv.tank.capacity_l));
+    at_battery_view_t bv;
+    at_app_battery_view(&bv);
+    cJSON_AddNumberToObject(o, "battery_factor", round3(bv.factor));
 
     cJSON *learn = at_app_thermo_learn_backup();
     if (learn) cJSON_AddItemToObject(o, "thermo_learn", learn);
@@ -656,6 +659,14 @@ static cJSON *build_state_tree(void)
     add_num_or_null(o, "tank_litres", fv.have_tank_left, round3(fv.tank_left_l));
     add_num_or_null(o, "tank_pct", fv.have_tank_left && fv.tank.capacity_l > 0,
                     round(fv.tank_left_l / (fv.tank.capacity_l > 0 ? fv.tank.capacity_l : 1) * 1000.0) / 10.0);
+    /* 1.62: the battery-use estimate (at_battery.h) */
+    at_battery_view_t bv;
+    at_app_battery_view(&bv);
+    cJSON_AddNumberToObject(o, "battery_w", round(bv.watts * 10.0) / 10.0);
+    cJSON_AddNumberToObject(o, "battery_ah_run", round3(bv.ah_run));
+    cJSON_AddNumberToObject(o, "battery_ah_today", round3(bv.ah_today));
+    cJSON_AddNumberToObject(o, "battery_ah_total", round3(bv.ah_total));
+    cJSON_AddNumberToObject(o, "battery_factor", round3(bv.factor));
     add_num_or_null(o, "tank_set_epoch", fv.tank.have_level && fv.tank.set_epoch > 0, (double)fv.tank.set_epoch);
 
     if (!(s->have_ext && s->ext_active)) {
