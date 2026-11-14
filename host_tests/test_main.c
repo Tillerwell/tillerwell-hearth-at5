@@ -1624,6 +1624,36 @@ static void test_fuel(void)
     at_fuel_tick(&t, &log, &run, &cfg, 3, 2, true, 3, day - 5);
     CHECK(log.count == 2 && at_fuel_log_find(&log, day - 5) == NULL);
 
+    /* a price backdated (1.63): days from that date are costed again, the total moves by the same, older days stay */
+    {
+        at_fuel_log_t pl;
+        at_fuel_totals_t pt;
+        at_fuel_run_t pr = {0};
+        at_fuel_cfg_t pc;
+        at_fuel_log_init(&pl);
+        at_fuel_totals_init(&pt);
+        at_fuel_cfg_defaults(&pc);
+        pc.price = 1.0f;
+        for (int d = 0; d < 5; d++)
+            for (int i = 0; i < 1200; i++) at_fuel_tick(&pt, &pl, &pr, &pc, 3, 2, true, 3, day + d); /* 0.62 l a day */
+        CHECK(fabs(pt.cost - 5 * 0.62) < 0.01);
+        uint32_t old_cm = at_fuel_log_find(&pl, day + 1)->cost_m;
+        pr.day_cost_frac = 0.7;
+        CHECK(at_fuel_log_reprice(&pl, &pt, &pr, day + 2, 2.0f) == 3);
+        CHECK(at_fuel_log_find(&pl, day + 1)->cost_m == old_cm);                    /* before the date: as it was */
+        CHECK(abs((int)at_fuel_log_find(&pl, day + 2)->cost_m - 1240) <= 2);       /* from it: 0.62 l at 2.00 */
+        CHECK(abs((int)at_fuel_log_find(&pl, day + 4)->cost_m - 1240) <= 2);
+        CHECK(fabs(pt.cost - (2 * 0.62 + 3 * 1.24)) < 0.01);
+        CHECK(pr.day_cost_frac == 0);
+        /* from today only: just today's entry; a date after every entry changes nothing */
+        CHECK(at_fuel_log_reprice(&pl, &pt, &pr, day + 4, 1.0f) == 1);
+        CHECK(fabs(pt.cost - (2 * 0.62 + 2 * 1.24 + 0.62)) < 0.01);
+        CHECK(at_fuel_log_reprice(&pl, &pt, &pr, day + 9, 3.0f) == 0);
+        /* a price of 0 clears the costs from that date */
+        CHECK(at_fuel_log_reprice(&pl, &pt, &pr, day, 0.0f) == 5 && at_fuel_log_find(&pl, day)->cost_m == 0);
+        CHECK(fabs(pt.cost) < 0.01);
+    }
+
     /* the ring keeps the newest AT_FUEL_DAYS days */
     at_fuel_log_init(&log);
     for (int d = 0; d < AT_FUEL_DAYS + 10; d++) at_fuel_tick(&t, &log, &run, &cfg, 3, 2, true, 60, day + d);

@@ -165,6 +165,22 @@ bool at_app_fuel_set_price(float per_litre)
     return set_cfg(&c);
 }
 
+bool at_app_fuel_set_price_from(float per_litre, int32_t from_day)
+{
+    if (!s_lock) return false;
+    int32_t today;
+    if (!at_app_local_day(&today) || from_day > today || from_day < today - (AT_FUEL_DAYS - 1)) return false;
+    at_fuel_cfg_t c = cfg_copy();
+    c.price = per_litre;
+    if (!set_cfg(&c)) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int n = at_fuel_log_reprice(&s_log, &s_tot, &s_run, from_day, per_litre);
+    save_locked();
+    xSemaphoreGive(s_lock);
+    ESP_LOGI(TAG, "price %.3f from day %ld: %d days costed again", per_litre, (long)from_day, n);
+    return true;
+}
+
 bool at_app_fuel_set_factor(float factor)
 {
     if (!s_lock) return false;

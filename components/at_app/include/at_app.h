@@ -242,6 +242,9 @@ void at_app_fuel_view(at_fuel_view_t *out);
 int at_app_fuel_log_copy(at_fuel_day_t *out, int max);
 /* Each returns false (and changes nothing) if the value is out of range. */
 bool at_app_fuel_set_price(float per_litre);
+/* The price backdated to a local date (days since 1970-01-01): it is set, and every logged day from that date
+ * up to today is costed again at it (1.63). The date must be today or up to 365 days back, which needs the clock. */
+bool at_app_fuel_set_price_from(float per_litre, int32_t from_day);
 bool at_app_fuel_set_factor(float factor);
 bool at_app_fuel_set_rates(float starting, float low, float middle, float high);
 /* The tank's size, what is in it now, or "filled to the top" (needs the size). */

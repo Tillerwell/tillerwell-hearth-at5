@@ -114,6 +114,8 @@ Levels are ordered: `view` < `control` < `manager` < `admin` (cloud plan Q8).
 
 **Heater Care lock (firmware 1.61, [CARE_LOCK.md](CARE_LOCK.md)).** `stop`, `start_preheat` and `start_thermostat` are refused inside a run's minimum run (stop) or the 20 minute rest after a run (start), whatever the permission. A signed request (local or cloud) may add `"override": true` to go ahead (on `auto` `enabled:true` it clears the rest so the thermostat may start at once); an unsigned one cannot, and `"finish_run": false` from an unsigned request counts as `true`. A local refusal is `400` `{"ok":false,"error":"<message>","care":"min_run"|"min_off","left_s":<n>}`.
 
+**Backdated fuel price (firmware 1.63).** `{"cmd":"fuel_price","value":1.62,"from":"2026-11-01"}` sets the price and costs every day in the fuel log from that local date to today again at it; the running cost total moves by the same amount. `from` must be today or up to 365 days back, and needs the box's clock (otherwise `400`). Without `from` the price applies from now on, as before. The apps and the website always send a date (today unless the owner picks another). An older box ignores `from`.
+
 `GET /api/hello` (public) tells a phone what it is talking to before it holds a key: `{"device_id","name","version","claimed":true|false,"fingerprint"}`.
 
 ## 7. Claiming and invitations

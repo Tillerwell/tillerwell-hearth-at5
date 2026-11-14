@@ -182,6 +182,25 @@ at_fuel_level_t at_fuel_tick_pump(at_fuel_totals_t *t, at_fuel_log_t *log, at_fu
     return level;
 }
 
+int at_fuel_log_reprice(at_fuel_log_t *log, at_fuel_totals_t *t, at_fuel_run_t *run, int32_t from_day, float per_litre)
+{
+    int n = 0;
+    int64_t delta_m = 0;
+    for (int i = 0; i < log->count; i++) {
+        at_fuel_day_t *e = &log->d[(log->head + AT_FUEL_DAYS - i) % AT_FUEL_DAYS];
+        if (e->day < from_day) break; /* newest first: everything after this is older */
+        double c = (double)e->ml * per_litre + 0.5;
+        uint32_t cost_m = c >= 4294967295.0 ? UINT32_MAX : (uint32_t)c;
+        delta_m += (int64_t)cost_m - (int64_t)e->cost_m;
+        e->cost_m = cost_m;
+        if (i == 0 && run) run->day_cost_frac = 0;
+        n++;
+    }
+    t->cost += delta_m / 1000.0;
+    if (t->cost < 0) t->cost = 0;
+    return n;
+}
+
 const at_fuel_day_t *at_fuel_log_at(const at_fuel_log_t *log, int i)
 {
     if (i < 0 || i >= log->count) return NULL;

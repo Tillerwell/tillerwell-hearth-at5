@@ -586,7 +586,11 @@ static bool run_cmd(const cJSON *j, at_src_t def_src, bool may_override, at_care
     } else if (!strcmp(c, "freeze_target")) {
         at_app_set_freeze_target((float)jnum(j, "value", 5));
     } else if (!strcmp(c, "fuel_price")) {
-        ok = at_app_fuel_set_price((float)jnum(j, "value", -1));
+        /* `from` (1.63): a local date to backdate the price to; the log's costs from then on are redone */
+        const char *from = jstr(j, "from");
+        int32_t from_day;
+        if (from) ok = at_parse_date(from, &from_day) && at_app_fuel_set_price_from((float)jnum(j, "value", -1), from_day);
+        else ok = at_app_fuel_set_price((float)jnum(j, "value", -1));
     } else if (!strcmp(c, "fuel_factor")) {
         ok = at_app_fuel_set_factor((float)jnum(j, "value", -1));
     } else if (!strcmp(c, "battery_factor")) {

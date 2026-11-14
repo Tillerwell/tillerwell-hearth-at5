@@ -125,6 +125,11 @@ at_fuel_level_t at_fuel_tick_pump(at_fuel_totals_t *t, at_fuel_log_t *log, at_fu
                                   at_fuel_pump_t *pump, float pump_hz, uint8_t state, uint8_t substate,
                                   bool burner_active, double dt_s, int32_t day);
 
+/* A price backdated to `from_day` (firmware 1.63): every logged day from that date on is costed again at
+ * `per_litre`, and the totals' cost moves by the same amount. Returns how many days were changed. If today's
+ * entry was among them, its sub-millicost remainder is dropped (`run` may be NULL). */
+int at_fuel_log_reprice(at_fuel_log_t *log, at_fuel_totals_t *t, at_fuel_run_t *run, int32_t from_day, float per_litre);
+
 /* The entry for `day`, or NULL if nothing was logged that day. */
 const at_fuel_day_t *at_fuel_log_find(const at_fuel_log_t *log, int32_t day);
 /* The i-th newest entry (0 = newest), or NULL past the end. */
