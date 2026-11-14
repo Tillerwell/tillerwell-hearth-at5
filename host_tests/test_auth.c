@@ -172,6 +172,7 @@ static void test_permissions(void)
     CHECK(at_auth_route_perm("GET", "/api/auth/nonce") == AT_PERM_NONE, "nonce is public");
     CHECK(at_auth_route_perm("GET", "/api/status") == AT_PERM_VIEW, "status needs view");
     CHECK(at_auth_route_perm("GET", "/api/status?x=1") == AT_PERM_VIEW, "query ignored for routing");
+    CHECK(at_auth_route_perm("GET", "/api/fuel/day?date=2026-11-14") == AT_PERM_VIEW, "fuel day needs view");
     CHECK(at_auth_route_perm("PUT", "/api/timers") == AT_PERM_CONTROL, "timers need control");
     CHECK(at_auth_route_perm("POST", "/api/wifi") == AT_PERM_MANAGER, "wifi needs manager");
     CHECK(at_auth_route_perm("DELETE", "/api/auth/users/87etahFmchg") == AT_PERM_ADMIN, "removing users needs admin");

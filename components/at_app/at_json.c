@@ -311,6 +311,8 @@ char *at_app_fuel_json(void)
     at_fuel_day_t *days = malloc(sizeof(at_fuel_day_t) * AT_FUEL_DAYS);
     if (!days) return NULL;
     int n = at_app_fuel_log_copy(days, AT_FUEL_DAYS);
+    int32_t det[AT_FUEL_DETAIL_DAYS];
+    int nd = at_app_fuel_detail_days(det, AT_FUEL_DETAIL_DAYS);
     cJSON *o = cJSON_CreateObject();
     cJSON *arr = cJSON_AddArrayToObject(o, "days");
     for (int i = 0; i < n; i++) {
@@ -324,9 +326,52 @@ char *at_app_fuel_json(void)
         cJSON_AddNumberToObject(e, "cost", days[i].cost_m / 1000.0);
         cJSON_AddNumberToObject(e, "burn_min", days[i].burn_min);
         cJSON_AddNumberToObject(e, "starts", days[i].starts);
+        for (int k = 0; k < nd; k++) {
+            if (det[k] == days[i].day) { cJSON_AddBoolToObject(e, "detail", true); break; } /* GET /api/fuel/day has it (1.64) */
+        }
         cJSON_AddItemToArray(arr, e);
     }
     free(days);
+    char *str = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    return str;
+}
+
+/* GET /api/fuel/day?date=: one day by power level (1.64). Each level's cost is the day's cost (as repriced) split
+ * by that level's share of the day's litres, so the levels add up to the log. `hours` is 24 rows of minutes at
+ * starting, low, middle, high, by local hour. */
+char *at_app_fuel_day_json(int32_t day)
+{
+    at_fuel_detail_day_t det;
+    at_fuel_day_t log;
+    if (!at_app_fuel_detail(day, &det, &log)) return NULL;
+    char date[11];
+    at_format_date(day, date);
+    unsigned ml_sum = 0;
+    for (int i = 0; i < AT_FUEL_BURN_LEVELS; i++) ml_sum += det.ml[i];
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "date", date);
+    cJSON_AddNumberToObject(o, "litres", log.ml / 1000.0);
+    cJSON_AddNumberToObject(o, "cost", log.cost_m / 1000.0);
+    cJSON_AddNumberToObject(o, "burn_min", log.burn_min);
+    cJSON_AddNumberToObject(o, "starts", log.starts);
+    cJSON *lv = cJSON_AddArrayToObject(o, "levels");
+    for (int i = 0; i < AT_FUEL_BURN_LEVELS; i++) {
+        unsigned mins = 0;
+        for (int h = 0; h < 24; h++) mins += det.min[h][i];
+        cJSON *e = cJSON_CreateObject();
+        cJSON_AddStringToObject(e, "level", at_fuel_level_name((at_fuel_level_t)(AT_FUEL_STARTING + i)));
+        cJSON_AddNumberToObject(e, "minutes", mins);
+        cJSON_AddNumberToObject(e, "litres", det.ml[i] / 1000.0);
+        cJSON_AddNumberToObject(e, "cost", ml_sum ? round3(log.cost_m / 1000.0 * det.ml[i] / ml_sum) : 0);
+        cJSON_AddItemToArray(lv, e);
+    }
+    cJSON *hrs = cJSON_AddArrayToObject(o, "hours");
+    for (int h = 0; h < 24; h++) {
+        cJSON *row = cJSON_CreateArray();
+        for (int i = 0; i < AT_FUEL_BURN_LEVELS; i++) cJSON_AddItemToArray(row, cJSON_CreateNumber(det.min[h][i]));
+        cJSON_AddItemToArray(hrs, row);
+    }
     char *str = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
     return str;

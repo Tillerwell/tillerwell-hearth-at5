@@ -717,6 +717,23 @@ static esp_err_t h_fuel_get(httpd_req_t *req)
     return e;
 }
 
+/* GET /api/fuel/day?date=yyyy-MM-dd: one day by power level (1.64). 404 when no breakdown is kept for it. */
+static esp_err_t h_fuel_day(httpd_req_t *req)
+{
+    REQUIRE_AUTH(req);
+    char q[48], v[16];
+    int32_t day;
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) != ESP_OK || httpd_query_key_value(q, "date", v, sizeof(v)) != ESP_OK ||
+        !at_parse_date(v, &day)) {
+        return send_error(req, "400 Bad Request", "date must be yyyy-MM-dd");
+    }
+    char *s = at_app_fuel_day_json(day);
+    if (!s) return send_error(req, "404 Not Found", "no breakdown kept for that day");
+    esp_err_t e = send_json_str(req, s);
+    free(s);
+    return e;
+}
+
 /* GET /api/thermo/history: Heater Care's changes and the last runs, for the apps' "Why?" screen. */
 static esp_err_t h_thermo_history(httpd_req_t *req)
 {
@@ -1377,7 +1394,7 @@ esp_err_t at_web_start(void)
         return ESP_OK;
     }
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 36; /* 32 routes; a registration past this aborts at startup */
+    cfg.max_uri_handlers = 36; /* 33 routes; a registration past this aborts at startup */
     cfg.uri_match_fn = httpd_uri_match_wildcard; /* one route (DELETE users/<kid>) uses a wildcard */
     cfg.stack_size = 8192;
     cfg.lru_purge_enable = true;
@@ -1396,6 +1413,7 @@ esp_err_t at_web_start(void)
         {.uri = "/api/wifi", .method = HTTP_POST, .handler = h_wifi_set},
         {.uri = "/api/log", .method = HTTP_GET, .handler = h_log},
         {.uri = "/api/fuel", .method = HTTP_GET, .handler = h_fuel_get},
+        {.uri = "/api/fuel/day", .method = HTTP_GET, .handler = h_fuel_day},
         {.uri = "/api/thermo/history", .method = HTTP_GET, .handler = h_thermo_history},
         {.uri = "/api/mode", .method = HTTP_POST, .handler = h_mode},
         {.uri = "/api/reboot", .method = HTTP_POST, .handler = h_reboot},

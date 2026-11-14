@@ -246,6 +246,12 @@ bool at_app_fuel_set_price(float per_litre);
  * up to today is costed again at it (1.63). The date must be today or up to 365 days back, which needs the clock. */
 bool at_app_fuel_set_price_from(float per_litre, int32_t from_day);
 bool at_app_fuel_set_factor(float factor);
+/* One day's breakdown by power level (1.64), with that day's log entry. False if none is kept for `day`. */
+bool at_app_fuel_detail(int32_t day, at_fuel_detail_day_t *detail, at_fuel_day_t *log_day);
+/* The days a breakdown is kept for, newest first. */
+int at_app_fuel_detail_days(int32_t *out, int max);
+/* GET /api/fuel/day: JSON for one day's breakdown, or NULL if none is kept. Caller frees. */
+char *at_app_fuel_day_json(int32_t day);
 bool at_app_fuel_set_rates(float starting, float low, float middle, float high);
 /* The tank's size, what is in it now, or "filled to the top" (needs the size). */
 /* Pump calibration (see at_fuel.h): reset the count at a known fill, burn, refill to the same mark, then
@@ -275,6 +281,8 @@ bool at_app_battery_set_factor(float factor);
 
 /* Today's local date in days since 1970-01-01; false without a clock and time zone. */
 bool at_app_local_day(int32_t *day);
+/* The local date and minute of the day (0-1439); false until the clock can be trusted. */
+bool at_app_local_time(int32_t *day, int *minute);
 
 void at_app_set_auto(bool enabled);
 /* Auto on/off. Turning it off inside a run's minimum run: finish_run lets the run reach it (the default for callers

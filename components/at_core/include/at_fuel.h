@@ -125,6 +125,41 @@ at_fuel_level_t at_fuel_tick_pump(at_fuel_totals_t *t, at_fuel_log_t *log, at_fu
                                   at_fuel_pump_t *pump, float pump_hz, uint8_t state, uint8_t substate,
                                   bool burner_active, double dt_s, int32_t day);
 
+/* One day's breakdown by power level (firmware 1.64): litres at each burning level and the minutes at each level
+ * in each local hour, for the fuel log's day screen. Kept for the last AT_FUEL_DETAIL_DAYS days only, as its own
+ * blob beside the daily log (which stays as it is). Index 0 of each array is AT_FUEL_STARTING. */
+#define AT_FUEL_DETAIL_DAYS 31
+#define AT_FUEL_BURN_LEVELS (AT_FUEL_LEVELS - 1)
+#define AT_FUEL_DETAIL_VERSION 1
+typedef struct {
+    int32_t day;                                /* days since 1970-01-01, local time */
+    uint16_t ml[AT_FUEL_BURN_LEVELS];           /* millilitres at each level */
+    uint8_t min[24][AT_FUEL_BURN_LEVELS];       /* minutes at each level, by local hour */
+} at_fuel_detail_day_t;
+
+typedef struct {
+    uint32_t version;
+    uint16_t head, count;                       /* ring, newest at head */
+    at_fuel_detail_day_t d[AT_FUEL_DETAIL_DAYS];
+} at_fuel_detail_t;
+
+/* Sub-minute and sub-millilitre remainders, not saved. */
+typedef struct {
+    int32_t day;
+    int hour;
+    double s[AT_FUEL_BURN_LEVELS];
+    double ml[AT_FUEL_BURN_LEVELS];
+} at_fuel_detail_run_t;
+
+void at_fuel_detail_init(at_fuel_detail_t *d);
+bool at_fuel_detail_valid(const at_fuel_detail_t *d);
+/* Account `dt_s` seconds at `level` that burned `litres`, at local `day` and `hour` (0-23). Nothing for
+ * AT_FUEL_OFF, a day < 0 or a clock that went back past the newest day. */
+void at_fuel_detail_add(at_fuel_detail_t *d, at_fuel_detail_run_t *run, int32_t day, int hour, at_fuel_level_t level,
+                        double dt_s, double litres);
+/* The breakdown for `day`, or NULL if none is kept. */
+const at_fuel_detail_day_t *at_fuel_detail_find(const at_fuel_detail_t *d, int32_t day);
+
 /* A price backdated to `from_day` (firmware 1.63): every logged day from that date on is costed again at
  * `per_litre`, and the totals' cost moves by the same amount. Returns how many days were changed. If today's
  * entry was among them, its sub-millicost remainder is dropped (`run` may be NULL). */

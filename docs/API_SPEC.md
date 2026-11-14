@@ -97,7 +97,7 @@ Levels are ordered: `view` < `control` < `manager` < `admin` (cloud plan Q8).
 | Route | Needs |
 |---|---|
 | `GET /api/auth/nonce`, `GET /api/hello`, `POST`/`GET /api/auth/claim`, `POST /api/auth/redeem` | nothing (each checks what it needs itself) |
-| `GET /api/status`, `/api/info`, `/api/timers`, `/api/fuel`, `/api/thermo/history`, `/api/auth/me` | view |
+| `GET /api/status`, `/api/info`, `/api/timers`, `/api/fuel`, `/api/fuel/day`, `/api/thermo/history`, `/api/auth/me` | view |
 | `PUT /api/timers` | control |
 | `POST /api/cmd` | depends on `cmd`, below (at least control) |
 | `GET /api/wifi/scan`, `POST /api/wifi`, `POST /api/mode` | manager |
@@ -115,6 +115,15 @@ Levels are ordered: `view` < `control` < `manager` < `admin` (cloud plan Q8).
 **Heater Care lock (firmware 1.61, [CARE_LOCK.md](CARE_LOCK.md)).** `stop`, `start_preheat` and `start_thermostat` are refused inside a run's minimum run (stop) or the 20 minute rest after a run (start), whatever the permission. A signed request (local or cloud) may add `"override": true` to go ahead (on `auto` `enabled:true` it clears the rest so the thermostat may start at once); an unsigned one cannot, and `"finish_run": false` from an unsigned request counts as `true`. A local refusal is `400` `{"ok":false,"error":"<message>","care":"min_run"|"min_off","left_s":<n>}`.
 
 **Backdated fuel price (firmware 1.63).** `{"cmd":"fuel_price","value":1.62,"from":"2026-11-01"}` sets the price and costs every day in the fuel log from that local date to today again at it; the running cost total moves by the same amount. `from` must be today or up to 365 days back, and needs the box's clock (otherwise `400`). Without `from` the price applies from now on, as before. The apps and the website always send a date (today unless the owner picks another). An older box ignores `from`.
+
+**A day's fuel by power level (firmware 1.64).** `GET /api/fuel/day?date=2026-11-14` (view) returns one day of the fuel log split by level, for the last 31 days:
+```json
+{"date":"2026-11-14","litres":1.73,"cost":2.74,"burn_min":219,"starts":1,
+ "levels":[{"level":"starting","minutes":6,"litres":0.02,"cost":0.03},{"level":"low","minutes":120,"litres":0.3,"cost":0.47},
+           {"level":"middle","minutes":60,"litres":0.35,"cost":0.55},{"level":"high","minutes":33,"litres":1.06,"cost":1.69}],
+ "hours":[[0,0,0,0], … 24 rows: minutes at starting, low, middle, high in each local hour]}
+```
+Each level's cost is the day's cost (as repriced by a backdated price) split by its share of the day's litres. `404` when no breakdown is kept for that date (older than 31 days, or before 1.64); `400` for a malformed date. In `GET /api/fuel`, a day that has a breakdown carries `"detail":true`. The breakdown is its own flash blob (`fuel_det`, about 3.3 KB); it is not in the backup.
 
 `GET /api/hello` (public) tells a phone what it is talking to before it holds a key: `{"device_id","name","version","claimed":true|false,"fingerprint"}`.
 

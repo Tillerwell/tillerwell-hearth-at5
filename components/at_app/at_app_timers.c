@@ -127,6 +127,17 @@ static void local_now(at_localtime_t *out)
     out->minute = (uint16_t)(tm.tm_hour * 60 + tm.tm_min);
 }
 
+bool at_app_local_time(int32_t *day, int *minute)
+{
+    at_localtime_t now;
+    local_now(&now);
+    if (now.ok) {
+        *day = now.day;
+        *minute = now.minute;
+    }
+    return now.ok;
+}
+
 bool at_app_local_day(int32_t *day)
 {
     at_localtime_t now;

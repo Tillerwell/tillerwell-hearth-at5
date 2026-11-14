@@ -1654,6 +1654,35 @@ static void test_fuel(void)
         CHECK(fabs(pt.cost) < 0.01);
     }
 
+    /* the day breakdown (1.64): minutes and litres by level and hour, a month kept */
+    {
+        at_fuel_detail_t dt;
+        at_fuel_detail_run_t dr = {0};
+        at_fuel_detail_init(&dt);
+        CHECK(at_fuel_detail_valid(&dt) && at_fuel_detail_find(&dt, day) == NULL);
+        for (int i = 0; i < 1200; i++) at_fuel_detail_add(&dt, &dr, day, 9, AT_FUEL_HIGH, 3, 0.62 * 3 / 3600.0); /* 1 h high at 9 */
+        for (int i = 0; i < 200; i++) at_fuel_detail_add(&dt, &dr, day, 10, AT_FUEL_LOW, 3, 0.15 * 3 / 3600.0);  /* 10 min low at 10 */
+        at_fuel_detail_add(&dt, &dr, day, 10, AT_FUEL_OFF, 600, 0);                                              /* off counts nothing */
+        const at_fuel_detail_day_t *de = at_fuel_detail_find(&dt, day);
+        CHECK(de && de->min[9][AT_FUEL_HIGH - 1] == 60 && de->min[10][AT_FUEL_LOW - 1] == 10);
+        CHECK(de && de->min[9][AT_FUEL_LOW - 1] == 0 && de->min[11][AT_FUEL_HIGH - 1] == 0);
+        CHECK(de && abs((int)de->ml[AT_FUEL_HIGH - 1] - 620) <= 1 && abs((int)de->ml[AT_FUEL_LOW - 1] - 25) <= 1);
+        CHECK(de && de->ml[AT_FUEL_MIDDLE - 1] == 0);
+        /* a clock that went back past the newest day is ignored; no clock (-1) is ignored */
+        at_fuel_detail_add(&dt, &dr, day - 3, 9, AT_FUEL_HIGH, 600, 0.1);
+        at_fuel_detail_add(&dt, &dr, -1, 9, AT_FUEL_HIGH, 600, 0.1);
+        CHECK(dt.count == 1 && at_fuel_detail_find(&dt, day - 3) == NULL);
+        /* a minute never goes past 60 in one hour */
+        for (int i = 0; i < 100; i++) at_fuel_detail_add(&dt, &dr, day, 9, AT_FUEL_HIGH, 60, 0);
+        CHECK(at_fuel_detail_find(&dt, day)->min[9][AT_FUEL_HIGH - 1] == 60);
+        /* the ring keeps the newest month */
+        for (int d = 1; d <= AT_FUEL_DETAIL_DAYS + 5; d++) at_fuel_detail_add(&dt, &dr, day + d, 12, AT_FUEL_MIDDLE, 120, 0.01);
+        CHECK(dt.count == AT_FUEL_DETAIL_DAYS && at_fuel_detail_find(&dt, day) == NULL);
+        CHECK(at_fuel_detail_find(&dt, day + AT_FUEL_DETAIL_DAYS + 5) && at_fuel_detail_find(&dt, day + 6));
+        CHECK(at_fuel_detail_find(&dt, day + 5) == NULL);
+        CHECK(sizeof(at_fuel_detail_t) <= 3400); /* NVS is 64 KB and shared: keep this small */
+    }
+
     /* the ring keeps the newest AT_FUEL_DAYS days */
     at_fuel_log_init(&log);
     for (int d = 0; d < AT_FUEL_DAYS + 10; d++) at_fuel_tick(&t, &log, &run, &cfg, 3, 2, true, 60, day + d);

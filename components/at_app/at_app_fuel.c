@@ -15,6 +15,7 @@ static const char *TAG = "fuel";
 #define KEY_LOG  "fuel_log"
 #define KEY_TANK "fuel_tank"
 #define KEY_PUMP "fuel_pump"
+#define KEY_DET  "fuel_det" /* by-level breakdown of the last 31 days (1.64) */
 #define SAVE_EVERY_MS (5u * 60u * 1000u) /* while burning; also at the end of every burn and before any restart */
 #define MAX_TICK_S    10.0                /* a longer gap (no status, a stall) is not counted */
 
@@ -25,6 +26,8 @@ static at_fuel_log_t s_log;
 static at_fuel_run_t s_run;
 static at_fuel_tank_t s_tank;
 static at_fuel_pump_t s_pump;
+static at_fuel_detail_t s_det;
+static at_fuel_detail_run_t s_det_run;
 static float s_pump_hz;
 static bool s_from_pump;
 static at_fuel_level_t s_level;
@@ -51,6 +54,9 @@ void at_app_fuel_init(void)
     if (!at_settings_blob_load(KEY_PUMP, &s_pump, sizeof(s_pump)) || !at_fuel_pump_valid(&s_pump)) {
         at_fuel_pump_init(&s_pump);
     }
+    if (!at_settings_blob_load(KEY_DET, &s_det, sizeof(s_det)) || !at_fuel_detail_valid(&s_det)) {
+        at_fuel_detail_init(&s_det);
+    }
     esp_register_shutdown_handler(save_on_restart);
     ESP_LOGI(TAG, "%.2f l estimated so far, %u days logged", s_tot.litres, s_log.count);
 }
@@ -60,6 +66,7 @@ static void save_locked(void)
     at_settings_blob_save(KEY_TOT, &s_tot, sizeof(s_tot));
     at_settings_blob_save(KEY_LOG, &s_log, sizeof(s_log));
     at_settings_blob_save(KEY_PUMP, &s_pump, sizeof(s_pump));
+    at_settings_blob_save(KEY_DET, &s_det, sizeof(s_det));
     s_dirty = false;
 }
 
@@ -82,15 +89,18 @@ void at_app_fuel_tick(const at_snapshot_t *snap, uint32_t now_ms)
     if (dt > MAX_TICK_S) dt = 0;
 
     int32_t day;
-    if (!at_app_local_day(&day)) day = -1;
+    int minute = 0;
+    if (!at_app_local_time(&day, &minute)) day = -1;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     at_fuel_level_t was = s_level;
+    double litres_before = s_tot.litres;
     /* the pump's frequency counts only while the extended frames are arriving; otherwise it is the estimate */
     float hz = snap->have_ext && snap->ext_active ? snap->ext.fuel_pump_hz : -1.0f;
     s_pump_hz = hz > 0 ? hz : 0;
     s_from_pump = hz >= 0 && s_pump.ml_per_pulse > 0;
     s_level = at_fuel_tick_pump(&s_tot, &s_log, &s_run, &s_cfg, &s_pump, hz, snap->status.state_raw,
                                 snap->status.substate, snap->status.burner_active, dt, day);
+    at_fuel_detail_add(&s_det, &s_det_run, day, minute / 60, s_level, dt, s_tot.litres - litres_before);
     if (s_level != AT_FUEL_OFF || hz > 0) s_dirty = true;
     bool burn_ended = was != AT_FUEL_OFF && s_level == AT_FUEL_OFF;
     if (s_dirty && (burn_ended || now_ms - s_last_save_ms >= SAVE_EVERY_MS)) {
@@ -134,6 +144,29 @@ int at_app_fuel_log_copy(at_fuel_day_t *out, int max)
     int n = 0;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     for (const at_fuel_day_t *e; n < max && (e = at_fuel_log_at(&s_log, n)); n++) out[n] = *e;
+    xSemaphoreGive(s_lock);
+    return n;
+}
+
+bool at_app_fuel_detail(int32_t day, at_fuel_detail_day_t *detail, at_fuel_day_t *log_day)
+{
+    if (!s_lock) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    const at_fuel_detail_day_t *e = at_fuel_detail_find(&s_det, day);
+    const at_fuel_day_t *l = at_fuel_log_find(&s_log, day);
+    if (e) *detail = *e;
+    if (l) *log_day = *l;
+    else memset(log_day, 0, sizeof(*log_day));
+    xSemaphoreGive(s_lock);
+    return e != NULL;
+}
+
+int at_app_fuel_detail_days(int32_t *out, int max)
+{
+    if (!s_lock) return 0;
+    int n = 0;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    for (; n < s_det.count && n < max; n++) out[n] = s_det.d[(s_det.head + AT_FUEL_DETAIL_DAYS - n) % AT_FUEL_DETAIL_DAYS].day;
     xSemaphoreGive(s_lock);
     return n;
 }

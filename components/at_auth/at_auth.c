@@ -415,7 +415,7 @@ static const route_perm_t ROUTE_PERMS[] = {
     { "GET", "/api/hello", AT_PERM_NONE },
     { "GET", "/api/status", AT_PERM_VIEW },      { "GET", "/api/info", AT_PERM_VIEW },
     { "GET", "/api/timers", AT_PERM_VIEW },      { "GET", "/api/fuel", AT_PERM_VIEW },
-    { "GET", "/api/thermo/history", AT_PERM_VIEW },
+    { "GET", "/api/thermo/history", AT_PERM_VIEW }, { "GET", "/api/fuel/day", AT_PERM_VIEW },
     { "GET", "/api/auth/me", AT_PERM_VIEW },
     { "PUT", "/api/timers", AT_PERM_CONTROL },   { "POST", "/api/cmd", AT_PERM_CONTROL },
     { "GET", "/api/wifi/scan", AT_PERM_MANAGER }, { "POST", "/api/wifi", AT_PERM_MANAGER },

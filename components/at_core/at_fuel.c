@@ -182,6 +182,64 @@ at_fuel_level_t at_fuel_tick_pump(at_fuel_totals_t *t, at_fuel_log_t *log, at_fu
     return level;
 }
 
+void at_fuel_detail_init(at_fuel_detail_t *d)
+{
+    memset(d, 0, sizeof(*d));
+    d->version = AT_FUEL_DETAIL_VERSION;
+}
+
+bool at_fuel_detail_valid(const at_fuel_detail_t *d)
+{
+    return d->version == AT_FUEL_DETAIL_VERSION && d->count <= AT_FUEL_DETAIL_DAYS && d->head < AT_FUEL_DETAIL_DAYS;
+}
+
+const at_fuel_detail_day_t *at_fuel_detail_find(const at_fuel_detail_t *d, int32_t day)
+{
+    for (int i = 0; i < d->count; i++) {
+        const at_fuel_detail_day_t *e = &d->d[(d->head + AT_FUEL_DETAIL_DAYS - i) % AT_FUEL_DETAIL_DAYS];
+        if (e->day == day) return e;
+        if (e->day < day) break;
+    }
+    return NULL;
+}
+
+void at_fuel_detail_add(at_fuel_detail_t *d, at_fuel_detail_run_t *run, int32_t day, int hour, at_fuel_level_t level,
+                        double dt_s, double litres)
+{
+    if (level <= AT_FUEL_OFF || level >= AT_FUEL_LEVELS || day < 0 || hour < 0 || hour > 23 || dt_s < 0) return;
+    at_fuel_detail_day_t *e;
+    if (d->count && d->d[d->head].day == day) {
+        e = &d->d[d->head];
+    } else {
+        if (d->count && d->d[d->head].day > day) return; /* the clock went backwards: leave it alone */
+        if (d->count) d->head = (uint16_t)((d->head + 1) % AT_FUEL_DETAIL_DAYS);
+        if (d->count < AT_FUEL_DETAIL_DAYS) d->count++;
+        e = &d->d[d->head];
+        memset(e, 0, sizeof(*e));
+        e->day = day;
+    }
+    if (run->day != day || run->hour != hour) {
+        memset(run, 0, sizeof(*run));
+        run->day = day;
+        run->hour = hour;
+    }
+    int i = level - AT_FUEL_STARTING;
+    run->s[i] += dt_s;
+    unsigned mins = (unsigned)(run->s[i] / 60.0);
+    if (mins) {
+        unsigned m = e->min[hour][i] + mins;
+        e->min[hour][i] = (uint8_t)(m > 60 ? 60 : m);
+        run->s[i] -= mins * 60.0;
+    }
+    run->ml[i] += litres * 1000.0;
+    unsigned ml = (unsigned)run->ml[i];
+    if (ml) {
+        unsigned v = e->ml[i] + ml;
+        e->ml[i] = (uint16_t)(v > 65535 ? 65535 : v);
+        run->ml[i] -= ml;
+    }
+}
+
 int at_fuel_log_reprice(at_fuel_log_t *log, at_fuel_totals_t *t, at_fuel_run_t *run, int32_t from_day, float per_litre)
 {
     int n = 0;
