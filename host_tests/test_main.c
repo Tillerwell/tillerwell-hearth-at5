@@ -1681,6 +1681,22 @@ static void test_fuel(void)
         CHECK(at_fuel_detail_find(&dt, day + AT_FUEL_DETAIL_DAYS + 5) && at_fuel_detail_find(&dt, day + 6));
         CHECK(at_fuel_detail_find(&dt, day + 5) == NULL);
         CHECK(sizeof(at_fuel_detail_t) <= 3400); /* NVS is 64 KB and shared: keep this small */
+        /* a level's cost is its litres at the day's cost per litre: on the day of the update the breakdown saw only
+         * part of the day (the live box: 249 ml of 2206 ml on middle) and middle must not take the whole day's cost */
+        at_fuel_day_t part = { .day = day, .ml = 2206, .cost_m = 3486 };
+        at_fuel_detail_day_t pd;
+        memset(&pd, 0, sizeof(pd));
+        pd.ml[AT_FUEL_MIDDLE - 1] = 249;
+        CHECK(fabs(at_fuel_level_cost(&part, &pd, AT_FUEL_MIDDLE - 1) - 3.486 * 249 / 2206) < 1e-9);
+        CHECK(at_fuel_level_cost(&part, &pd, AT_FUEL_HIGH - 1) == 0 && at_fuel_level_cost(&part, &pd, 9) == 0);
+        /* a full day: the levels add up to the day; rounding a millilitre over never charges more than the day */
+        at_fuel_day_t full = { .day = day, .ml = 1000, .cost_m = 1500 };
+        at_fuel_detail_day_t fd;
+        memset(&fd, 0, sizeof(fd));
+        fd.ml[0] = 2; fd.ml[1] = 300; fd.ml[2] = 400; fd.ml[3] = 300;
+        double sum = 0;
+        for (int i = 0; i < AT_FUEL_BURN_LEVELS; i++) sum += at_fuel_level_cost(&full, &fd, i);
+        CHECK(sum <= 1.5 + 1e-9 && sum > 1.49);
     }
 
     /* the cloud backup's copy (1.65): encode, merge into a replacement box, totals added once */

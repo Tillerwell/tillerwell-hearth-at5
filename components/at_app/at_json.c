@@ -353,8 +353,8 @@ char *at_app_fuel_json(void)
     return str;
 }
 
-/* GET /api/fuel/day?date=: one day by power level (1.64). Each level's cost is the day's cost (as repriced) split
- * by that level's share of the day's litres, so the levels add up to the log. `hours` is 24 rows of minutes at
+/* GET /api/fuel/day?date=: one day by power level (1.64). Each level's cost is its litres at the day's cost per litre
+ * (as repriced), so a part day (the day of the update) charges each level only for its own fuel. `hours` is 24 rows of minutes at
  * starting, low, middle, high, by local hour. */
 char *at_app_fuel_day_json(int32_t day)
 {
@@ -363,8 +363,6 @@ char *at_app_fuel_day_json(int32_t day)
     if (!at_app_fuel_detail(day, &det, &log)) return NULL;
     char date[11];
     at_format_date(day, date);
-    unsigned ml_sum = 0;
-    for (int i = 0; i < AT_FUEL_BURN_LEVELS; i++) ml_sum += det.ml[i];
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "date", date);
     cJSON_AddNumberToObject(o, "litres", log.ml / 1000.0);
@@ -379,7 +377,7 @@ char *at_app_fuel_day_json(int32_t day)
         cJSON_AddStringToObject(e, "level", at_fuel_level_name((at_fuel_level_t)(AT_FUEL_STARTING + i)));
         cJSON_AddNumberToObject(e, "minutes", mins);
         cJSON_AddNumberToObject(e, "litres", det.ml[i] / 1000.0);
-        cJSON_AddNumberToObject(e, "cost", ml_sum ? round3(log.cost_m / 1000.0 * det.ml[i] / ml_sum) : 0);
+        cJSON_AddNumberToObject(e, "cost", round3(at_fuel_level_cost(&log, &det, i)));
         cJSON_AddItemToArray(lv, e);
     }
     cJSON *hrs = cJSON_AddArrayToObject(o, "hours");

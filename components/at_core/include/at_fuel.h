@@ -158,6 +158,11 @@ bool at_fuel_detail_valid(const at_fuel_detail_t *d);
  * AT_FUEL_OFF, a day < 0 or a clock that went back past the newest day. */
 void at_fuel_detail_add(at_fuel_detail_t *d, at_fuel_detail_run_t *run, int32_t day, int hour, at_fuel_level_t level,
                         double dt_s, double litres);
+/* One level's share of a day's cost (as repriced): its litres at the day's cost per litre. Litres the breakdown did not
+ * see (the day the box was updated to 1.64 began before it was recording) are left out, so the levels never add up to
+ * more than the day, and a level is never charged for fuel burned at another. */
+double at_fuel_level_cost(const at_fuel_day_t *log_day, const at_fuel_detail_day_t *detail, int level_index);
+
 /* The breakdown for `day`, or NULL if none is kept. */
 const at_fuel_detail_day_t *at_fuel_detail_find(const at_fuel_detail_t *d, int32_t day);
 

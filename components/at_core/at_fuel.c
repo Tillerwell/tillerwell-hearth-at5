@@ -195,6 +195,17 @@ bool at_fuel_detail_valid(const at_fuel_detail_t *d)
     return d->version == AT_FUEL_DETAIL_VERSION && d->count <= AT_FUEL_DETAIL_DAYS && d->head < AT_FUEL_DETAIL_DAYS;
 }
 
+double at_fuel_level_cost(const at_fuel_day_t *log_day, const at_fuel_detail_day_t *detail, int level_index)
+{
+    if (level_index < 0 || level_index >= AT_FUEL_BURN_LEVELS) return 0;
+    unsigned seen = 0;
+    for (int i = 0; i < AT_FUEL_BURN_LEVELS; i++) seen += detail->ml[i];
+    /* the day's litres, or what the breakdown saw if rounding put that a millilitre or two above it */
+    unsigned ml = log_day->ml > seen ? log_day->ml : seen;
+    if (!ml) return 0;
+    return log_day->cost_m / 1000.0 * detail->ml[level_index] / ml;
+}
+
 const at_fuel_detail_day_t *at_fuel_detail_find(const at_fuel_detail_t *d, int32_t day)
 {
     for (int i = 0; i < d->count; i++) {

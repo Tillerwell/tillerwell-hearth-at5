@@ -123,7 +123,7 @@ Levels are ordered: `view` < `control` < `manager` < `admin` (cloud plan Q8).
            {"level":"middle","minutes":60,"litres":0.35,"cost":0.55},{"level":"high","minutes":33,"litres":1.06,"cost":1.69}],
  "hours":[[0,0,0,0], … 24 rows: minutes at starting, low, middle, high in each local hour]}
 ```
-Each level's cost is the day's cost (as repriced by a backdated price) split by its share of the day's litres. `404` when no breakdown is kept for that date (older than 31 days, or before 1.64); `400` for a malformed date. In `GET /api/fuel`, a day that has a breakdown carries `"detail":true`. The breakdown is its own flash blob (`fuel_det`, about 3.3 KB); it is not in the backup.
+Each level's cost is its litres at the day's cost per litre (as repriced by a backdated price); since 1.66 the share is of the day's whole litres, so on the day the box was updated, which began before it was recording, a level is charged only for its own fuel (1.64 and 1.65 put the whole day's cost on the levels seen). The levels then add up to less than the day: the apps show the rest as "before recording". `404` when no breakdown is kept for that date (older than 31 days, or before 1.64); `400` for a malformed date. In `GET /api/fuel`, a day that has a breakdown carries `"detail":true`. The breakdown is its own flash blob (`fuel_det`, about 3.3 KB); it is not in the backup.
 
 `GET /api/hello` (public) tells a phone what it is talking to before it holds a key: `{"device_id","name","version","claimed":true|false,"fingerprint"}`.
 
