@@ -469,6 +469,57 @@ static bool is_idle(const at_snapshot_t *s)
     return s->have_status && s->status.state_raw == 0x00;
 }
 
+/* ---- the Heater Care lock (1.61) ------------------------------------------------------------------------- */
+
+at_care_t at_ctl_care_stop(const at_ctl_t *t, const at_snapshot_t *s, uint32_t now, uint32_t *left_ms)
+{
+    if (left_ms) *left_ms = 0;
+    if (s && s->have_status && s->status.fault) return AT_CARE_OK;          /* a fault may always be stopped */
+    if (s && s->have_status && !s->stale && !starting_or_burning(s)) return AT_CARE_OK; /* idle or cooling already */
+    uint32_t left = at_ctl_min_run_left_ms(t, now);
+    if (left == 0) return AT_CARE_OK;
+    if (left_ms) *left_ms = left;
+    return AT_CARE_MIN_RUN;
+}
+
+at_care_t at_ctl_care_start(const at_ctl_t *t, uint32_t now, uint32_t *left_ms)
+{
+    if (left_ms) *left_ms = 0;
+    uint32_t left = at_ctl_min_off_left_ms(t, now);   /* 0 while a run is going: a start then carries the run on */
+    if (left == 0) return AT_CARE_OK;
+    if (left_ms) *left_ms = left;
+    return AT_CARE_MIN_OFF;
+}
+
+void at_ctl_care_skip_rest(at_ctl_t *t)
+{
+    t->off_lock = false;
+    t->clock_fix_pending = false;
+}
+
+const char *at_care_name(at_care_t c)
+{
+    switch (c) {
+    case AT_CARE_MIN_RUN: return "min_run";
+    case AT_CARE_MIN_OFF: return "min_off";
+    default: return NULL;
+    }
+}
+
+void at_care_message(at_care_t c, uint32_t left_ms, char *out, size_t n)
+{
+    unsigned m = mins_up(left_ms);
+    if (c == AT_CARE_MIN_RUN) {
+        snprintf(out, n, "Heater Care: the run has %u more min of its minimum run to go before it can stop. "
+                         "Only the Tillerwell app can stop it sooner.", m);
+    } else if (c == AT_CARE_MIN_OFF) {
+        snprintf(out, n, "Heater Care: the heater is resting for %u more min after its last run. "
+                         "Only the Tillerwell app can start it sooner.", m);
+    } else if (n) {
+        out[0] = 0;
+    }
+}
+
 static void send_start(at_ctl_t *t, at_ctl_loop_t *l, const at_ctl_ops_t *ops, uint32_t now, at_owner_t owner)
 {
     ops->start_thermostat(ops->ctx);

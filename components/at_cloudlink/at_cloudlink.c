@@ -230,15 +230,16 @@ static void handle_command(const char *msg)
         return;
     }
     // Step 8: the same door the web UI uses, and it can still say no.
-    if (s_exec && s_exec(cmd.cmd_json)) {
+    char reason[32] = "";
+    if (s_exec && s_exec(cmd.cmd_json, reason, sizeof(reason))) {
         ESP_LOGI(TAG, "command %s done", id);
         s_cmds_ok++;
         publish_ack(id, "done", NULL);
         watch_state();
     } else {
-        ESP_LOGW(TAG, "command %s refused by the box", id);
+        ESP_LOGW(TAG, "command %s refused by the box%s%s", id, reason[0] ? ": " : "", reason);
         s_cmds_refused++;
-        publish_ack(id, "rejected", "refused");
+        publish_ack(id, "rejected", reason[0] ? reason : "refused");
         publish_event("refused", 0, NULL, id);
     }
 }

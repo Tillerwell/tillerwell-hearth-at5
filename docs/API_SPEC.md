@@ -112,6 +112,8 @@ Levels are ordered: `view` < `control` < `manager` < `admin` (cloud plan Q8).
 | manager | `heater_unlock`, `heater_settings`, `fan_test`, `pump_minutes`, `hysteresis` (ignored since 1.47, §9.10), `thermo_learn_reset`, `preheat_temp`, `preheat_minutes`, `timezone`, `display_name`, `fuel_price`, `fuel_factor`, `fuel_rates`, `tank_capacity` |
 | admin | `factory_reset`, `reboot`, `auto_update`, `ota` (cloud only, §9.7), and **any command not listed** (fail closed) |
 
+**Heater Care lock (firmware 1.61, [CARE_LOCK.md](CARE_LOCK.md)).** `stop`, `start_preheat` and `start_thermostat` are refused inside a run's minimum run (stop) or the 20 minute rest after a run (start), whatever the permission. A signed request (local or cloud) may add `"override": true` to go ahead (on `auto` `enabled:true` it clears the rest so the thermostat may start at once); an unsigned one cannot, and `"finish_run": false` from an unsigned request counts as `true`. A local refusal is `400` `{"ok":false,"error":"<message>","care":"min_run"|"min_off","left_s":<n>}`.
+
 `GET /api/hello` (public) tells a phone what it is talking to before it holds a key: `{"device_id","name","version","claimed":true|false,"fingerprint"}`.
 
 ## 7. Claiming and invitations
@@ -241,7 +243,7 @@ The box, in this order, and never trusting the payload before step 2:
 
 `{"id":"<command id>","result":"accepted"|"done"|"rejected","reason":"<code above, or the safety layer's>"}`
 
-The box answers every command it can name with exactly one ack: `done` once the safety layer has taken it, or `rejected` with one of the reason codes `malformed`, `unknown_signer`, `bad_signature`, `wrong_device`, `no_clock`, `expired`, `replay`, `forbidden` (steps 1 to 7 above) or `refused` (step 8: the safety layer said no, or the command name or value is not valid; the box also publishes an `event` `{"kind":"refused","id":…}`). The command is carried out inside the box before the ack, so `accepted` is not used. For a message whose signature did not check out the `id` is read from the payload **without trust**, only so the refusal can name it: nothing else in such a payload is used, and a message with no readable `id` gets no ack.
+The box answers every command it can name with exactly one ack: `done` once the safety layer has taken it, or `rejected` with one of the reason codes `malformed`, `unknown_signer`, `bad_signature`, `wrong_device`, `no_clock`, `expired`, `replay`, `forbidden` (steps 1 to 7 above) or `refused` (step 8: the safety layer said no, or the command name or value is not valid; the box also publishes an `event` `{"kind":"refused","id":…}`). From firmware 1.61 a stop or start the Heater Care lock refuses is acked with reason `heater_care_min_run` or `heater_care_min_off` instead of `refused` ([CARE_LOCK.md](CARE_LOCK.md)). The command is carried out inside the box before the ack, so `accepted` is not used. For a message whose signature did not check out the `id` is read from the payload **without trust**, only so the refusal can name it: nothing else in such a payload is used, and a message with no readable `id` gets no ack.
 
 ### 9.3 Status, state and events
 

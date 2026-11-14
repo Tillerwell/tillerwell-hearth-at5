@@ -204,6 +204,59 @@ static void test_ctl_locks(void)
     }
 }
 
+/* The Heater Care lock (1.61, docs/CARE_LOCK.md): what Matter, Home Assistant and the website are refused. */
+static void test_ctl_care_lock(void)
+{
+    printf("Heater Care: the lock on stops and starts from outside\n");
+    at_ctl_t t;
+    hsim_t m;
+    hsim_init(&m, &t, 19.9f);
+    m.rate_on = 0.01f;          /* slow: an hour-plus climb, so nothing of Hearth's own ends the run */
+    uint32_t left = 1;
+    /* never run: both allowed */
+    at_snapshot_t s = hsim_snap(&m);
+    CHECK(at_ctl_care_stop(&t, &s, m.now, &left) == AT_CARE_OK && left == 0);
+    CHECK(at_ctl_care_start(&t, m.now, &left) == AT_CARE_OK && left == 0);
+    hsim_arm(&m);
+    CHECK(HSIM_UNTIL(&m, m.state == 3, 10 * MIN_MS));
+    /* lighting up counted the whole minimum run; 13 min after flame, 17 min of it left: a stop is refused */
+    hsim_run(&m, 13 * MIN_MS);
+    s = hsim_snap(&m);
+    CHECK(at_ctl_care_stop(&t, &s, m.now, &left) == AT_CARE_MIN_RUN);
+    CHECK(left > 16 * MIN_MS && left <= 17 * MIN_MS + 3000);
+    char msg[200];
+    at_care_message(AT_CARE_MIN_RUN, left, msg, sizeof(msg));
+    CHECK(strstr(msg, "17 more min") != NULL && strstr(msg, "Tillerwell app") != NULL);
+    CHECK(!strcmp(at_care_name(AT_CARE_MIN_RUN), "min_run") && at_care_name(AT_CARE_OK) == NULL);
+    /* a start while running is not locked: it only carries the run on */
+    CHECK(at_ctl_care_start(&t, m.now, &left) == AT_CARE_OK);
+    /* a fault may always be stopped; so may a heater already cooling down */
+    at_snapshot_t f = s;
+    f.status.fault = 13;
+    CHECK(at_ctl_care_stop(&t, &f, m.now, &left) == AT_CARE_OK && left == 0);
+    at_snapshot_t c = s;
+    c.status.state_raw = 0x04;
+    CHECK(at_ctl_care_stop(&t, &c, m.now, &left) == AT_CARE_OK);
+    /* the minimum run served: allowed */
+    hsim_run(&m, 18 * MIN_MS);
+    s = hsim_snap(&m);
+    CHECK(at_ctl_care_stop(&t, &s, m.now, &left) == AT_CARE_OK);
+    /* the app stops it (override); once idle, a start 9 min later is refused with 11 min left */
+    at_ctl_user_stop(&t, AT_SRC_APP, m.now);
+    m.ops.stop(m.ops.ctx);
+    CHECK(HSIM_UNTIL(&m, m.state == 0, 10 * MIN_MS));
+    hsim_run(&m, 9 * MIN_MS);
+    CHECK(at_ctl_care_start(&t, m.now, &left) == AT_CARE_MIN_OFF);
+    CHECK(left > 10 * MIN_MS && left <= 11 * MIN_MS + 3000);
+    at_care_message(AT_CARE_MIN_OFF, left, msg, sizeof(msg));
+    CHECK(strstr(msg, "resting for 11 more min") != NULL);
+    s = hsim_snap(&m);
+    CHECK(at_ctl_care_stop(&t, &s, m.now, &left) == AT_CARE_OK);   /* nothing to stop */
+    /* the app's Start anyway on a thermostat start clears the rest */
+    at_ctl_care_skip_rest(&t);
+    CHECK(at_ctl_care_start(&t, m.now, &left) == AT_CARE_OK && left == 0);
+}
+
 static void test_ctl_frost(void)
 {
     printf("Heater Care: frost protection\n");
@@ -2304,6 +2357,7 @@ static void test_ctl(void)
     test_rise_rate_any_good_run();
     test_runlog();
     test_ctl_locks();
+    test_ctl_care_lock();
     test_ctl_frost();
     test_ctl_stops();
     test_ctl_thermostat_off();

@@ -212,10 +212,15 @@ static esp_err_t attribute_update_cb(attribute::callback_type_t type, uint16_t e
             at_app_set_auto_range_from(high - at_app_band_min_gap(), high, true, AT_SRC_MATTER);
         }
     } else if (endpoint_id == s_ep_preheat && cluster_id == OnOff::Id && attribute_id == OnOff::Attributes::OnOff::Id) {
-        if (val->val.b) {
-            at_app_start_preheat(0);
-        } else {
-            at_app_stop_from(AT_SRC_MATTER);   // stops at once; logged as an early stop inside the minimum run
+        // Heater Care lock (1.61): Matter can never override it. A stop inside the minimum run or a start inside the
+        // rest after a run is refused, so the write fails and Apple Home / Google Home put the switch back.
+        at_care_why_t why;
+        const bool ok = val->val.b ? at_app_start_preheat_care(0, false, &why)
+                                   : at_app_stop_care(AT_SRC_MATTER, false, &why);
+        if (!ok && why.care != AT_CARE_OK) {
+            ESP_LOGW(TAG, "Matter %s refused by Heater Care: %u s left", val->val.b ? "start" : "stop",
+                     (unsigned)why.left_s);
+            return ESP_ERR_INVALID_STATE;
         }
     }
     return ESP_OK;

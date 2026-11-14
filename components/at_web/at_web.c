@@ -495,27 +495,33 @@ static at_src_t cmd_src(const cJSON *j, at_src_t def)
     return src == AT_SRC_UNKNOWN ? def : src;
 }
 
-/* "finish_run": older apps send none, which means let the run finish */
-static bool finish_run(const cJSON *j) { return jbool(j, "finish_run", true); }
+/* "finish_run": older apps send none, which means let the run finish. false ("Stop anyway") stops a run inside its
+ * minimum run, so it is the Heater Care override (1.61): only honoured when the caller may override. */
+static bool finish_run(const cJSON *j, bool may_override) { return jbool(j, "finish_run", true) || !may_override; }
+
+/* The Heater Care override (1.61, docs/CARE_LOCK.md): "override": true on a stop or start, from a caller that may
+ * (a signed app request, local or through the cloud). Anyone else asking for it is ignored, not refused. */
+static bool care_override(const cJSON *j, bool may_override) { return may_override && jbool(j, "override", false); }
 
 /* The safety layer's front door, shared by POST /api/cmd and the cloud link: the caller has already checked who may
  * ask. False means nothing was done (unknown command, bad value, or the box said no: bypass on, queue full).
  * *skipped (may be NULL) is set for a command that is accepted and ignored (hysteresis, since 1.47). */
-static bool run_cmd(const cJSON *j, at_src_t def_src, bool *skipped)
+static bool run_cmd(const cJSON *j, at_src_t def_src, bool may_override, at_care_why_t *why, bool *skipped)
 {
     const char *c = jstr(j, "cmd");
     bool ok = true;
     if (skipped) *skipped = false;
+    if (why) *why = (at_care_why_t){AT_CARE_OK, 0};
     if (!c) {
         ok = false;
     } else if (!strcmp(c, "start_preheat")) {
-        ok = at_app_start_preheat((int)jnum(j, "minutes", 0));
+        ok = at_app_start_preheat_care((int)jnum(j, "minutes", 0), care_override(j, may_override), why);
     } else if (!strcmp(c, "preheat_duration")) {
         ok = at_app_set_preheat_duration((int)jnum(j, "minutes", 0));
     } else if (!strcmp(c, "start_thermostat")) {
-        ok = at_app_start_thermostat();
+        ok = at_app_start_thermostat_care(care_override(j, may_override), why);
     } else if (!strcmp(c, "stop")) {
-        ok = at_app_stop_from(cmd_src(j, def_src));
+        ok = at_app_stop_care(cmd_src(j, def_src), care_override(j, may_override), why);
     } else if (!strcmp(c, "start_pump")) {
         ok = at_app_start_pump((int)jnum(j, "minutes", 0));
     } else if (!strcmp(c, "send_pubr0")) {
@@ -544,11 +550,12 @@ static bool run_cmd(const cJSON *j, at_src_t def_src, bool *skipped)
     } else if (!strcmp(c, "send_pubr0_variant")) {
         ok = at_app_send_pubr0_variant((int)jnum(j, "variant", 0));
     } else if (!strcmp(c, "auto")) {
-        at_app_set_auto_from(jbool(j, "enabled", false), finish_run(j), cmd_src(j, def_src));
+        at_app_set_auto_care(jbool(j, "enabled", false), finish_run(j, may_override), care_override(j, may_override),
+                             cmd_src(j, def_src));
     } else if (!strcmp(c, "auto_target")) {
         at_app_set_auto_target((float)jnum(j, "value", 20));
     } else if (!strcmp(c, "auto_range")) {
-        at_app_set_auto_range_from((float)jnum(j, "low", 19), (float)jnum(j, "high", 21), finish_run(j),
+        at_app_set_auto_range_from((float)jnum(j, "low", 19), (float)jnum(j, "high", 21), finish_run(j, may_override),
                                    cmd_src(j, def_src));
     } else if (!strcmp(c, "hysteresis")) {
         /* deprecated (1.47, Heater Care): the narrowest range is 1 C and the box widens it itself */
@@ -629,11 +636,16 @@ static bool run_cmd(const cJSON *j, at_src_t def_src, bool *skipped)
     return ok;
 }
 
-bool at_web_exec_cmd(const char *json)
+/* A cloud command: signed by a user's key, already checked by at_access (an app, or the website for its signed-in
+ * owner; the website only passes "override" on for the Apple TV app's account route). */
+bool at_web_exec_cmd(const char *json, char *reason, size_t n)
 {
+    if (reason && n) reason[0] = 0;
     cJSON *j = json ? cJSON_Parse(json) : NULL;
-    bool ok = j && run_cmd(j, AT_SRC_APP, NULL);
+    at_care_why_t why;
+    bool ok = j && run_cmd(j, AT_SRC_APP, true, &why, NULL);
     cJSON_Delete(j);
+    if (!ok && why.care != AT_CARE_OK && reason) snprintf(reason, n, "heater_care_%s", at_care_name(why.care));
     return ok;
 }
 
@@ -643,8 +655,22 @@ static esp_err_t h_cmd(httpd_req_t *req)
     cJSON *j = read_json(req);
     if (!j) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad json");
     bool skipped;
-    bool ok = run_cmd(j, AT_SRC_WEB, &skipped);
+    at_care_why_t why;
+    /* only a signed request may override Heater Care: the unsigned API (Home Assistant, the box's page) never can */
+    bool ok = run_cmd(j, AT_SRC_WEB, s_who.signed_req, &why, &skipped);
     cJSON_Delete(j);
+    if (!ok && why.care != AT_CARE_OK) {
+        /* 400 with "error": Home Assistant shows the message as the reason the box turned it down */
+        char msg[200];
+        at_care_message(why.care, why.left_s * 1000u, msg, sizeof(msg));
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddBoolToObject(o, "ok", false);
+        cJSON_AddStringToObject(o, "error", msg);
+        cJSON_AddStringToObject(o, "care", at_care_name(why.care));
+        cJSON_AddNumberToObject(o, "left_s", why.left_s);
+        httpd_resp_set_status(req, "400 Bad Request");
+        return send_json(req, o);
+    }
     if (ok && skipped) return send_json_str(req, "{\"ok\":true,\"skipped\":true}");
     return send_ok(req, ok);
 }
@@ -1179,7 +1205,7 @@ static bool backup_cmd(const char *cmd, const cJSON *from, const char *key, cons
     cJSON *c = cJSON_CreateObject();
     cJSON_AddStringToObject(c, "cmd", cmd);
     cJSON_AddItemToObject(c, as, cJSON_Duplicate(v, true));
-    bool ok = run_cmd(c, AT_SRC_WEB, NULL);
+    bool ok = run_cmd(c, AT_SRC_WEB, false, NULL, NULL);
     cJSON_Delete(c);
     return ok;
 }
@@ -1205,7 +1231,7 @@ static esp_err_t h_backup_put(httpd_req_t *req)
         cJSON_AddNumberToObject(band, "high", jnum(b, "auto_high", 21));
     }
     /* hyst_min/hyst_max in an older backup are ignored (1.47): the narrowest range is 1 C */
-    if (jstr(band, "cmd")) SKIP_IF(run_cmd(band, AT_SRC_WEB, NULL), "auto_range");
+    if (jstr(band, "cmd")) SKIP_IF(run_cmd(band, AT_SRC_WEB, false, NULL, NULL), "auto_range");
     cJSON_Delete(band);
     /* what Heater Care learned about the space, so a replacement box carries on from it */
     const cJSON *learn = cJSON_GetObjectItemCaseSensitive(b, "thermo_learn");
@@ -1229,7 +1255,7 @@ static esp_err_t h_backup_put(httpd_req_t *req)
     if (cJSON_IsObject(rates)) {
         cJSON *c = cJSON_Duplicate(rates, true);
         cJSON_AddStringToObject(c, "cmd", "fuel_rates");
-        SKIP_IF(run_cmd(c, AT_SRC_WEB, NULL), "fuel_rates");
+        SKIP_IF(run_cmd(c, AT_SRC_WEB, false, NULL, NULL), "fuel_rates");
         cJSON_Delete(c);
     }
     /* 0 means "never set" for these two, and the box refuses 0 */

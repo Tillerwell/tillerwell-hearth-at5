@@ -6,6 +6,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "esp_err.h"
 
@@ -19,7 +20,8 @@ esp_err_t at_web_start(void);
 /* Runs a POST /api/cmd body ({"cmd":"start_preheat","minutes":20}) through the same safety layer the web UI uses. The
  * caller must already have checked who may ask. False: nothing was done (unknown command, bad value, or the box
  * refused, e.g. bypass is on). */
-bool at_web_exec_cmd(const char *json);
+/* reason (may be NULL) gets a short code when the box refuses for a known reason ("heater_care_min_run"), else "". */
+bool at_web_exec_cmd(const char *json, char *reason, size_t n);
 
 #ifdef __cplusplus
 }

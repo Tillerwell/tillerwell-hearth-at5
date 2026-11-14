@@ -536,16 +536,48 @@ void at_app_view(at_view_t *v)
 
 /* ---- commands ------------------------------------------------------------------ */
 
-bool at_app_start_preheat(int minutes)
+/* Call with s_ctl_lock held. True: go ahead (allowed, or overridden). False: refused, *why filled, logged. */
+static bool care_ok_locked(at_care_t c, uint32_t left_ms, bool override, const char *what, at_care_why_t *why)
+{
+    if (why) {
+        why->care = AT_CARE_OK;
+        why->left_s = 0;
+    }
+    if (c == AT_CARE_OK) return true;
+    if (override) {
+        ESP_LOGW(TAG, "Heater Care: %s overridden from the app (%s, %u s left)", what, at_care_name(c),
+                 (unsigned)(left_ms / 1000u));
+        return true;
+    }
+    ESP_LOGW(TAG, "Heater Care: %s refused (%s, %u s left)", what, at_care_name(c), (unsigned)(left_ms / 1000u));
+    if (why) {
+        why->care = c;
+        why->left_s = (left_ms + 999u) / 1000u;
+    }
+    return false;
+}
+
+static bool start_allowed(bool override, const char *what, at_care_why_t *why)
+{
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    uint32_t now = at_now_ms(), left;
+    at_care_t c = at_ctl_care_start(&s_ctl, now, &left);
+    bool ok = care_ok_locked(c, left, override, what, why);
+    if (ok) at_ctl_user_start(&s_ctl, now);
+    xSemaphoreGive(s_ctl_lock);
+    return ok;
+}
+
+bool at_app_start_preheat(int minutes) { return at_app_start_preheat_care(minutes, false, NULL); }
+
+bool at_app_start_preheat_care(int minutes, bool override, at_care_why_t *why)
 {
     if (minutes <= 0) {
         at_settings_t cfg;
         at_settings_get(&cfg);
         minutes = cfg.preheat_minutes;
     }
-    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
-    at_ctl_user_start(&s_ctl, at_now_ms());
-    xSemaphoreGive(s_ctl_lock);
+    if (!start_allowed(override, "preheat start", why)) return false;
     xSemaphoreTake(s_core_lock, portMAX_DELAY);
     bool ok = at_cmd_start_preheat(&s_core, minutes, at_now_ms());
     xSemaphoreGive(s_core_lock);
@@ -560,19 +592,30 @@ bool at_app_set_preheat_duration(int minutes)
     return ok;
 }
 
-bool at_app_start_thermostat(void)
+bool at_app_start_thermostat(void) { return at_app_start_thermostat_care(false, NULL); }
+
+bool at_app_start_thermostat_care(bool override, at_care_why_t *why)
 {
-    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
-    at_ctl_user_start(&s_ctl, at_now_ms());
-    xSemaphoreGive(s_ctl_lock);
+    if (!start_allowed(override, "thermostat start", why)) return false;
     return core_cmd(at_cmd_start_thermostat);
 }
-bool at_app_stop(void) { return at_app_stop_from(AT_SRC_UNKNOWN); }
+bool at_app_stop(void) { return at_app_stop_care(AT_SRC_UNKNOWN, false, NULL); }
+bool at_app_stop_from(at_src_t src) { return at_app_stop_care(src, false, NULL); }
 
-bool at_app_stop_from(at_src_t src)
+bool at_app_stop_care(at_src_t src, bool override, at_care_why_t *why)
 {
+    at_snapshot_t snap;
+    snapshot_locked(&snap);
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
-    at_ctl_user_stop(&s_ctl, src, at_now_ms());
+    uint32_t now = at_now_ms(), left;
+    at_care_t c = at_ctl_care_stop(&s_ctl, &snap, now, &left);
+    char what[32];
+    snprintf(what, sizeof(what), "stop from %s", at_ctl_src_name(src));
+    if (!care_ok_locked(c, left, override, what, why)) {
+        xSemaphoreGive(s_ctl_lock);
+        return false;
+    }
+    at_ctl_user_stop(&s_ctl, src, now);
     at_ctl_disarm_auto(&s_ctl, "manual Hearth stop");
     xSemaphoreGive(s_ctl_lock);
     at_settings_t cfg;
@@ -705,9 +748,21 @@ void at_app_set_auto(bool enabled) { at_app_set_auto_from(enabled, true, AT_SRC_
 
 void at_app_set_auto_from(bool enabled, bool finish_run, at_src_t src)
 {
+    at_app_set_auto_care(enabled, finish_run, false, src);
+}
+
+void at_app_set_auto_care(bool enabled, bool finish_run, bool override, at_src_t src)
+{
     at_snapshot_t snap;
     snapshot_locked(&snap);
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    if (enabled && override && !s_ctl.autot.enabled) {
+        uint32_t left;
+        if (at_ctl_care_start(&s_ctl, at_now_ms(), &left) != AT_CARE_OK) {
+            ESP_LOGW(TAG, "Heater Care: rest skipped from the app (%u s left)", (unsigned)(left / 1000u));
+            at_ctl_care_skip_rest(&s_ctl);
+        }
+    }
     if (enabled) {
         at_ctl_set_auto(&s_ctl, true, &snap, at_now_ms(), &s_ops);
     } else {

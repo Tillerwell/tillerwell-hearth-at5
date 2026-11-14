@@ -4,6 +4,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -21,7 +22,7 @@ extern "C" {
 #define AT_CLOUDLINK_PORT 8883
 
 // Runs a POST /api/cmd body through the safety layer; false = the box refused or did nothing (at_web_exec_cmd).
-typedef bool (*at_cloudlink_exec_t)(const char *cmd_json);
+typedef bool (*at_cloudlink_exec_t)(const char *cmd_json, char *reason, size_t n);
 
 // Starts the supervisor task. Call once, after at_access_start and at_cloud_start. Cheap while no certificate is
 // installed.

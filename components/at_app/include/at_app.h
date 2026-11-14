@@ -171,7 +171,20 @@ typedef struct {
 
 void at_app_view(at_view_t *out);
 
-/* Commands. Return false if nothing was queued (bypass on, queue full). */
+/* Commands. Return false if nothing was queued (bypass on, queue full) or the Heater Care lock refused it.
+ *
+ * The Heater Care lock (1.61, docs/CARE_LOCK.md): a stop inside the minimum run, or a start inside the 20 minute rest
+ * after a run, is refused unless override is set. Only a signed request from the apps may set it (at_web); Matter,
+ * MQTT, Home Assistant, the website and timers never do. The plain functions are the locked ones, no override. */
+typedef struct {
+    at_care_t care;      /* AT_CARE_OK if the lock did not refuse it */
+    uint32_t left_s;     /* how long until it would be allowed */
+} at_care_why_t;
+bool at_app_start_preheat_care(int minutes, bool override, at_care_why_t *why);
+bool at_app_start_thermostat_care(bool override, at_care_why_t *why);
+bool at_app_stop_care(at_src_t src, bool override, at_care_why_t *why);
+/* Auto on or off. override (Auto on only): the app's Start anyway inside the rest, so the first start need not wait. */
+void at_app_set_auto_care(bool enabled, bool finish_run, bool override, at_src_t src);
 bool at_app_start_preheat(int minutes);       /* minutes <= 0 uses the saved default */
 /* Change the total time of a preheat that is running (minutes from when it started). */
 bool at_app_set_preheat_duration(int minutes);

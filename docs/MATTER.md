@@ -40,9 +40,9 @@ Notes from doing this on an Apple-silicon Mac:
 
 | Endpoint | Device | Meaning |
 |---|---|---|
-| 1 | Thermostat (heat and cool setpoints, Auto mode) | Current temp = what the thermostat acts on. Auto mode shows the app's range: "heat to" is the bottom (the heater starts below it), "cool to" is the top (it stops above it); the dead band is the app's minimum gap. Mode Auto or Heat = thermostat on, Off = off **and sends Stop**; Cool, Dry and Fan are refused. The heater cannot cool: the cooling setpoint is only the top of the range. |
+| 1 | Thermostat (heat and cool setpoints, Auto mode) | Current temp = what the thermostat acts on. Auto mode shows the app's range: "heat to" is the bottom (the heater starts below it), "cool to" is the top (it stops above it); the dead band is the app's minimum gap. Mode Auto or Heat = thermostat on, Off = off **and sends Stop** (inside the minimum run the run finishes it first, [CARE_LOCK.md](CARE_LOCK.md)); Cool, Dry and Fan are refused. The heater cannot cool: the cooling setpoint is only the top of the range. |
 | 2 | Temperature sensor | Heater coolant temperature |
-| 3 | On/off plug "Preheat" | On = preheat for the saved duration, Off = Stop; shows On while the heater runs |
+| 3 | On/off plug "Preheat" | On = preheat for the saved duration, Off = Stop; shows On while the heater runs. From 1.61 Off inside the minimum run and On inside the 20 minute rest are refused and the switch goes back ([CARE_LOCK.md](CARE_LOCK.md)) |
 | 4 | Contact sensor "Fault" | Closed = healthy, open = a fault is active |
 
 Matter has no diesel-heater device type, so these are the closest fits. Pump-only, bypass, frost protection and extended telemetry are not exposed over Matter; use the web page (Wi-Fi mode) or the USB console.

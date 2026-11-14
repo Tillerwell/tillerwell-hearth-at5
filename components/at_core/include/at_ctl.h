@@ -21,6 +21,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "at_core.h"
@@ -300,6 +301,19 @@ void at_ctl_early_seen(at_ctl_t *t);
 /* Would a stop now be inside the minimum run? (the "Stop anyway" question) */
 uint32_t at_ctl_min_run_left_ms(const at_ctl_t *t, uint32_t now_ms);
 uint32_t at_ctl_min_off_left_ms(const at_ctl_t *t, uint32_t now_ms);
+
+/* The Heater Care lock (1.61, docs/CARE_LOCK.md). Matter, Home Assistant, MQTT, the website and the box's own page may
+ * not stop a run inside its minimum run, nor start the heater inside the 20 minute rest after a run; only the apps
+ * may, with an explicit override. These say whether a stop or a start someone asks for now would break that, and
+ * how long until it would not. Faults never lock a stop, and neither does a heater already cooling down. */
+typedef enum { AT_CARE_OK = 0, AT_CARE_MIN_RUN, AT_CARE_MIN_OFF } at_care_t;
+at_care_t at_ctl_care_stop(const at_ctl_t *t, const at_snapshot_t *s, uint32_t now_ms, uint32_t *left_ms);
+at_care_t at_ctl_care_start(const at_ctl_t *t, uint32_t now_ms, uint32_t *left_ms);
+const char *at_care_name(at_care_t c);   /* "min_run" | "min_off", NULL for ok */
+/* The app's Start anyway on a thermostat start: the rest is over now, so turning Auto on may start straight away. */
+void at_ctl_care_skip_rest(at_ctl_t *t);
+/* A short message for a refusal, for Home Assistant's error and the logs. */
+void at_care_message(at_care_t c, uint32_t left_ms, char *out, size_t n);
 
 /* The working range on the sensor in use. */
 void at_ctl_working_range(const at_ctl_t *t, float *low, float *high);
