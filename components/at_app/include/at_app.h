@@ -190,6 +190,11 @@ bool at_app_start_preheat(int minutes);       /* minutes <= 0 uses the saved def
 /* Change the total time of a preheat that is running (minutes from when it started). */
 bool at_app_set_preheat_duration(int minutes);
 bool at_app_start_thermostat(void);
+/* Switch the run that is going to thermostat or preheat, with no stop (1.68, docs/RUN_MODE.md). Preheat: Auto goes
+ * off and the heater is given minutes more (<= 0: the saved preheat time; never less than what is left of the
+ * minimum run), then stops itself. Thermostat: Auto on, and the run is Auto's. False with why->care
+ * AT_CARE_NOT_RUNNING when no run is going (idle, cooling down, a stop under way). */
+bool at_app_run_mode(bool thermostat, int minutes, at_care_why_t *why);
 /* Stop at once. Logged as an early stop (with who asked) if it is inside the minimum run. */
 bool at_app_stop(void);                       /* source unknown */
 bool at_app_stop_from(at_src_t src);

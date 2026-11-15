@@ -159,6 +159,9 @@ typedef struct {
     uint32_t panel_control_seq;
     uint8_t panel_last_control_type;
     at_run_mode_t run_mode;
+    /* The run time in minutes, counted from the start, last given to the heater for a preheat run (a start's
+     * minutes, or a type02 since); 0 when not known or a thermostat run (1.68). */
+    uint16_t preheat_total_min;
 
     /* relay scratch */
     uint8_t out_h[AT_MAX_FRAME * 2];
@@ -212,6 +215,11 @@ bool at_cmd_start_preheat(at_core_t *c, int minutes, uint32_t now_ms);
 /* Change the total run time of a preheat that is already running (the controller's own "preheat time" frame). */
 bool at_cmd_set_preheat_duration(at_core_t *c, int minutes, uint32_t now_ms);
 bool at_cmd_start_thermostat(at_core_t *c, uint32_t now_ms);
+/* Switch a run that is already going (1.68, no stop in between). To thermostat: the "run indefinitely" start
+ * (ff fb) again, so the heater no longer stops itself when its preheat time runs out. To preheat: a run time of
+ * total_min minutes counted from the run's start (type02), after which the heater stops itself. */
+bool at_cmd_switch_to_thermostat(at_core_t *c, uint32_t now_ms);
+bool at_cmd_switch_to_preheat(at_core_t *c, int total_min, uint32_t now_ms);
 bool at_cmd_stop(at_core_t *c, uint32_t now_ms);
 bool at_cmd_stop_manual(at_core_t *c, uint32_t now_ms);
 /* The water (circulation) pump alone for minutes (1-1440); the tool's default is 40. */
@@ -275,6 +283,7 @@ typedef struct {
     uint32_t panel_control_seq;
     uint8_t panel_last_control_type;
     at_run_mode_t run_mode;
+    uint16_t preheat_total_min;
     int queue_len;
     uint32_t frames_panel, frames_heater;
     uint32_t bad_crc_heater, bad_crc_panel, resyncs_heater, resyncs_panel;

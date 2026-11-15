@@ -499,7 +499,7 @@ static void test_ctl_thermostat_off(void)
         at_ctl_auto_off(&t, false, AT_HOLD_THERMO_OFF, AT_SRC_APP, &s, m.now, &m.ops);
         CHECK(m.l.stops == 1 && t.early_unseen == 1 && t.early[0].src == AT_SRC_APP);
     }
-    /* thermostat off while idle: a plain stop, nothing held */
+    /* thermostat off while idle: nothing to stop, so no stop frame (1.68), nothing held */
     {
         at_ctl_t t;
         hsim_t m;
@@ -507,7 +507,7 @@ static void test_ctl_thermostat_off(void)
         hsim_arm(&m);
         at_snapshot_t s = hsim_snap(&m);
         at_ctl_set_auto(&t, false, &s, m.now, &m.ops);
-        CHECK(m.l.stops == 1 && t.held == AT_HOLD_NONE && t.early_unseen == 0);
+        CHECK(m.l.stops == 0 && t.held == AT_HOLD_NONE && t.early_unseen == 0 && !t.autot.enabled);
     }
     /* range lowered below the room mid-run: the normal top stop, held to 30 min */
     {

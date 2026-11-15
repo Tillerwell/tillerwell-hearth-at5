@@ -591,6 +591,11 @@ bool at_app_set_preheat_duration(int minutes)
     xSemaphoreTake(s_core_lock, portMAX_DELAY);
     bool ok = at_cmd_set_preheat_duration(&s_core, minutes, at_now_ms());
     xSemaphoreGive(s_core_lock);
+    if (ok) {
+        xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+        at_ctl_preheat_time(&s_ctl, minutes);
+        xSemaphoreGive(s_ctl_lock);
+    }
     return ok;
 }
 
@@ -765,13 +770,68 @@ void at_app_set_auto_care(bool enabled, bool finish_run, bool override, at_src_t
             at_ctl_care_skip_rest(&s_ctl);
         }
     }
+    bool to_thermo = false;
     if (enabled) {
         at_ctl_set_auto(&s_ctl, true, &snap, at_now_ms(), &s_ops);
+        /* Auto now owns a running preheat (from any surface: Matter, Home Assistant, an app). The heater still
+         * holds its preheat time and would stop itself when it runs out, so it gets the "run indefinitely" start
+         * again (1.68). */
+        to_thermo = snap.run_mode == AT_RUN_PREHEAT && at_ctl_can_switch(&s_ctl, &snap);
+        if (to_thermo) at_ctl_to_thermostat(&s_ctl, &snap, at_now_ms(), &s_ops);
     } else {
         at_ctl_auto_off(&s_ctl, finish_run, AT_HOLD_THERMO_OFF, src, &snap, at_now_ms(), &s_ops);
     }
     xSemaphoreGive(s_ctl_lock);
     persist(m_auto, &enabled);
+    if (to_thermo) core_cmd(at_cmd_switch_to_thermostat);
+}
+
+bool at_app_run_mode(bool thermostat, int minutes, at_care_why_t *why)
+{
+    if (why) *why = (at_care_why_t){AT_CARE_OK, 0};
+    at_snapshot_t snap;
+    snapshot_locked(&snap);
+    uint32_t now = at_now_ms();
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    if (!at_ctl_can_switch(&s_ctl, &snap)) {
+        xSemaphoreGive(s_ctl_lock);
+        ESP_LOGW(TAG, "run_mode %s refused: no run going", thermostat ? "thermostat" : "preheat");
+        if (why) why->care = AT_CARE_NOT_RUNNING;
+        return false;
+    }
+    if (thermostat) {
+        at_ctl_to_thermostat(&s_ctl, &snap, now, &s_ops);
+        xSemaphoreGive(s_ctl_lock);
+        bool on = true;
+        persist(m_auto, &on);
+        return snap.run_mode == AT_RUN_THERMOSTAT ? true : core_cmd(at_cmd_switch_to_thermostat);
+    }
+    if (snap.run_mode == AT_RUN_PREHEAT && !s_ctl.autot.enabled) {
+        xSemaphoreGive(s_ctl_lock);   /* a preheat already: its time is changed with preheat_duration */
+        return true;
+    }
+    if (minutes <= 0) {
+        at_settings_t cfg;
+        at_settings_get(&cfg);
+        minutes = cfg.preheat_minutes;
+    }
+    /* Heater Care: the heater never stops itself inside the minimum run */
+    int left_min = (int)((at_ctl_min_run_left_ms(&s_ctl, now) + 59999u) / 60000u);
+    if (minutes < left_min) minutes = left_min;
+    /* the heater counts its run time from the start (docs/PROTOCOL.md, "Switching a run") */
+    int total = (int)((now - s_ctl.run.on_ms) / 60000u) + minutes;
+    xSemaphoreGive(s_ctl_lock);
+    /* the bus frame first: if it cannot be queued Auto stays on, rather than an indefinite run with nobody to stop it */
+    xSemaphoreTake(s_core_lock, portMAX_DELAY);
+    bool ok = at_cmd_switch_to_preheat(&s_core, total, now);
+    xSemaphoreGive(s_core_lock);
+    if (!ok) return false;
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    at_ctl_to_preheat(&s_ctl, now, total);
+    xSemaphoreGive(s_ctl_lock);
+    bool off = false;
+    persist(m_auto, &off);
+    return true;
 }
 
 void at_app_thermo_learn_reset(void)

@@ -192,9 +192,15 @@ static void relay_cb(at_ev_kind_t kind, const uint8_t *data, size_t len, bool cr
             bool thermo = plen == 2 && ((data[AT_HEADER_LEN] == 0 && data[AT_HEADER_LEN + 1] == 0x22) ||
                                         is_panel_restart(data[AT_HEADER_LEN], data[AT_HEADER_LEN + 1]));
             c->run_mode = thermo ? AT_RUN_THERMOSTAT : AT_RUN_PREHEAT;
+            /* a preheat start's payload is its run time (00 1e = 30 min, 00 78 = 120); a type02 may follow */
+            c->preheat_total_min = (thermo || plen != 2) ? 0 : (uint16_t)((data[AT_HEADER_LEN] << 8) | data[AT_HEADER_LEN + 1]);
         }
         c->panel_last_control_type = data[4];
         c->panel_control_seq++;
+    }
+    if (!r->from_heater && crc_ok && len == AT_HEADER_LEN + 2 + AT_CRC_LEN && data[1] == AT_DEV_PANEL &&
+        data[4] == AT_TYPE_PREHEAT_DUR && c->run_mode == AT_RUN_PREHEAT) {
+        c->preheat_total_min = (uint16_t)((data[AT_HEADER_LEN] << 8) | data[AT_HEADER_LEN + 1]);
     }
     int room;
     if (!r->from_heater && crc_ok && len == AT_HEADER_LEN + 1 + AT_CRC_LEN && data[1] == AT_DEV_PANEL &&
@@ -622,6 +628,7 @@ bool at_cmd_start_preheat(at_core_t *c, int minutes, uint32_t now)
     }
     c->run_mode = AT_RUN_PREHEAT;
     c->hearth_run = true;
+    c->preheat_total_min = (uint16_t)minutes;
     uint8_t dur[2] = {(uint8_t)(minutes >> 8), (uint8_t)(minutes & 0xFF)};
     send_panel_frame(c, AT_TYPE_PREHEAT_DUR, dur, 2, 1500, "preheat-time", false, now);
     return true;
@@ -632,7 +639,9 @@ bool at_cmd_set_preheat_duration(at_core_t *c, int minutes, uint32_t now)
     if (minutes < 1) minutes = 1;
     if (minutes > 600) minutes = 600;
     uint8_t dur[2] = {(uint8_t)(minutes >> 8), (uint8_t)(minutes & 0xFF)};
-    return send_panel_frame(c, AT_TYPE_PREHEAT_DUR, dur, 2, 0, "preheat-time", false, now);
+    if (!send_panel_frame(c, AT_TYPE_PREHEAT_DUR, dur, 2, 0, "preheat-time", false, now)) return false;
+    if (c->run_mode == AT_RUN_PREHEAT) c->preheat_total_min = (uint16_t)minutes;
+    return true;
 }
 
 /* The heater has no thermostat of its own: the start payload is a run time in
@@ -650,6 +659,29 @@ bool at_cmd_start_thermostat(at_core_t *c, uint32_t now)
     }
     c->run_mode = AT_RUN_THERMOSTAT;
     c->hearth_run = true;
+    c->preheat_total_min = 0;
+    return true;
+}
+
+bool at_cmd_switch_to_thermostat(at_core_t *c, uint32_t now)
+{
+    static const uint8_t m[2] = {0xFF, 0xFB};
+    if (!send_panel_frame(c, AT_TYPE_START, m, 2, 0, "to-thermostat", false, now)) return false;
+    c->run_mode = AT_RUN_THERMOSTAT;
+    c->hearth_run = true;   /* the Hearth's run now: the controller's preheat stop is held back */
+    c->preheat_total_min = 0;
+    return true;
+}
+
+bool at_cmd_switch_to_preheat(at_core_t *c, int total_min, uint32_t now)
+{
+    if (total_min < 1) total_min = 1;
+    if (total_min > 600) total_min = 600;
+    uint8_t dur[2] = {(uint8_t)(total_min >> 8), (uint8_t)(total_min & 0xFF)};
+    if (!send_panel_frame(c, AT_TYPE_PREHEAT_DUR, dur, 2, 0, "to-preheat", false, now)) return false;
+    c->run_mode = AT_RUN_PREHEAT;
+    c->hearth_run = true;
+    c->preheat_total_min = (uint16_t)total_min;
     return true;
 }
 
@@ -780,6 +812,7 @@ void at_core_snapshot(const at_core_t *c, uint32_t now, at_snapshot_t *s)
     s->panel_control_seq = c->panel_control_seq;
     s->panel_last_control_type = c->panel_last_control_type;
     s->run_mode = c->run_mode;
+    s->preheat_total_min = c->preheat_total_min;
     s->own_polls = c->own_polls;
     /* With no controller there is no cabin reading to go stale; the heater's status is what counts. */
     s->stale = !c->have_status || s->status_age_ms > AT_STALE_AFTER_MS ||

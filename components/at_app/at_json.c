@@ -615,6 +615,9 @@ static cJSON *build_state_tree(void)
     add_str_or_null(o, "run_mode", s->run_mode == AT_RUN_THERMOSTAT ? "thermostat"
                                    : s->run_mode == AT_RUN_PREHEAT  ? "preheat"
                                                                     : NULL);
+    /* 1.68: the preheat run's length in minutes from its start, so any app can show when it shuts down */
+    if (s->run_mode == AT_RUN_PREHEAT && s->preheat_total_min) cJSON_AddNumberToObject(o, "preheat_total_min", s->preheat_total_min);
+    else cJSON_AddNullToObject(o, "preheat_total_min");
 
     cJSON_AddBoolToObject(o, "controller_seen", s->seen_panel);
     cJSON_AddBoolToObject(o, "heater_seen", s->seen_heater);

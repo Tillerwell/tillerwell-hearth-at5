@@ -46,6 +46,10 @@ an override: from a caller that may not override it is read as `true`, so the ru
   the minimum run, Auto goes off and the run finishes its minimum run, then Hearth stops it. Nothing is refused.
 - **Thermostat on** inside the rest is accepted. The first start waits for the rest to end, as it always has. With the app's override (`auto` `enabled:true` `override:true`, its "Start anyway") the rest is cleared and the thermostat may start at once.
 - Faults, the ceiling (top + 5 °C) and Hearth's own stops are not affected.
+- **Switching a running heater** between preheat and thermostat (`run_mode`, 1.68, [RUN_MODE.md](RUN_MODE.md)) is not
+  a stop or a start, so it is not locked from any caller. It keeps the minimum run anyway: preheat time is never set
+  shorter than what is left of it.
+- From 1.68, thermostat off while the heater is idle or already cooling down sends no stop frame at all.
 
 ## What a refusal looks like
 

@@ -502,6 +502,7 @@ const char *at_care_name(at_care_t c)
     switch (c) {
     case AT_CARE_MIN_RUN: return "min_run";
     case AT_CARE_MIN_OFF: return "min_off";
+    case AT_CARE_NOT_RUNNING: return "not_running";
     default: return NULL;
     }
 }
@@ -515,6 +516,8 @@ void at_care_message(at_care_t c, uint32_t left_ms, char *out, size_t n)
     } else if (c == AT_CARE_MIN_OFF) {
         snprintf(out, n, "Heater Care: the heater is resting for %u more min after its last run. "
                          "Only the Tillerwell app can start it sooner.", m);
+    } else if (c == AT_CARE_NOT_RUNNING) {
+        snprintf(out, n, "The heater is not running, so there is no run to switch between preheat and thermostat.");
     } else if (n) {
         out[0] = 0;
     }
@@ -622,12 +625,55 @@ void at_ctl_auto_off(at_ctl_t *t, bool finish, at_hold_t hold, at_src_t src, con
         at_ctl_user_stop(t, src, now);
         ops->stop(ops->ctx);
         arm_resend(t, s, now);
+    } else if (s->have_status && !s->stale && !starting_or_burning(s) && !start_pending(t, now)) {
+        /* idle, or already cooling down after a run (1.68): nothing to stop, and no stop frame into the purge */
+        set_note(l, "Auto thermostat disabled");
     } else {
         set_note(l, "Auto thermostat disabled -> sending stop");
         hearth_stop(t, ops, s, now, hold == AT_HOLD_TIMER_ENDED ? AT_END_TIMER : AT_END_THERMO_OFF, false);
     }
     l->has_acted = true;
     l->last_action_ms = now;
+}
+
+/* ---- switching a run between thermostat and preheat (1.68) ------------------------------------------------- */
+
+bool at_ctl_can_switch(const at_ctl_t *t, const at_snapshot_t *s)
+{
+    return t->run.running && !t->run.stopping && starting_or_burning(s);
+}
+
+void at_ctl_preheat_time(at_ctl_t *t, int total_min)
+{
+    if (!t->run.running || !t->run.preheat_end || total_min < 1) return;
+    t->run.preheat_end_ms = t->run.on_ms + (uint32_t)total_min * 60000u + AT_CTL_PREHEAT_GRACE_MS;
+}
+
+void at_ctl_to_preheat(at_ctl_t *t, uint32_t now, int total_min)
+{
+    t->run.preheat_end = true;
+    at_ctl_preheat_time(t, total_min);
+    at_ctl_loop_t *l = &t->autot;
+    l->enabled = false;
+    l->stop_pending = false;
+    t->warm_in_range = false;
+    t->held = AT_HOLD_NONE;
+    t->run.owner = AT_OWNER_OTHER;
+    t->freeze.started_by_me = false;
+    t->freeze.stop_pending = false;
+    t->learn.by_thermo = false;     /* no longer a thermostat run: not one to learn the space from */
+    set_note(l, "switched to preheat -> Auto off, no stop: the heater stops itself when its preheat time is up");
+    l->has_acted = true;
+    l->last_action_ms = now;
+}
+
+void at_ctl_to_thermostat(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const at_ctl_ops_t *ops)
+{
+    if (!t->autot.enabled) at_ctl_set_auto(t, true, s, now, ops);
+    if (t->run.owner == AT_OWNER_FREEZE) take_from_frost(t);
+    t->run.owner = AT_OWNER_AUTO;
+    t->run.preheat_end = false;
+    set_note(&t->autot, "switched to thermostat -> Auto runs it to the top of the range");
 }
 
 void at_ctl_disarm_auto(at_ctl_t *t, const char *note)
@@ -901,6 +947,17 @@ static void check_ceiling(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, con
     }
 }
 
+/* A run switched to preheat still burning well past the time the heater was given (1.68): Hearth stops it. */
+static void check_preheat_end(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const at_ctl_ops_t *ops)
+{
+    if (!t->run.running || t->run.stopping || !t->run.preheat_end || !starting_or_burning(s)) return;
+    if (!after_eq(now, t->run.preheat_end_ms)) return;
+    t->run.preheat_end = false;
+    set_note(&t->autot, "switched preheat: heater still burning %u min after its time -> stop",
+             (unsigned)(AT_CTL_PREHEAT_GRACE_MS / 60000u));
+    hearth_stop(t, ops, s, now, AT_END_HEATER, false);
+}
+
 static void service_held(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const at_ctl_ops_t *ops)
 {
     if (t->held == AT_HOLD_NONE) return;
@@ -1105,6 +1162,7 @@ void at_ctl_tick(at_ctl_t *t, const at_snapshot_t *s, uint32_t now_ms, const at_
     }
     at_warm_watch(&t->warm, t->epoch, t->room_ok, t->room, at_ctl_stop_at(t), t->run.running);
     check_ceiling(t, s, now_ms, ops);
+    check_preheat_end(t, s, now_ms, ops);
     retry_stop(t, s, now_ms, ops);
     service_held(t, s, now_ms, ops);
     tick_auto(t, s, now_ms, ops);

@@ -45,6 +45,7 @@ extern "C" {
 
 #define AT_CTL_MIN_WIDTH         1.0f                 /* narrowest user range, either sensor */
 #define AT_CTL_MIN_RUN_MS        (30u * 60000u)       /* thermostat and manual warnings, from flame established */
+#define AT_CTL_PREHEAT_GRACE_MS  (5u * 60000u)        /* a switched preheat: the heater's own stop gets this long */
 #define AT_CTL_FROST_RUN_MS      (20u * 60000u)       /* frost protection */
 #define AT_CTL_MIN_OFF_MS        (20u * 60000u)       /* from idle to the next thermostat start */
 #define AT_CTL_CEILING_OVER      5.0f
@@ -133,6 +134,10 @@ typedef struct {
     uint32_t panel_seq;         /* the controller's control count at the run's start */
     bool off_known;
     uint32_t off_ms;            /* how long it had been idle before this run */
+    /* Switched to preheat (1.68): the box stops it itself if the heater is still burning AT_CTL_PREHEAT_GRACE_MS past
+     * the run time it was given, so a heater that ignored or miscounted the mid-run type02 cannot burn on forever */
+    bool preheat_end;
+    uint32_t preheat_end_ms;
 } at_ctl_run_t;
 
 typedef struct {
@@ -276,6 +281,17 @@ void at_ctl_set_auto(at_ctl_t *t, bool enabled, const at_snapshot_t *s, uint32_t
 void at_ctl_auto_off(at_ctl_t *t, bool finish, at_hold_t hold, at_src_t src, const at_snapshot_t *s, uint32_t now_ms,
                      const at_ctl_ops_t *ops);
 void at_ctl_disarm_auto(at_ctl_t *t, const char *note);
+/* Switching a run that is going between thermostat and preheat, with no stop (1.68, docs/RUN_MODE.md). Only while
+ * the heater is starting or burning and no stop is under way. */
+bool at_ctl_can_switch(const at_ctl_t *t, const at_snapshot_t *s);
+/* Auto goes off without a stop: the run is nobody's, as a preheat is, and the heater stops itself when the preheat
+ * time the caller gives it runs out. Not learned from. */
+void at_ctl_to_preheat(at_ctl_t *t, uint32_t now_ms, int total_min);
+/* A switched preheat's time changed (preheat_duration): the backstop moves with it. No effect on other runs. */
+void at_ctl_preheat_time(at_ctl_t *t, int total_min);
+/* Auto on (if it was not) and the run is Auto's: stopped at the top of the range, with the minimum run and the
+ * ceiling. The caller sends the heater the "run indefinitely" start. */
+void at_ctl_to_thermostat(at_ctl_t *t, const at_snapshot_t *s, uint32_t now_ms, const at_ctl_ops_t *ops);
 /* The room temperature Auto's next start happens at: on the external sensor up to 0.3 C below the top when the run
  * will still last its 30 minutes (1.60, docs/EARLY_START.md), else the bottom of the working range. */
 float at_ctl_auto_start_at(const at_ctl_t *t);
@@ -307,7 +323,9 @@ uint32_t at_ctl_min_off_left_ms(const at_ctl_t *t, uint32_t now_ms);
  * not stop a run inside its minimum run, nor start the heater inside the 20 minute rest after a run; only the apps
  * may, with an explicit override. These say whether a stop or a start someone asks for now would break that, and
  * how long until it would not. Faults never lock a stop, and neither does a heater already cooling down. */
-typedef enum { AT_CARE_OK = 0, AT_CARE_MIN_RUN, AT_CARE_MIN_OFF } at_care_t;
+/* AT_CARE_NOT_RUNNING (1.68): run_mode asked for with no run going to switch; not a Heater Care rule, but refused
+ * the same way so the caller can say why. */
+typedef enum { AT_CARE_OK = 0, AT_CARE_MIN_RUN, AT_CARE_MIN_OFF, AT_CARE_NOT_RUNNING } at_care_t;
 at_care_t at_ctl_care_stop(const at_ctl_t *t, const at_snapshot_t *s, uint32_t now_ms, uint32_t *left_ms);
 at_care_t at_ctl_care_start(const at_ctl_t *t, uint32_t now_ms, uint32_t *left_ms);
 const char *at_care_name(at_care_t c);   /* "min_run" | "min_off", NULL for ok */

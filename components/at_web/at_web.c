@@ -518,6 +518,11 @@ static bool run_cmd(const cJSON *j, at_src_t def_src, bool may_override, at_care
         ok = at_app_start_preheat_care((int)jnum(j, "minutes", 0), care_override(j, may_override), why);
     } else if (!strcmp(c, "preheat_duration")) {
         ok = at_app_set_preheat_duration((int)jnum(j, "minutes", 0));
+    } else if (!strcmp(c, "run_mode")) {
+        /* 1.68: switch the run that is going, with no stop; not a stop or a start, so no Heater Care lock */
+        const char *m = jstr(j, "mode");
+        bool th = m && !strcmp(m, "thermostat");
+        ok = (th || (m && !strcmp(m, "preheat"))) && at_app_run_mode(th, (int)jnum(j, "minutes", 0), why);
     } else if (!strcmp(c, "start_thermostat")) {
         ok = at_app_start_thermostat_care(care_override(j, may_override), why);
     } else if (!strcmp(c, "stop")) {

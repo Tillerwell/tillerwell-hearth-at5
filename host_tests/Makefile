@@ -12,7 +12,7 @@ SRCS = test_main.c ../components/at_proto/at_proto.c ../components/at_core/at_co
 test: test_main
 	./test_main
 
-test_main: $(SRCS) vectors.h test_heater_care.inc test_warm.inc test_early.inc test_battery.inc
+test_main: $(SRCS) vectors.h test_heater_care.inc test_warm.inc test_early.inc test_battery.inc test_run_mode.inc
 	$(CC) $(CFLAGS) $(SRCS) -o $@ -lm
 
 vectors:
