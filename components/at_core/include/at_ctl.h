@@ -167,6 +167,7 @@ typedef struct {
     bool idle_known;            /* idle_since_ms is real (not boot) */
     uint32_t idle_since_ms;
     bool off_lock;
+    bool rest_in_range;         /* the room was at or above the working bottom when this rest began (1.67) */
     uint32_t off_until_ms;
     uint8_t held;               /* at_hold_t */
     float held_high;            /* AT_HOLD_TIMER_ENDED / AT_HOLD_THERMO_OFF: the top of the range the run was for */

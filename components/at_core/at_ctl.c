@@ -788,6 +788,13 @@ static void run_end(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
     t->idle_known = true;
     t->idle_since_ms = now;
     off_lock_from(t, now, now);
+    {
+        /* a dip below the range only means "losing heat fast" when the room was in range as the rest began, not
+         * after a stop in an already cold room (1.67) */
+        float lo, hi;
+        at_ctl_working_range(t, &lo, &hi);
+        t->rest_in_range = t->room_ok && t->room >= lo - 0.05f;
+    }
     t->held = AT_HOLD_NONE;
     t->autot.stop_pending = false;
     t->freeze.started_by_me = false;
@@ -1089,8 +1096,10 @@ void at_ctl_tick(at_ctl_t *t, const at_snapshot_t *s, uint32_t now_ms, const at_
     if (t->room_ok) {
         float lo, hi;
         at_ctl_working_range(t, &lo, &hi);
+        /* a dip is only recorded while the rest holds back a start the thermostat wants (1.67): before, a rest
+         * after boot or after a stop in a cold room, with Auto off, reported "losing heat fast" */
         at_learn_sample(&t->learn, now_ms, t->room, (at_sensor_t)t->sensor, lo,
-                        at_ctl_min_off_left_ms(t, now_ms) > 0);
+                        at_ctl_min_off_left_ms(t, now_ms) > 0 && t->autot.enabled && t->rest_in_range);
         at_coast_sample(&t->coast, now_ms, t->room, t->sensor == AT_SENS_EXT);
         at_warm_sample(&t->warm, now_ms, t->room, t->sensor, t->run.running);
     }

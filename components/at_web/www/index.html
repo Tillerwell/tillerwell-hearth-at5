@@ -255,19 +255,24 @@ function hcLine(){
       :'This space heats quickly, so Hearth widened the range to rest the heater longer.'));
   }
   const e=t.early;
-  if(st.auto_enabled&&e&&typeof e.start_at==='number'&&e.est&&e.est!=='off'&&(e.start_at>t.work_low+0.05||e.busy_w>0)){
-    out.push(e.start_at<=t.work_low+0.05?'Starts the heater at '+f(e.start_at)+' °C: it has been starting often, so Heater Care has moved the start back down to rest it longer.'
-      :e.busy_w>0?'Starts the heater at '+f(e.start_at)+' °C, a little lower than it could: it has been starting often, so Heater Care rests it longer.'
-      :e.est==='halfway'?'Starts the heater at '+f(e.start_at)+' °C, halfway, until Heater Care has learned how fast this space heats.'
-      :'Starts the heater at '+f(e.start_at)+' °C, before the bottom of the range: this space heats slowly, so a run from there still lasts 30 minutes.');
+  /* where the next start is only matters while the heater is not running (1.67) */
+  const active=s.state==='running'||s.state==='late-run',room=s.effective_temp;
+  if(st.auto_enabled&&!active&&e&&typeof e.start_at==='number'&&e.est&&e.est!=='off'&&(e.start_at>t.work_low+0.05||e.busy_w>0)){
+    out.push(e.start_at<=t.work_low+0.05?'Next start at '+f(e.start_at)+' °C, the bottom of the range: the heater has been starting often, so Heater Care is resting it longer.'
+      :e.busy_w>0?'Next start at '+f(e.start_at)+' °C, a little lower than usual: the heater has been starting often, so Heater Care is resting it longer.'
+      :e.est==='halfway'?'Next start at '+f(e.start_at)+' °C, halfway down your range: Heater Care is still learning how fast this space heats.'
+      :'Next start at '+f(e.start_at)+' °C, above the bottom of the range: this space heats slowly, so a run from there still lasts 30 minutes.');
   }
   if(t.holding==='timer_ended')out.push('Timer ended, finishing minimum run: '+mins(t.min_run_left_s)+' min left');
   else if(running()&&t.min_run_left_s>0)out.push(t.flame_on_at==null&&!s.burner_active&&s.state==='running'?'Heater Care: lighting up':'Heater Care: running at least '+mins(t.min_run_left_s)+' more min'+(t.run_adopted?' (box restarted)':''));
   else if(!running()&&t.min_off_left_s>0&&s.auto_enabled&&s.effective_temp!=null&&s.effective_temp<=(s.auto_start_at!=null?s.auto_start_at:t.work_low)+0.001)out.push('Heater Care: resting, '+mins(t.min_off_left_s)+' min before the next start');
-  if(t.dip_below>0&&s.effective_temp!=null)out.push('Losing heat fast. Dropped '+f(t.dip_below)+' °C below the range while the heater rested its minimum 20 minutes.');
-  if(t.last_run_end==='ceiling'&&!running())out.push('Stopped early: the room reached '+f(t.ceiling)+' °C, 5 °C above where Hearth stops the heater.');
-  if(t.no_reading)out.push('No temperature reading. The heater will stop after its minimum run.');
-  if(t.sensor_stuck)out.push("The room sensor has not changed for 15 minutes, so Hearth is using the controller's reading.");
+  /* each notice only while it is true now (1.67): a dip while the rest is holding the start, the ceiling while the
+   * room is still warm from it, a lost reading said as what it means for this state */
+  if(t.dip_below>0&&s.auto_enabled&&s.state==='idle'&&t.min_off_left_s>0)out.push('Losing heat fast: the room has dropped to '+f(t.work_low-t.dip_below)+' °C while the heater rests its minimum 20 minutes.');
+  if(t.last_run_end==='ceiling'&&!active&&(t.min_off_left_s>0||(room!=null&&room>t.work_high)))out.push('Stopped early: the room reached '+f(t.ceiling)+' °C, 5 °C above where Hearth stops the heater.');
+  if(t.no_reading&&active&&t.holding==='no_reading')out.push('No temperature reading. The heater will stop after its minimum run.');
+  else if(t.no_reading&&!active&&s.auto_enabled)out.push("No temperature reading, so Heater Care won't start the heater until it has one.");
+  if(t.sensor_stuck&&s.auto_enabled)out.push("The room sensor has not changed for 15 minutes, so Hearth is using the controller's reading.");
   return out.join(' · ');
 }
 const SRC={app:'the app',web:'the web page',matter:'HomeKit',mqtt:'MQTT',home_assistant:'Home Assistant',controller:'the Comfort Controller',console:'the console',timer:'a timer'};

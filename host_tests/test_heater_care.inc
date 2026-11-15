@@ -167,7 +167,7 @@ static void test_ctl_locks(void)
         m.rate_off = 0.5f;
         CHECK(HSIM_UNTIL(&m, m.l.starts == 2, 40 * MIN_MS));
         CHECK(m.last_start_ms - idle >= AT_CTL_MIN_OFF_MS);
-        CHECK(t.learn.dip > 0 || t.learn.last_dip >= 0);
+        CHECK(t.learn.dip > 0.5f || t.learn.last_dip > 0.5f);   /* stopped at the top, fell below the bottom in the rest */
     }
     /* 12 min light-up: held 42 min from switch-on, and a stop wanted during light-up is held too */
     {
@@ -205,6 +205,53 @@ static void test_ctl_locks(void)
 }
 
 /* The Heater Care lock (1.61, docs/CARE_LOCK.md): what Matter, Home Assistant and the website are refused. */
+/* "Losing heat fast" (dip_below) only when the rest held back a start the thermostat wanted, from a room that was
+ * in range when the rest began (1.67). A stop in an already cold room, or a rest with Auto off, is not a dip. */
+static void test_ctl_dip_relevant(void)
+{
+    printf("Heater Care: a dip is only a dip after a stop in range\n");
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 15.0f);       /* 5 below the 20-21 range */
+        m.rate_on = 0.01f;
+        m.rate_off = 0.05f;
+        hsim_arm(&m);
+        CHECK(HSIM_UNTIL(&m, m.state == 3, 10 * MIN_MS));
+        hsim_run(&m, 5 * MIN_MS);
+        at_ctl_user_stop(&t, AT_SRC_APP, m.now);
+        m.ops.stop(m.ops.ctx);
+        CHECK(HSIM_UNTIL(&m, m.state == 0, 10 * MIN_MS));
+        hsim_run(&m, 10 * MIN_MS);
+        at_ctl_status_t st;
+        at_ctl_status(&t, m.now, &st);
+        CHECK(st.min_off_left_s > 0 && t.autot.enabled && m.room < 15.0f);
+        CHECK(st.dip_below == 0 && t.learn.dip == 0);
+    }
+    {
+        /* in range, Auto off: the room falls below the bottom during the rest, but nothing wanted to start */
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 20.4f);
+        m.rate_on = 0.01f;
+        m.rate_off = 0.2f;
+        at_ctl_set_external(&t, 20.4f, m.now);
+        m.last_ext = m.now;
+        at_ctl_user_start(&t, m.now);
+        m.ops.start_thermostat(m.ops.ctx);
+        CHECK(HSIM_UNTIL(&m, m.state == 3, 10 * MIN_MS));
+        hsim_run(&m, 40 * MIN_MS);
+        at_ctl_user_stop(&t, AT_SRC_APP, m.now);
+        m.ops.stop(m.ops.ctx);
+        CHECK(HSIM_UNTIL(&m, m.state == 0, 10 * MIN_MS));
+        hsim_run(&m, 15 * MIN_MS);
+        at_ctl_status_t st;
+        at_ctl_status(&t, m.now, &st);
+        CHECK(st.min_off_left_s > 0 && m.room < 20.0f);
+        CHECK(st.dip_below == 0);
+    }
+}
+
 static void test_ctl_care_lock(void)
 {
     printf("Heater Care: the lock on stops and starts from outside\n");
@@ -2353,6 +2400,7 @@ static void test_ctl_coast(void)
 
 static void test_ctl(void)
 {
+    test_ctl_dip_relevant();
     test_ctl_coast();
     test_rise_rate_any_good_run();
     test_runlog();

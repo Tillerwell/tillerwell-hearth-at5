@@ -262,7 +262,7 @@ The wording below is a draft for Chris to adjust. Short, plain, no jargon. The f
 - **Status line** under the dial when the working range differs from the user's: "Running 19.5–21°C. This space heats quickly, so Hearth widened the range to rest the heater longer." On the controller's sensor: "Running 19–21°C. The controller's sensor reads whole degrees, so Hearth needs a 2°C range." Tap → "Why?".
 - **"Why?" screen:** current working range, learned width, the space's recent heating speed ("warms about 0.05°C a minute"), a plain list of changes from `/api/thermo/history` ("12 Nov, 14:20: widened to 1.5°C, 2 of the last 3 runs heated fast enough to climb the range in under 30 minutes" / "15 Nov, 09:10: heating is much slower now, 0.03°C a minute over the last 2 runs, so the range is back to 1°C"), and a **Reset learning** button (manager), with confirmation. Where the working range is wider than the learned width, it says why ("Learned 2.5°C. Running on 4°C, because the controller's sensor reads whole degrees."). When `at_limit` is `"max"`: "This space heats faster than the widest range (4°C) allows. Recent runs, measured on the room sensor, suggest the room may rise above your range before Heater Care can stop the heater." ("measured on the controller's sensor" when that is the one in use.) Nothing is shown for `"min"`.
 - **Lock countdowns:** "Heater Care: minimum run, 8 min left" while running ("Heater Care: lighting up" before the flame is established, when there is no countdown yet), "Heater Care: resting, 6 min before the next start" while idle and below the bottom. When a timer has ended: "Timer ended, finishing minimum run: 20 min left".
-- **Dips below the range:** when `dip_below > 0`, "Losing heat fast. Dropped to 19.2°C while the heater rested its minimum 20 minutes." The "Why?" screen shows the same per run, and notes runs not counted because of a cold spell.
+- **Dips below the range:** while the heater is resting with the thermostat on and `dip_below > 0`, "Losing heat fast: the room has dropped to 19.2°C while the heater rests its minimum 20 minutes." Not shown once the next run is going. The "Why?" screen shows the same per run, and notes runs not counted because of a cold spell. From firmware 1.67 the box only records a dip while the thermostat is on and the room was at or above the bottom when the rest began: a rest after a stop in an already cold room, after boot, or with the thermostat off is not "losing heat fast".
 - **Stop inside the minimum run:** sheet with "Stopping now is a short run. Heaters like this last longer with fewer, longer runs, so Heater Care keeps each one to at least 30 minutes. This one has 8 minutes left." Buttons: **Let it finish** / **Stop anyway**.
 - **Thermostat off, or range lowered below the room, inside 30 min:** the same sheet. **Let it finish** makes the change and lets the run reach 30 min. **Stop anyway** stops at once.
 - **Manual start inside 20 min of a stop:** the same kind of sheet: "The heater stopped 12 minutes ago. Heater Care rests it for 20 minutes between runs." Buttons: **Wait** / **Start anyway**.
@@ -270,6 +270,25 @@ The wording below is a draft for Chris to adjust. Short, plain, no jargon. The f
 - **Ceiling and lost readings:** a plain line when either happens: "Stopped early: the room reached 26°C, 5°C over your range." / "No temperature reading. The heater will stop after its minimum run." / "The room sensor has stopped changing while the heater warms the space, so Hearth is using the controller's reading."
 - **Timers:** shortest timer 30 min.
 - **First time the thermostat is turned on** (stored per phone): a 3-line Heater Care explainer of the 1°C range, learning, and the two locks.
+
+### 4.1a Which line shows when (firmware 1.67 and the apps released with it)
+
+Every line under the dial says something true about now. The same rules are in the iOS/tvOS `HeaterCareText.dialLines`, Android's `HeaterCareText.dialLines`, and the box's own page (`hcLine` in `index.html`). The website shows only the "Why?" screen.
+
+| Line | Shown when |
+|---|---|
+| Range ("Running 19.5–21°C. …") | the thermostat is on (or set up while the heater is off) and the working range is not the user's |
+| Next start ("Next start at 18.5°C, halfway down your range: …") | the thermostat is on and the heater is not running (idle, or cooling down) |
+| Lighting up / running at least N more min | the heater is running inside its minimum run |
+| Timer ended, finishing minimum run | a timer ended inside the minimum run |
+| Resting, N min before the next start | idle, thermostat on, rest left, room at or below the start point |
+| Losing heat fast | idle, thermostat on, rest left, and the box recorded a dip |
+| Stopped early at the ceiling | not running, and still in the rest or the room still above the top |
+| No reading: will stop after its minimum run | running and held for the lost reading |
+| No reading: won't start until it has one | not running, thermostat on |
+| Room sensor not changing | thermostat on |
+
+The "Why?" screen keeps the next start line in every state: it explains the thermostat, not the moment.
 
 ### 4.2 tvOS (`TV/HeaterScreen.swift`)
 
