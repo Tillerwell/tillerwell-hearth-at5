@@ -10,3 +10,4 @@ host_tests/test_access
 host_tests/test_cloudlink
 host_tests/test_backup
 host_tests/test_hrec
+host_tests/test_status

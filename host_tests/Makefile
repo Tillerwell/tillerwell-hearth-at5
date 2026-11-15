@@ -4,6 +4,8 @@
 #   make -C host_tests auth           signing spec (docs/API_SPEC.md) against docs/auth-vectors.json,
 #                                     using ESP-IDF's own mbedTLS and cJSON (IDF_PATH, default ~/esp/esp-idf)
 #   make -C host_tests auth-vectors   regenerate the vectors (needs Python 'cryptography')
+#   make -C host_tests status         the status document's worst case against its print buffer: run before
+#                                     every release that adds a field to GET /api/status
 CC ?= cc
 CFLAGS = -std=c11 -Wall -Wextra -Wno-unused-parameter -g -fsanitize=address,undefined -fno-omit-frame-pointer \
          -I../components/at_proto/include -I../components/at_core/include
@@ -71,9 +73,18 @@ hrec: test_hrec
 test_hrec: test_hrec.c ../components/at_proto/at_proto.c ../components/at_core/at_hrec.c ../components/at_app/at_hrec_json.c
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations -I../components/at_app/include -I$(CJSON) test_hrec.c ../components/at_proto/at_proto.c ../components/at_core/at_hrec.c ../components/at_app/at_hrec_json.c $(CJSON)/cJSON.c -o $@ -lm
 
+# The status document's worst case against its print buffer (1.72): the real at_json.c with faked getters.
+STATUS_SRCS = test_status.c $(filter-out test_main.c,$(SRCS)) $(CJSON)/cJSON.c
+
+status: test_status
+	./test_status
+
+test_status: $(STATUS_SRCS) ../components/at_app/at_json.c
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations -Wno-missing-field-initializers -Istub -I../components/at_app/include -I$(CJSON) $(STATUS_SRCS) -o $@ -lm
+
 auth-vectors:
 	cd .. && python3 host_tests/gen_auth_vectors.py
 
 clean:
-	rm -f test_main test_auth test_access test_cloudlink test_fwupdate test_backup test_hrec
+	rm -f test_main test_auth test_access test_cloudlink test_fwupdate test_backup test_hrec test_status
 	rm -rf build
