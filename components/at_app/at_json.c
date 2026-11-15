@@ -419,7 +419,8 @@ static void add_heater_info(cJSON *o, const at_view_t *v)
         return;
     }
     cJSON *h = cJSON_AddObjectToObject(o, "heater_info");
-    cJSON_AddBoolToObject(h, "reading", hi->pending > 0);
+    /* 1.72: still reading while an incomplete read waits a few seconds to be asked again */
+    cJSON_AddBoolToObject(h, "reading", hi->pending > 0 || at_app_hrec_retrying());
     add_num_or_null(h, "read_age_s", hi->have_read, (now - hi->read_ms) / 1000);
     add_num_or_null(h, "read_at", r->read_at != 0, r->read_at);
     if (r->have & AT_HREC_HAVE_VER) {

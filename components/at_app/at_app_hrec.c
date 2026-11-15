@@ -20,6 +20,10 @@ static const char *TAG = "hrec";
 #define AFTER_STOP_MS  20000u
 #define RETRY_MS       15000u
 #define MAX_TRIES      8
+/* 1.72: a read that finished with a report page missing (no reply, or a reply that was not ours) is asked again
+ * this soon, up to this many times, so the record is never left stale after a Fetch */
+#define INCOMPLETE_RETRY_MS 3000u
+#define INCOMPLETE_MAX      3
 
 static at_hrec_t s_rec;
 static SemaphoreHandle_t s_lock;
@@ -28,6 +32,10 @@ static uint32_t s_due_ms;
 static int s_tries;
 static int s_prev = -1;          /* 0 idle, 1 running or cooling down, -1 not known */
 static uint32_t s_taken_read, s_taken_set, s_taken_ver;
+static int s_incomplete;         /* retries made for the current read that came back short */
+static volatile bool s_retrying; /* a retry is waiting: the status keeps "reading" true meanwhile */
+static uint32_t s_retry_since;
+#define RETRYING_MAX_MS 30000u   /* never show "reading" longer than this for a retry that cannot be sent */
 
 void at_app_hrec_init(void)
 {
@@ -82,6 +90,7 @@ void at_app_hrec_tick(const at_snapshot_t *snap, uint32_t now, bool clock_ok, in
     if (hi->pending <= 0 && ((hi->have_read && hi->read_ms != s_taken_read) ||
                              (hi->have_settings && hi->settings_ms != s_taken_set) ||
                              (hi->have_version && hi->version_ms != s_taken_ver))) {
+        const bool new_read = hi->have_read && hi->read_ms != s_taken_read;
         s_taken_read = hi->read_ms;
         s_taken_set = hi->settings_ms;
         s_taken_ver = hi->version_ms;
@@ -92,7 +101,27 @@ void at_app_hrec_tick(const at_snapshot_t *snap, uint32_t now, bool clock_ok, in
         xSemaphoreGive(s_lock);
         if (changed && copy) save(copy);
         free(copy);
+        if (new_read) {
+            if (hi->pages == (1u << AT_EEPROM_PAGES) - 1) {
+                s_incomplete = 0;
+                s_retrying = false;
+            } else if (s_incomplete < INCOMPLETE_MAX) {
+                s_incomplete++;
+                ESP_LOGW(TAG, "heater read came back without the whole report (pages 0x%x): asking again (%d of %d)",
+                         hi->pages, s_incomplete, INCOMPLETE_MAX);
+                if (!s_due) schedule(now, INCOMPLETE_RETRY_MS);
+                s_retrying = true;
+                s_retry_since = now;
+            } else {
+                ESP_LOGW(TAG, "heater report still incomplete after %d retries: keeping the last whole one",
+                         INCOMPLETE_MAX);
+                s_incomplete = 0;
+                s_retrying = false;
+            }
+        }
     }
+
+    if (s_retrying && now - s_retry_since > RETRYING_MAX_MS) s_retrying = false;
 
     bool fresh = snap->have_status && !snap->stale;
     if (fresh) {
@@ -112,12 +141,15 @@ void at_app_hrec_tick(const at_snapshot_t *snap, uint32_t now, bool clock_ok, in
             s_due = false;
         } else if (++s_tries >= MAX_TRIES) {
             s_due = false;
+            s_retrying = false;
         } else {
             s_due_ms = now + RETRY_MS;
         }
     }
     free(hi);
 }
+
+bool at_app_hrec_retrying(void) { return s_retrying; }
 
 cJSON *at_app_hrec_backup(void)
 {

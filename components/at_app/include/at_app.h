@@ -228,6 +228,8 @@ void at_app_heater_info(at_heater_info_t *out, uint32_t *now_ms);
 void at_app_hrec_init(void);
 void at_app_hrec_tick(const at_snapshot_t *snap, uint32_t now, bool clock_ok, int64_t epoch, bool bypass);
 void at_app_hrec_copy(at_hrec_t *out);
+/* 1.72: true while a heater read that came back incomplete is waiting to be asked again */
+bool at_app_hrec_retrying(void);
 /* The coolant temperature a timed preheat stops at: the heater's own wait temperature once read, else def. */
 float at_app_preheat_stop_temp(float def);
 struct cJSON *at_app_hrec_backup(void);
