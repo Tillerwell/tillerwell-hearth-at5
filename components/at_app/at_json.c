@@ -397,6 +397,9 @@ char *at_app_fuel_day_json(int32_t day)
 /* "heater_info" in the status: what the heater said about itself, decoded (docs/API_SPEC.md §9.8). From 1.70 it
  * comes from the box's saved record, so it is there straight after a restart, with read_at (epoch) and each
  * fault's seen_at. Only once something has been read or overheard, so a box that never asked sends nothing extra. */
+/* 1.71: set while the status is rebuilt without the fault list because the full document did not fit */
+static bool s_state_lite;
+
 static void add_heater_info(cJSON *o, const at_view_t *v)
 {
     at_heater_info_t *hi = malloc(sizeof(*hi));
@@ -469,7 +472,8 @@ static void add_heater_info(cJSON *o, const at_view_t *v)
         add_num_or_null(rp, "age_s", ep && r->read_at && ep >= r->read_at, (double)(ep - r->read_at));
         at_heater_fault_t f[AT_FAULT_HISTORY_N];
         int cols[AT_FAULT_HISTORY_N];
-        int nf = at_decode_heater_faults_cols(r->eeprom, f, cols, AT_FAULT_HISTORY_N);
+        int nf = s_state_lite ? 0 : at_decode_heater_faults_cols(r->eeprom, f, cols, AT_FAULT_HISTORY_N);
+        if (s_state_lite) cJSON_AddBoolToObject(rp, "faults_omitted", true);
         cJSON *fa = cJSON_AddArrayToObject(rp, "faults");
         for (int i = 0; i < nf; i++) {
             cJSON *e = cJSON_CreateObject();
@@ -779,7 +783,10 @@ static cJSON *build_state_tree(void)
  * small nodes still come from the heap, but they fit in the gaps. */
 #define STATE_FRESH_US 1000000  /* the apps poll every 2 s: one build serves them and the cloud link (1.0046) */
 #define STATE_STALE_OK_US 10000000 /* if a build fails for lack of memory, a copy this old is better than a 500 */
-#define STATE_BUF_MAX 6144         /* about 2.7 KB normally, 4 KB with heater_info and ten faults */
+/* 1.71: 6 KB was too small once 1.70 kept the heater record (ten dated faults) in every status: every build
+ * overflowed and /api/status answered 500 for good. If it ever outgrows this too, the
+ * document is rebuilt without the fault list (heater_info.report.faults_omitted) rather than failing. */
+#define STATE_BUF_MAX 12288
 
 static SemaphoreHandle_t s_state_lock;
 static char s_state_buf[STATE_BUF_MAX];
@@ -801,11 +808,21 @@ static void refresh_state(void)
         /* cJSON asks for 5 bytes of slack past the longest document it may write */
         s_state_ok = cJSON_PrintPreallocated(o, s_state_buf, STATE_BUF_MAX - 5, false);
         cJSON_Delete(o);
+        if (!s_state_ok) {
+            ESP_LOGW("at_json", "status document longer than %d bytes: sending it without the fault list",
+                     STATE_BUF_MAX - 5);
+            s_state_lite = true;
+            o = build_state_tree();
+            s_state_lite = false;
+            if (o) {
+                s_state_ok = cJSON_PrintPreallocated(o, s_state_buf, STATE_BUF_MAX - 5, false);
+                cJSON_Delete(o);
+            }
+        }
         if (s_state_ok) {
             s_state_us = now;
             return;
         }
-        ESP_LOGW("at_json", "status document longer than %d bytes", STATE_BUF_MAX - 5);
     } else if (s_state_ok && now - s_state_us > STATE_STALE_OK_US) {
         s_state_ok = false;
     }
