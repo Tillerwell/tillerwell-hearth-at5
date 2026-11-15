@@ -147,6 +147,29 @@ would show thermostat, but the controller shows preheat for any start it did
 not send itself (see "Start echo" and "The mode is not stored in the heater"
 below), so there was nothing to gain from it.
 
+### Switching a run: start and run time while burning (tested 2026-11-15, RoamOS 1.0066)
+
+Bus capture on the cabin heater (Flow 5D) while burning (state 3.2), Comfort Controller connected, from the box's
+`/api/log` (`I` = injected by Hearth, `R` = the heater's reply):
+
+| Sent mid-run | Heater's reply | What it did |
+|---|---|---|
+| start `type01 ff fb` (the run held 20 min) | `aa 04 02 00 01 00 14` | **ignored**: answers with the run time it holds (20), keeps burning, minute counter carries on, no relight |
+| run time `type02 00 2d` (45) | `aa 04 02 00 02 00 2d` | **taken**: echoes it |
+| start `type01 ff fb` again | `aa 04 02 00 01 00 2d` | ignored, but confirms it now holds 45 |
+| run time `type02 02 58` (600), then `type02 00 2d` | echoed `02 58`, then `00 2d`; starts in between answered `02 58` / `00 2d` | a 600 minute time is held; the time can be changed again |
+
+So a start while burning is a no-op that reads back the current run time, and the run time can be changed at any
+point of a run. The run started at 19:29:12; the last `type02` (45) went at 19:36:12. The heater went
+into its 3.8 phase at 42 min and stopped by itself (state 4, no stop from Hearth) at 20:15:07, as its minute counter
+(`[9]`) reached 45: **the run time counts from the run's start**, the same clock as the status minute counter, not
+from the frame. (From the frame it would have stopped at about 20:21.)
+
+What Hearth does with it (RUN_MODE.md, from 1.69): to thermostat it sends a long run time (`type02`, the run so far
++ 600 min, topped up an hour before it runs out) rather than `ff fb`, which the heater ignores mid-run; to preheat it
+sends the run so far + the preheat minutes. 1.68 sent `ff fb`, so on 1.68 a run switched to thermostat still
+stopped when the old preheat time ran out.
+
 ### Heater Care: working range, run locks, ceiling, learning (RoamOS 1.0047)
 
 Hearth's thermostat no longer acts like the controller set to `high - 1`. Full

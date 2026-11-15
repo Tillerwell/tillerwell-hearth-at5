@@ -21,11 +21,15 @@ static void test_run_mode_bus(void)
     at_core_snapshot(&c, s.now, &sn);
     CHECK(sn.preheat_total_min == 70);
 
-    /* to thermostat: ff fb again, and the run is the Hearth's (the controller's preheat stop is held back) */
-    CHECK(at_cmd_switch_to_thermostat(&c, s.now));
+    /* to thermostat: a long run time (type02, the heater ignores a start while burning), no start, and the run is the
+     * Hearth's (the controller's preheat stop is held back) */
+    int starts0 = count_type(&s, AT_TYPE_START);
+    CHECK(at_cmd_switch_to_thermostat(&c, 612, s.now));
     sim_run(&s, &c, 3000);
     at_core_snapshot(&c, s.now, &sn);
-    CHECK(s.last_start_len == 9 && s.last_start[5] == 0xFF && s.last_start[6] == 0xFB);
+    CHECK(s.last_frame_len == 9 && s.last_frame[4] == AT_TYPE_PREHEAT_DUR && s.last_frame[5] == 0x02 &&
+          s.last_frame[6] == 0x64);
+    CHECK(count_type(&s, AT_TYPE_START) == starts0);
     CHECK(sn.run_mode == AT_RUN_THERMOSTAT && sn.preheat_total_min == 0 && sn.hearth_run);
     CHECK(count_type(&s, AT_TYPE_STOP) == 0);
     panel_control(&s, AT_TYPE_STOP, NULL, 0);

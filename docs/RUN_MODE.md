@@ -22,8 +22,11 @@ when not known), so every app can show when it will shut down: time left = `preh
 
 1. Auto goes on (if it was not) and the run becomes Auto's: it is stopped at the top of the range, with every Heater
    Care rule (30 min minimum run from flame, the ceiling at the top + 5 C, the learned early stop).
-2. The heater still holds the preheat's run time and would stop itself when it runs out, so the box sends the
-   thermostat start `type01 ff fb` ("run indefinitely") again, mid-run. Never `00 22` (CLAUDE.md, PROTOCOL.md).
+2. The heater still holds the preheat's run time and would stop itself when it runs out, so the box gives it a long
+   run time with `type02`: the run so far plus 600 minutes, topped up an hour before it would run out, for as long as
+   the thermostat owns the run. The heater ignores a start (`type01 ff fb`) while it is burning (tested on the bus,
+   [PROTOCOL.md](PROTOCOL.md) "Switching a run"); 1.68 sent one, so on 1.68 a switched run still stopped when the old
+   preheat time ran out. Never `00 22` (CLAUDE.md, PROTOCOL.md).
 3. `run_mode` becomes `thermostat`, `hearth_run` becomes true (the Comfort Controller's own preheat stop is held
    back, as for any Hearth run).
 
@@ -43,7 +46,7 @@ The run is not learned from (it did not start as a thermostat run).
    at the ceiling; the heater stops itself when its time is up (or earlier on its own coolant limit).
 3. `run_mode` becomes `preheat`; Auto off is saved, so the thermostat does not start the heater again afterwards.
 
-**Backstop.** Until the heater's handling of a mid-run `type02` is confirmed, the box keeps its own watch: if a run
+**Backstop.** The box keeps its own watch as well: if a run
 switched to preheat is still burning 5 minutes after the time it was given (counted from the run's start, as sent),
 Hearth stops it, logged as the heater's own end (`heater`). A later `preheat_duration` moves the backstop with it, and
 switching back to thermostat clears it. So a heater that ignored the frame, or counts from the frame rather than the

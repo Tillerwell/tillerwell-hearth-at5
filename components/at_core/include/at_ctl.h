@@ -290,7 +290,7 @@ void at_ctl_to_preheat(at_ctl_t *t, uint32_t now_ms, int total_min);
 /* A switched preheat's time changed (preheat_duration): the backstop moves with it. No effect on other runs. */
 void at_ctl_preheat_time(at_ctl_t *t, int total_min);
 /* Auto on (if it was not) and the run is Auto's: stopped at the top of the range, with the minimum run and the
- * ceiling. The caller sends the heater the "run indefinitely" start. */
+ * ceiling. The caller gives the heater a long run time (type02). */
 void at_ctl_to_thermostat(at_ctl_t *t, const at_snapshot_t *s, uint32_t now_ms, const at_ctl_ops_t *ops);
 /* The room temperature Auto's next start happens at: on the external sensor up to 0.3 C below the top when the run
  * will still last its 30 minutes (1.60, docs/EARLY_START.md), else the bottom of the working range. */

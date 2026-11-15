@@ -663,10 +663,12 @@ bool at_cmd_start_thermostat(at_core_t *c, uint32_t now)
     return true;
 }
 
-bool at_cmd_switch_to_thermostat(at_core_t *c, uint32_t now)
+bool at_cmd_switch_to_thermostat(at_core_t *c, int total_min, uint32_t now)
 {
-    static const uint8_t m[2] = {0xFF, 0xFB};
-    if (!send_panel_frame(c, AT_TYPE_START, m, 2, 0, "to-thermostat", false, now)) return false;
+    if (total_min < 1) total_min = 1;
+    if (total_min > 0xFFFF) total_min = 0xFFFF;
+    uint8_t dur[2] = {(uint8_t)(total_min >> 8), (uint8_t)(total_min & 0xFF)};
+    if (!send_panel_frame(c, AT_TYPE_PREHEAT_DUR, dur, 2, 0, "to-thermostat", false, now)) return false;
     c->run_mode = AT_RUN_THERMOSTAT;
     c->hearth_run = true;   /* the Hearth's run now: the controller's preheat stop is held back */
     c->preheat_total_min = 0;

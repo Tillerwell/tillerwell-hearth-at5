@@ -197,6 +197,9 @@ static void boot_burst_task(void *arg);
 static void ops_start(void *ctx) { (void)ctx; core_cmd(at_cmd_start_thermostat); }
 static void ops_stop(void *ctx) { (void)ctx; core_cmd(at_cmd_stop); }
 static const at_ctl_ops_t s_ops = {ops_start, ops_stop, NULL};
+static void thermo_topup(const at_snapshot_t *snap, uint32_t now);
+static bool switch_to_thermostat_bus(int total, uint32_t now);
+static int run_time_for_locked(int minutes, uint32_t now);
 
 /* ---- Heater Care persistence ------------------------------------------------------------------------------ */
 
@@ -364,6 +367,7 @@ static void ctl_task(void *arg)
         at_ctl_tick(&s_ctl, &snap, now, &s_ops);
         bool thermostat = s_ctl.autot.enabled;
         xSemaphoreGive(s_ctl_lock);
+        thermo_topup(&snap, now);
         persist_ctl();
         at_app_fuel_tick(&snap, now);
         at_app_battery_tick(&snap, now);
@@ -771,19 +775,62 @@ void at_app_set_auto_care(bool enabled, bool finish_run, bool override, at_src_t
         }
     }
     bool to_thermo = false;
+    int thermo_total = 0;
     if (enabled) {
         at_ctl_set_auto(&s_ctl, true, &snap, at_now_ms(), &s_ops);
         /* Auto now owns a running preheat (from any surface: Matter, Home Assistant, an app). The heater still
-         * holds its preheat time and would stop itself when it runs out, so it gets the "run indefinitely" start
-         * again (1.68). */
+         * holds its preheat time and would stop itself when it runs out, so it gets a long run time (1.69; 1.68
+         * sent ff fb, which the heater ignores while burning). */
         to_thermo = snap.run_mode == AT_RUN_PREHEAT && at_ctl_can_switch(&s_ctl, &snap);
-        if (to_thermo) at_ctl_to_thermostat(&s_ctl, &snap, at_now_ms(), &s_ops);
+        if (to_thermo) {
+            at_ctl_to_thermostat(&s_ctl, &snap, at_now_ms(), &s_ops);
+            thermo_total = run_time_for_locked(AT_THERMO_RUN_MIN, at_now_ms());
+        }
     } else {
         at_ctl_auto_off(&s_ctl, finish_run, AT_HOLD_THERMO_OFF, src, &snap, at_now_ms(), &s_ops);
     }
     xSemaphoreGive(s_ctl_lock);
     persist(m_auto, &enabled);
-    if (to_thermo) core_cmd(at_cmd_switch_to_thermostat);
+    if (to_thermo) switch_to_thermostat_bus(thermo_total, at_now_ms());
+}
+
+/* The heater counts a run time from the run's start (tested 2026-11-15, docs/PROTOCOL.md "Switching a run"), so
+ * "minutes more from now" is the run so far plus minutes. The box's own start time is used: the heater's minute
+ * counter in its status is one byte and wraps after 255 min. Call with s_ctl_lock held. */
+static int run_time_for_locked(int minutes, uint32_t now)
+{
+    uint32_t so_far = s_ctl.run.running ? (now - s_ctl.run.on_ms) / 60000u : 0;
+    return (int)so_far + minutes;
+}
+
+/* A run switched to thermostat holds a long run time, topped up before it runs out (0: none). */
+static uint32_t s_thermo_topup_ms;
+
+static bool switch_to_thermostat_bus(int total, uint32_t now)
+{
+    xSemaphoreTake(s_core_lock, portMAX_DELAY);
+    bool ok = at_cmd_switch_to_thermostat(&s_core, total, now);
+    xSemaphoreGive(s_core_lock);
+    if (ok) s_thermo_topup_ms = now + (uint32_t)(AT_THERMO_RUN_MIN - 60) * 60000u;
+    return ok;
+}
+
+/* Thermostat task: top the long run time up while the thermostat still owns the run; forget it once the run ends. */
+static void thermo_topup(const at_snapshot_t *snap, uint32_t now)
+{
+    if (!s_thermo_topup_ms) return;
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    bool going = s_ctl.run.running && !s_ctl.run.stopping && s_ctl.autot.enabled;
+    int total = run_time_for_locked(AT_THERMO_RUN_MIN, now);
+    xSemaphoreGive(s_ctl_lock);
+    if (!going || snap->run_mode != AT_RUN_THERMOSTAT) {
+        s_thermo_topup_ms = 0;
+        return;
+    }
+    if ((int32_t)(now - s_thermo_topup_ms) >= 0) {
+        ESP_LOGI(TAG, "thermostat run: run time topped up to %d min", total);
+        switch_to_thermostat_bus(total, now);
+    }
 }
 
 bool at_app_run_mode(bool thermostat, int minutes, at_care_why_t *why)
@@ -801,10 +848,12 @@ bool at_app_run_mode(bool thermostat, int minutes, at_care_why_t *why)
     }
     if (thermostat) {
         at_ctl_to_thermostat(&s_ctl, &snap, now, &s_ops);
+        int total = run_time_for_locked(AT_THERMO_RUN_MIN, now);
         xSemaphoreGive(s_ctl_lock);
         bool on = true;
         persist(m_auto, &on);
-        return snap.run_mode == AT_RUN_THERMOSTAT ? true : core_cmd(at_cmd_switch_to_thermostat);
+        /* a thermostat start (ff fb) already runs indefinitely; a preheat's time must be made long */
+        return snap.run_mode == AT_RUN_THERMOSTAT && snap.preheat_total_min == 0 ? true : switch_to_thermostat_bus(total, now);
     }
     if (snap.run_mode == AT_RUN_PREHEAT && !s_ctl.autot.enabled) {
         xSemaphoreGive(s_ctl_lock);   /* a preheat already: its time is changed with preheat_duration */
@@ -818,8 +867,7 @@ bool at_app_run_mode(bool thermostat, int minutes, at_care_why_t *why)
     /* Heater Care: the heater never stops itself inside the minimum run */
     int left_min = (int)((at_ctl_min_run_left_ms(&s_ctl, now) + 59999u) / 60000u);
     if (minutes < left_min) minutes = left_min;
-    /* the heater counts its run time from the start (docs/PROTOCOL.md, "Switching a run") */
-    int total = (int)((now - s_ctl.run.on_ms) / 60000u) + minutes;
+    int total = run_time_for_locked(minutes, now);
     xSemaphoreGive(s_ctl_lock);
     /* the bus frame first: if it cannot be queued Auto stays on, rather than an indefinite run with nobody to stop it */
     xSemaphoreTake(s_core_lock, portMAX_DELAY);

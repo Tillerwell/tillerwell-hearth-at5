@@ -215,10 +215,12 @@ bool at_cmd_start_preheat(at_core_t *c, int minutes, uint32_t now_ms);
 /* Change the total run time of a preheat that is already running (the controller's own "preheat time" frame). */
 bool at_cmd_set_preheat_duration(at_core_t *c, int minutes, uint32_t now_ms);
 bool at_cmd_start_thermostat(at_core_t *c, uint32_t now_ms);
-/* Switch a run that is already going (1.68, no stop in between). To thermostat: the "run indefinitely" start
- * (ff fb) again, so the heater no longer stops itself when its preheat time runs out. To preheat: a run time of
- * total_min minutes counted from the run's start (type02), after which the heater stops itself. */
-bool at_cmd_switch_to_thermostat(at_core_t *c, uint32_t now_ms);
+/* Switch a run that is already going (no stop in between). Both send a run time (type02): the heater takes a new
+ * run time while burning but ignores a start (type01), answering it with the time it holds (tested on the bus
+ * 2026-11-15, docs/PROTOCOL.md "Switching a run"). To thermostat: a long time (AT_THERMO_RUN_MIN more, kept topped
+ * up by the caller) so the heater does not stop itself before the thermostat stops it. To preheat: total_min. */
+#define AT_THERMO_RUN_MIN 600
+bool at_cmd_switch_to_thermostat(at_core_t *c, int total_min, uint32_t now_ms);
 bool at_cmd_switch_to_preheat(at_core_t *c, int total_min, uint32_t now_ms);
 bool at_cmd_stop(at_core_t *c, uint32_t now_ms);
 bool at_cmd_stop_manual(at_core_t *c, uint32_t now_ms);
