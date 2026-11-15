@@ -7,7 +7,7 @@
 CC ?= cc
 CFLAGS = -std=c11 -Wall -Wextra -Wno-unused-parameter -g -fsanitize=address,undefined -fno-omit-frame-pointer \
          -I../components/at_proto/include -I../components/at_core/include
-SRCS = test_main.c ../components/at_proto/at_proto.c ../components/at_core/at_core.c ../components/at_core/at_ctl.c ../components/at_core/at_learn.c ../components/at_core/at_cooldown.c ../components/at_core/at_coast.c ../components/at_core/at_runlog.c ../components/at_core/at_warm.c ../components/at_core/at_early.c ../components/at_core/at_fuel.c ../components/at_core/at_battery.c ../components/at_core/at_timers.c ../components/at_core/at_tz.c ../components/at_core/at_version.c
+SRCS = test_main.c ../components/at_proto/at_proto.c ../components/at_core/at_core.c ../components/at_core/at_ctl.c ../components/at_core/at_learn.c ../components/at_core/at_cooldown.c ../components/at_core/at_coast.c ../components/at_core/at_runlog.c ../components/at_core/at_warm.c ../components/at_core/at_early.c ../components/at_core/at_fuel.c ../components/at_core/at_battery.c ../components/at_core/at_timers.c ../components/at_core/at_tz.c ../components/at_core/at_version.c ../components/at_core/at_hrec.c
 
 test: test_main
 	./test_main
@@ -64,9 +64,16 @@ backup: test_backup
 test_backup: $(BACKUP_SRCS)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations -Wno-missing-field-initializers -Istub -I../components/at_app/include -I$(CJSON) $(BACKUP_SRCS) -o $@ -lm
 
+# The heater's own record (1.70): a real heater's report decoded, fault dates, backup JSON and restore.
+hrec: test_hrec
+	./test_hrec
+
+test_hrec: test_hrec.c ../components/at_proto/at_proto.c ../components/at_core/at_hrec.c ../components/at_app/at_hrec_json.c
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations -I../components/at_app/include -I$(CJSON) test_hrec.c ../components/at_proto/at_proto.c ../components/at_core/at_hrec.c ../components/at_app/at_hrec_json.c $(CJSON)/cJSON.c -o $@ -lm
+
 auth-vectors:
 	cd .. && python3 host_tests/gen_auth_vectors.py
 
 clean:
-	rm -f test_main test_auth test_access test_cloudlink test_fwupdate test_backup
+	rm -f test_main test_auth test_access test_cloudlink test_fwupdate test_backup test_hrec
 	rm -rf build

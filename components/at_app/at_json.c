@@ -294,6 +294,9 @@ char *at_app_backup_json(void)
     if (learn) cJSON_AddItemToObject(o, "thermo_learn", learn);
     cJSON *care = at_app_thermo_care_backup();
     if (care) cJSON_AddItemToObject(o, "heater_care", care);
+    /* 1.70: the heater's own record (settings block, operation report, the date each fault was first seen) */
+    cJSON *hrec = at_app_hrec_backup();
+    if (hrec) cJSON_AddItemToObject(o, "heater_record", hrec);
 
     char *timers = at_app_timers_json();
     cJSON *arr = timers ? cJSON_Parse(timers) : NULL;
@@ -391,30 +394,40 @@ char *at_app_fuel_day_json(int32_t day)
     return str;
 }
 
-/* "heater_info" in the status: what the heater said about itself, decoded (docs/API_SPEC.md §9.8). Only once
- * something has been read or overheard, so a box that never asked sends nothing extra. */
-static void add_heater_info(cJSON *o)
+/* "heater_info" in the status: what the heater said about itself, decoded (docs/API_SPEC.md §9.8). From 1.70 it
+ * comes from the box's saved record, so it is there straight after a restart, with read_at (epoch) and each
+ * fault's seen_at. Only once something has been read or overheard, so a box that never asked sends nothing extra. */
+static void add_heater_info(cJSON *o, const at_view_t *v)
 {
     at_heater_info_t *hi = malloc(sizeof(*hi));
-    if (!hi) return;
+    at_hrec_t *r = malloc(sizeof(*r));
+    if (!hi || !r) {
+        free(hi);
+        free(r);
+        return;
+    }
     uint32_t now;
     at_app_heater_info(hi, &now);
-    bool report = hi->pages == (1u << AT_EEPROM_PAGES) - 1;
-    if (!hi->have_version && !hi->have_settings && !report && !hi->have_read && !hi->have_unlock) {
+    at_app_hrec_copy(r);
+    const int64_t ep = v->clock_ok ? v->epoch : 0;
+    if (!r->have && !hi->have_read && !hi->have_unlock) {
         free(hi);
+        free(r);
         return;
     }
     cJSON *h = cJSON_AddObjectToObject(o, "heater_info");
     cJSON_AddBoolToObject(h, "reading", hi->pending > 0);
     add_num_or_null(h, "read_age_s", hi->have_read, (now - hi->read_ms) / 1000);
-    if (hi->have_version) {
-        char v[24];
-        snprintf(v, sizeof(v), "%u.%u.%u.%u", hi->version[0], hi->version[1], hi->version[2], hi->version[3]);
-        cJSON_AddStringToObject(h, "version", v);
-        cJSON_AddNumberToObject(h, "device_type", hi->version[0]);
+    add_num_or_null(h, "read_at", r->read_at != 0, r->read_at);
+    if (r->have & AT_HREC_HAVE_VER) {
+        char vs[24];
+        snprintf(vs, sizeof(vs), "%u.%u.%u.%u", r->heater_version[0], r->heater_version[1], r->heater_version[2],
+                 r->heater_version[3]);
+        cJSON_AddStringToObject(h, "version", vs);
+        cJSON_AddNumberToObject(h, "device_type", r->heater_version[0]);
     }
     at_heater_settings_t hs;
-    if (hi->have_settings && at_decode_heater_settings(hi->settings, hi->settings_len, &hs)) {
+    if ((r->have & AT_HREC_HAVE_SET) && at_decode_heater_settings(r->settings, r->settings_len, &hs)) {
         static const char *const warm[] = {"off", "auto", "manual"};
         cJSON *st = cJSON_AddObjectToObject(h, "settings");
         cJSON_AddNumberToObject(st, "wait_temp", hs.wait_temp);
@@ -426,33 +439,37 @@ static void add_heater_info(cJSON *o)
         cJSON_AddBoolToObject(st, "pump_with_engine", hs.pump_with_engine);
         cJSON_AddBoolToObject(st, "pump_standby", hs.pump_standby);
         cJSON_AddBoolToObject(st, "signal_channel", hs.signal_channel);
-        cJSON_AddNumberToObject(st, "age_s", (now - hi->settings_ms) / 1000);
+        add_num_or_null(st, "read_at", r->settings_at != 0, r->settings_at);
+        add_num_or_null(st, "age_s", ep && r->settings_at && ep >= r->settings_at, (double)(ep - r->settings_at));
     }
-    if (report) {
-        at_heater_report_t r;
-        at_decode_heater_report(hi->eeprom, &r);
+    if (r->have & AT_HREC_HAVE_REP) {
+        at_heater_report_t rp_;
+        at_decode_heater_report(r->eeprom, &rp_);
+        const at_heater_report_t *rr = &rp_;
         cJSON *rp = cJSON_AddObjectToObject(h, "report");
-        cJSON_AddNumberToObject(rp, "product_code", r.product_code);
-        cJSON_AddNumberToObject(rp, "serial", r.serial);
-        cJSON_AddNumberToObject(rp, "starts", r.starts);
-        cJSON_AddNumberToObject(rp, "starts_ok", r.starts_ok);
-        cJSON_AddNumberToObject(rp, "starts_fault", r.starts_fault);
-        cJSON_AddNumberToObject(rp, "first_attempt", r.first_attempt);
-        cJSON_AddNumberToObject(rp, "second_attempt", r.second_attempt);
-        cJSON_AddNumberToObject(rp, "no_ignition", r.no_ignition);
-        cJSON_AddNumberToObject(rp, "power_cuts", r.power_cuts);
-        cJSON_AddNumberToObject(rp, "water_pump_runs", r.water_pump_runs);
-        cJSON_AddNumberToObject(rp, "warmup_runs", r.warmup_runs);
-        cJSON_AddNumberToObject(rp, "total_s", r.total_s);
-        cJSON_AddNumberToObject(rp, "high_s", r.high_s);
-        cJSON_AddNumberToObject(rp, "middle_s", r.middle_s);
-        cJSON_AddNumberToObject(rp, "low_s", r.low_s);
-        cJSON_AddNumberToObject(rp, "wait_s", r.wait_s);
-        cJSON_AddNumberToObject(rp, "pump_only_s", r.pump_only_s);
-        cJSON_AddNumberToObject(rp, "last_fault_column", r.last_fault_column);
-        cJSON_AddNumberToObject(rp, "age_s", (now - hi->eeprom_ms) / 1000);
+        cJSON_AddNumberToObject(rp, "product_code", rr->product_code);
+        cJSON_AddNumberToObject(rp, "serial", rr->serial);
+        cJSON_AddNumberToObject(rp, "starts", rr->starts);
+        cJSON_AddNumberToObject(rp, "starts_ok", rr->starts_ok);
+        cJSON_AddNumberToObject(rp, "starts_fault", rr->starts_fault);
+        cJSON_AddNumberToObject(rp, "first_attempt", rr->first_attempt);
+        cJSON_AddNumberToObject(rp, "second_attempt", rr->second_attempt);
+        cJSON_AddNumberToObject(rp, "no_ignition", rr->no_ignition);
+        cJSON_AddNumberToObject(rp, "power_cuts", rr->power_cuts);
+        cJSON_AddNumberToObject(rp, "water_pump_runs", rr->water_pump_runs);
+        cJSON_AddNumberToObject(rp, "warmup_runs", rr->warmup_runs);
+        cJSON_AddNumberToObject(rp, "total_s", rr->total_s);
+        cJSON_AddNumberToObject(rp, "high_s", rr->high_s);
+        cJSON_AddNumberToObject(rp, "middle_s", rr->middle_s);
+        cJSON_AddNumberToObject(rp, "low_s", rr->low_s);
+        cJSON_AddNumberToObject(rp, "wait_s", rr->wait_s);
+        cJSON_AddNumberToObject(rp, "pump_only_s", rr->pump_only_s);
+        cJSON_AddNumberToObject(rp, "last_fault_column", rr->last_fault_column);
+        add_num_or_null(rp, "read_at", r->read_at != 0, r->read_at);
+        add_num_or_null(rp, "age_s", ep && r->read_at && ep >= r->read_at, (double)(ep - r->read_at));
         at_heater_fault_t f[AT_FAULT_HISTORY_N];
-        int nf = at_decode_heater_faults(hi->eeprom, f, AT_FAULT_HISTORY_N);
+        int cols[AT_FAULT_HISTORY_N];
+        int nf = at_decode_heater_faults_cols(r->eeprom, f, cols, AT_FAULT_HISTORY_N);
         cJSON *fa = cJSON_AddArrayToObject(rp, "faults");
         for (int i = 0; i < nf; i++) {
             cJSON *e = cJSON_CreateObject();
@@ -470,6 +487,10 @@ static void add_heater_info(cJSON *o)
             cJSON_AddNumberToObject(e, "board_temp", f[i].board_temp);
             cJSON_AddNumberToObject(e, "second_attempts", f[i].second_attempts);
             cJSON_AddNumberToObject(e, "flame_breaks", f[i].flame_breaks);
+            /* the heater keeps no dates: when the box first saw this entry; seen_first_read means it was already
+             * there on the box's first read, so it happened on or before that date */
+            add_num_or_null(e, "seen_at", r->seen[cols[i]] != 0, r->seen[cols[i]]);
+            cJSON_AddBoolToObject(e, "seen_first_read", (r->first_read >> cols[i]) & 1);
             cJSON_AddItemToArray(fa, e);
         }
     }
@@ -478,6 +499,7 @@ static void add_heater_info(cJSON *o)
         cJSON_AddBoolToObject(h, "unlock_replied", hi->unlock_replied);
     }
     free(hi);
+    free(r);
 }
 
 /* Heater Care (docs/API_SPEC.md, "thermo"): the working range, the locks and what has been learned. */
@@ -598,7 +620,7 @@ static cJSON *build_state_tree(void)
     cJSON_AddBoolToObject(o, "auto_update", at_settings_auto_update());
     cJSON_AddBoolToObject(o, "mqtt", at_settings_mqtt());
     cJSON_AddNumberToObject(o, "pump_minutes", at_app_pump_minutes());
-    add_heater_info(o);
+    add_heater_info(o, &v);
 
     cJSON_AddBoolToObject(o, "bypass_mode", s->bypass);
     cJSON_AddBoolToObject(o, "debug_mode", v.debug_mode);

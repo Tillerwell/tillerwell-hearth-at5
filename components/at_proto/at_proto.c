@@ -282,35 +282,49 @@ static uint32_t be32(const uint8_t *p) { return ((uint32_t)p[0] << 24) | ((uint3
 
 void at_decode_heater_report(const uint8_t *e, at_heater_report_t *o)
 {
-    o->product_code = be16(e + 2);
-    o->serial = ((uint32_t)e[4] << 16) | ((uint32_t)e[5] << 8) | e[6];
-    o->starts = be16(e + 12);
-    o->starts_ok = be16(e + 16);
-    o->starts_fault = be16(e + 18);
-    o->power_cuts = e[21];
-    o->total_s = be32(e + 22);
-    o->high_s = be32(e + 26);
-    o->middle_s = be32(e + 30);
-    o->low_s = be32(e + 34);
-    o->wait_s = be32(e + 38);
-    o->first_attempt = be16(e + 42);
-    o->second_attempt = be16(e + 44);
-    o->no_ignition = be16(e + 46);
-    o->last_fault_column = (uint8_t)(e[48] + 1);
-    o->pump_only_s = be32(e + 227);
-    o->water_pump_runs = be16(e + 231);
-    o->warmup_runs = be16(e + 233);
+    /* The vendor profile's aN is byte N of the EEPROM (0-based), checked on a real heater (1.70): starts 448 =
+     * 402 clean + 37 with a fault + 9 power cuts. Up to 1.69 every field was read one byte early. */
+    o->product_code = be16(e + 3);
+    o->serial = ((uint32_t)e[5] << 16) | ((uint32_t)e[6] << 8) | e[7];
+    o->starts = be16(e + 13);
+    o->starts_ok = be16(e + 17);
+    o->starts_fault = be16(e + 19);
+    o->power_cuts = e[22];
+    o->total_s = be32(e + 23);
+    o->high_s = be32(e + 27);
+    o->middle_s = be32(e + 31);
+    o->low_s = be32(e + 35);
+    o->wait_s = be32(e + 39);
+    o->first_attempt = be16(e + 43);
+    o->second_attempt = be16(e + 45);
+    o->no_ignition = be16(e + 47);
+    o->last_fault_column = (uint8_t)(e[49] + 1);
+    o->pump_only_s = be32(e + 228);
+    o->water_pump_runs = be16(e + 232);
+    o->warmup_runs = be16(e + 234);
+}
+
+const uint8_t *at_heater_fault_entry(const uint8_t *e, int column)
+{
+    return e + AT_FAULT_HISTORY_AT + AT_FAULT_ENTRY_LEN * column;
 }
 
 int at_decode_heater_faults(const uint8_t *e, at_heater_fault_t *out, int max)
 {
-    int newest = e[48] < AT_FAULT_HISTORY_N ? e[48] : 0; /* the report's column is this + 1 */
+    return at_decode_heater_faults_cols(e, out, NULL, max);
+}
+
+int at_decode_heater_faults_cols(const uint8_t *e, at_heater_fault_t *out, int *cols, int max)
+{
+    int newest = e[49] < AT_FAULT_HISTORY_N ? e[49] : 0; /* the report's column is this + 1 */
     int n = 0;
     for (int k = 0; k < AT_FAULT_HISTORY_N && n < max; k++) {
-        const uint8_t *f = e + 55 + 17 * ((newest - k + AT_FAULT_HISTORY_N) % AT_FAULT_HISTORY_N);
+        int col = (newest - k + AT_FAULT_HISTORY_N) % AT_FAULT_HISTORY_N;
+        const uint8_t *f = at_heater_fault_entry(e, col);
         if (!f[0]) {
             continue;
         }
+        if (cols) cols[n] = col;
         at_heater_fault_t *o = &out[n++];
         o->code = f[0];
         o->repeats = f[1];
@@ -319,7 +333,7 @@ int at_decode_heater_faults(const uint8_t *e, at_heater_fault_t *out, int max)
         o->run_s = be16(f + 4);
         o->mode_s = be16(f + 6);
         o->voltage = (float)be16(f + 8) / 10.0f;
-        o->flame_temp = be16(f + 10);
+        o->flame_temp = (int)be16(f + 10) - 273; /* kelvin, as in the extended frame: a cold start reads 296 */
         o->liquid_temp = f[12];
         o->overheat_temp = f[13];
         o->board_temp = f[14];

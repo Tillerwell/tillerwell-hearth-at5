@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "at_hrec.h"
 #include "at_core.h"
 #include "at_ctl.h"
 #include "at_runlog.h"
@@ -221,6 +222,16 @@ bool at_app_unlock(void);
 bool at_app_diag_stream(bool on);
 /* A copy of what the heater has told us; now_ms is the clock its times are measured against. */
 void at_app_heater_info(at_heater_info_t *out, uint32_t *now_ms);
+
+/* The heater's own record (1.70, at_app_hrec.c): the last complete read, saved in NVS, with the date each fault in
+ * its history was first seen. The box reads the heater by itself after power-up and around every run. */
+void at_app_hrec_init(void);
+void at_app_hrec_tick(const at_snapshot_t *snap, uint32_t now, bool clock_ok, int64_t epoch, bool bypass);
+void at_app_hrec_copy(at_hrec_t *out);
+/* The coolant temperature a timed preheat stops at: the heater's own wait temperature once read, else def. */
+float at_app_preheat_stop_temp(float def);
+struct cJSON *at_app_hrec_backup(void);
+bool at_app_hrec_restore_json(const struct cJSON *o);
 
 /* ---- fuel estimate (at_app_fuel.c) ---------------------------------------- */
 

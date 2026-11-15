@@ -479,20 +479,21 @@ static void test_heater_info(void)
     CHECK(!at_decode_heater_settings(blk, 8, &hs));
 
     uint8_t e[AT_EEPROM_LEN] = {0};
-    e[2] = 0x12; e[3] = 0x34;
-    e[4] = 0x01; e[5] = 0x02; e[6] = 0x03;
-    e[12] = 0x01; e[13] = 0x2C;                 /* 300 starts */
-    e[22] = 0x00; e[23] = 0x01; e[24] = 0x00; e[25] = 0x00; /* 65536 s */
-    e[48] = 4;
-    e[231] = 0; e[232] = 9;
+    /* the profile's aN is byte N (1.70; a real heater's report is checked in test_hrec.c) */
+    e[3] = 0x12; e[4] = 0x34;
+    e[5] = 0x01; e[6] = 0x02; e[7] = 0x03;
+    e[13] = 0x01; e[14] = 0x2C;                 /* 300 starts */
+    e[23] = 0x00; e[24] = 0x01; e[25] = 0x00; e[26] = 0x00; /* 65536 s */
+    e[49] = 4;
+    e[232] = 0; e[233] = 9;
     at_heater_report_t r;
     at_decode_heater_report(e, &r);
     CHECK(r.product_code == 0x1234 && r.serial == 0x010203 && r.starts == 300);
     CHECK(r.total_s == 65536 && r.last_fault_column == 5 && r.water_pump_runs == 9);
 
-    /* fault history: newest is column e[48]+1 (here 5, entry index 4), then backwards round the ten */
-    memset(e + 55, 0, 170);
-    uint8_t *f4 = e + 55 + 17 * 4, *f3 = e + 55 + 17 * 3, *f9 = e + 55 + 17 * 9;
+    /* fault history: newest is column e[49]+1 (here 5, entry index 4), then backwards round the ten */
+    memset(e + 56, 0, 170);
+    uint8_t *f4 = e + 56 + 17 * 4, *f3 = e + 56 + 17 * 3, *f9 = e + 56 + 17 * 9;
     f4[0] = 13; f4[1] = 3; f4[2] = 2; f4[3] = 3; f4[4] = 0x01; f4[5] = 0x00; f4[8] = 0x00; f4[9] = 0x7D; f4[12] = 40; f4[15] = 1;
     f3[0] = 78;
     f9[0] = 25;

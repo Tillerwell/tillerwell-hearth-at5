@@ -744,6 +744,7 @@ bool at_cmd_read_heater_info(at_core_t *c, uint32_t now)
         send_panel_frame(c, AT_TYPE_EEPROM, req, sizeof(req), 300, "hi-eeprom", false, now);
     }
     c->info.pending += 2 + AT_EEPROM_PAGES;
+    c->info.pages = 0; /* a report is only whole once all four pages of this read are in (1.70) */
     c->info.have_read = true;
     c->info.read_ms = now;
     return true;

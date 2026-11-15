@@ -220,6 +220,8 @@ Since firmware 1.65 the backup also carries `fuel`, so a replacement box gets ba
 
 `heater_care` (firmware 1.54) is the `GET /api/thermo/history` document (§9.10) without `early_stops`: Heater Care's changes and its last runs (and since 1.56 the warm-by runs). The website keeps it so apps away from the box can show the Heater Care screen. `PUT` ignores it: since 1.58 the run log and the warm-by runs come back from `thermo_learn` (`runs`, `warm_by_runs`) instead.
 
+`heater_record` (firmware 1.70) is the box's saved copy of the heater's own record (§9.8): `{"version":"0a010d03","settings":"<hex>","settings_at":<epoch>,"report":"<256 bytes as hex>","read_at":<epoch>,"seen":[10 epochs],"first_read":<bits>}`. `seen[k]` is when the box first saw fault column k as it is now (0 for an empty column), and bit k of `first_read` means that entry was already there on the box's first read. On `PUT` it is merged: a box that has no report of its own takes the whole record (keeping a version or settings block it has read itself); otherwise, for each fault column whose 17 bytes are the same in both, the earlier date wins with its `first_read` bit. Restoring twice changes nothing. About 700 bytes.
+
 `timers` is the `GET /api/timers` array. Nothing in it belongs to one box alone (Wi-Fi, users, keys, the fuel log) or to the moment (whether the heater is running, whether the thermostat is on), so restoring never starts or stops the heater. `PUT` applies each field through the same checks as `POST /api/cmd`; a field the box turns down is named in `{"ok":true,"skipped":[…]}` and the rest still apply. `ml_per_pulse` and `tank_capacity` of 0 mean "never set" and are left alone. A changed `display_name` restarts the box, so it is applied last.
 
 The box also sends this document to the cloud (§9.3), which keeps the last copy so it is there when the box is not.
@@ -355,21 +357,25 @@ Firmware 1.43 adds the heater's own service functions, again exactly as the vend
   "flame_temp":40,"liquid_temp":40,"overheat_temp":41,"board_temp":22,"second_attempts":1,"flame_breaks":0}]
 ```
 
-Ten entries of 17 bytes from report byte 55; the report's last fault column says which is newest. The layout is the vendor profile's fault table and, like the rest of the report, not yet checked on a real heater.
+Ten entries of 17 bytes from report byte 56; the report's last fault column says which is newest. The layout is the vendor profile's fault table, checked on a real heater in 1.70 (before that every entry was read one byte early). `flame_temp` is °C from 1.70 (the heater stores kelvin, as in the extended frame).
+
+From 1.70 each fault also has `seen_at` (epoch, or null while the box's clock was not set) and `seen_first_read`. The heater keeps no dates, so `seen_at` is when the box first saw that entry as it is now: a new fault, or the same one again with its count gone up. `seen_first_read` true means it was already in the report on the box's first read, so it happened on or before that date.
+
+**Saved and read by the box itself (firmware 1.70).** The last complete read is kept in NVS (`heater_rec`) and in the backup (`heater_record`, §7.5), so `heater_info` is there straight after a restart and on a replacement box. The box reads the heater by itself: once after power-up (after 30 s, waiting up to 3 min for the clock so the first read can date its faults), 2 minutes after the heater leaves idle (the start is counted by then) and 20 s after it is idle again (the run's hours are in). `heater_read` still reads at once. While a read is going, `heater_info` shows the last complete one with `reading` true. A timed preheat's coolant stop (§6, `preheat_temp`) follows the heater's own `settings.wait_temp` once the heater has been read; `preheat_temp` in the status and the backup is then that value, and the `preheat_temp` command only sets the fallback used before the first read.
 
 `heater_info` in `GET /api/status` (and so in the cloud `state`) appears once anything has been read or overheard (the controller reads the settings block itself at power-up):
 
 ```json
-"heater_info":{"reading":false,"read_age_s":12,"version":"10.1.3.7","device_type":10,
+"heater_info":{"reading":false,"read_age_s":12,"read_at":1763229600,"version":"10.1.3.7","device_type":10,
  "settings":{"wait_temp":88,"warmup":"off","warmup_wait_temp":85,"relay":"off","relay_on_temp":40,
-   "pump_signal":"constant","pump_with_engine":false,"pump_standby":true,"signal_channel":true,"age_s":12},
+   "pump_signal":"constant","pump_with_engine":false,"pump_standby":true,"signal_channel":true,"read_at":1763229600,"age_s":12},
  "report":{"product_code":0,"serial":0,"starts":0,"starts_ok":0,"starts_fault":0,"first_attempt":0,
    "second_attempt":0,"no_ignition":0,"power_cuts":0,"water_pump_runs":0,"warmup_runs":0,"total_s":0,
-   "high_s":0,"middle_s":0,"low_s":0,"wait_s":0,"pump_only_s":0,"last_fault_column":0,"age_s":12},
+   "high_s":0,"middle_s":0,"low_s":0,"wait_s":0,"pump_only_s":0,"last_fault_column":0,"read_at":1763229600,"age_s":12},
  "unlock_age_s":40,"unlock_replied":true}
 ```
 
-Every member is optional: `version` only once the heater has answered, `settings` once a settings block is known, `report` once all four pages are in, `unlock_*` after an unlock. `settings.wait_temp` is the heater's own coolant target (in preheat it stops burning there and waits). The report's field offsets come from the tool's profile and are **not yet checked against a real heater**; `GET /api/info` carries `heater_raw` (`settings` hex, `page_len`, the 256 `eeprom` bytes as hex) for that check. Read only: nothing here writes to the heater.
+Every member is optional: `version` only once the heater has answered, `settings` once a settings block is known, `report` once all four pages are in, `unlock_*` after an unlock. `settings.wait_temp` is the heater's own coolant target (in preheat it stops burning there and waits). `read_at` and `age_s` are null when the read's time is not known. The report's offsets are the tool's profile with its `aN` as byte N of the EEPROM, checked on a real heater in 1.70 (448 starts = 402 clean + 37 with a fault + 9 power cuts); up to 1.69 every field was read one byte early, which gave nonsense counts. Times are seconds. `GET /api/info` carries `heater_raw` (`settings` hex, `page_len`, the 256 `eeprom` bytes as hex) for that check. Read only: nothing here writes to the heater.
 
 ### 9.9 Timers from away (firmware 1.44)
 

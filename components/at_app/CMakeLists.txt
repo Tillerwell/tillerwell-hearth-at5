@@ -1,4 +1,4 @@
-idf_component_register(SRCS "at_app.c" "at_settings.c" "at_json.c" "at_app_timers.c" "at_app_fuel.c" "at_app_battery.c" "at_crash.c" "at_app_thermo.c"
+idf_component_register(SRCS "at_app.c" "at_settings.c" "at_json.c" "at_app_timers.c" "at_app_fuel.c" "at_app_battery.c" "at_crash.c" "at_app_thermo.c" "at_app_hrec.c" "at_hrec_json.c"
                        INCLUDE_DIRS "include"
                        REQUIRES at_core at_proto
                        PRIV_REQUIRES json driver esp_adc nvs_flash esp_timer esp_system esp_hw_support esp_app_format log lwip)

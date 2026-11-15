@@ -1264,6 +1264,9 @@ static esp_err_t h_backup_put(httpd_req_t *req)
     /* what Heater Care learned about the space, so a replacement box carries on from it */
     const cJSON *learn = cJSON_GetObjectItemCaseSensitive(b, "thermo_learn");
     if (learn) SKIP_IF(at_app_thermo_learn_restore(learn), "thermo_learn");
+    /* the heater's own record and the date each fault was first seen (1.70), merged: the earlier date wins */
+    const cJSON *hrec = cJSON_GetObjectItemCaseSensitive(b, "heater_record");
+    if (hrec) SKIP_IF(at_app_hrec_restore_json(hrec), "heater_record");
     /* an older backup's auto_target is the middle of its range: only used when the backup has no range */
     if (!cJSON_GetObjectItemCaseSensitive(b, "auto_high")) {
         SKIP_IF(backup_cmd("auto_target", b, "auto_target", "value"), "auto_target");

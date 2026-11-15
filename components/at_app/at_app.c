@@ -372,12 +372,17 @@ static void ctl_task(void *arg)
         at_app_fuel_tick(&snap, now);
         at_app_battery_tick(&snap, now);
 
-        /* A timed preheat also ends when the coolant is hot enough; the thermostat has its own limits. */
+        at_app_hrec_tick(&snap, now, clock_ok, epoch, cfg.bypass);
+
+        /* A timed preheat also ends when the coolant is hot enough: the heater's own wait temperature since 1.70
+         * (its "coolant target"), the box's saved preheat_temp until the heater has been read. The thermostat has
+         * its own limits. */
         if (!thermostat && !cfg.bypass && snap.have_status && !snap.stale &&
             (snap.status.state_raw == 0x02 || snap.status.state_raw == 0x03) &&
-            snap.status.coolant_temp >= s_preheat_temp && now - s_last_preheat_stop_ms > 60000u) {
+            snap.status.coolant_temp >= at_app_preheat_stop_temp(s_preheat_temp) && now - s_last_preheat_stop_ms > 60000u) {
             s_last_preheat_stop_ms = now;
-            ESP_LOGI(TAG, "coolant %.1f >= preheat temperature %.1f -> stop", snap.status.coolant_temp, (double)s_preheat_temp);
+            ESP_LOGI(TAG, "coolant %.1f >= preheat temperature %.1f -> stop", snap.status.coolant_temp,
+                     (double)at_app_preheat_stop_temp(s_preheat_temp));
             core_cmd(at_cmd_stop);
         }
 
@@ -484,6 +489,7 @@ esp_err_t at_app_start(void)
     s_ctl.autot.enabled = cfg.auto_enabled; /* no immediate action at boot, the loop decides */
     s_ctl.freeze.enabled = cfg.freeze_enabled;
 
+    at_app_hrec_init();
     at_app_fuel_init();
     at_app_battery_init();
     at_app_state_json_init();
@@ -522,7 +528,7 @@ void at_app_view(at_view_t *v)
     at_ctl_status(&s_ctl, now, &v->thermo);
     v->clock_ok = s_ctl.clock_ok;
     v->epoch = s_ctl.epoch;
-    v->preheat_temp = s_preheat_temp;
+    v->preheat_temp = at_app_preheat_stop_temp(s_preheat_temp); /* 1.70: the heater's own once read */
     v->freeze_enabled = s_ctl.freeze.enabled;
     v->freeze_target = s_ctl.freeze.target;
     memcpy(v->auto_note, s_ctl.autot.note, sizeof(v->auto_note));

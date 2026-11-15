@@ -162,9 +162,12 @@ typedef struct {
 
 void at_decode_heater_report(const uint8_t *eeprom, at_heater_report_t *out);
 
-/* The fault history in the same report: 10 entries of 17 bytes from byte 55, and the report's "last fault column"
- * (1-10) is the newest. Layout from the vendor profile's fault table; not yet checked on a real heater. */
+/* The fault history in the same report: 10 entries of 17 bytes from byte 56 (the profile's a56), and the report's "last fault column"
+ * (1-10) is the newest. Field order from the vendor profile's fault table; the position was checked on a real
+ * heater (1.70): every entry's voltage reads 9-13 V there, a low voltage fault 9.0 V. */
 #define AT_FAULT_HISTORY_N 10
+#define AT_FAULT_HISTORY_AT 56
+#define AT_FAULT_ENTRY_LEN 17
 typedef struct {
     uint8_t code;
     uint8_t repeats;
@@ -172,13 +175,17 @@ typedef struct {
     uint16_t run_s;             /* total work time, s */
     uint16_t mode_s;            /* time in that mode, s */
     float voltage;
-    int flame_temp, liquid_temp, overheat_temp, board_temp;
+    int flame_temp, liquid_temp, overheat_temp, board_temp; /* °C */
     uint8_t second_attempts;
     uint8_t flame_breaks;
 } at_heater_fault_t;
 
 /* Fills out newest first, skipping empty entries (code 0); returns how many. */
 int at_decode_heater_faults(const uint8_t *eeprom, at_heater_fault_t *out, int max);
+/* The same, also giving each entry's column (0-9) in cols (may be NULL). */
+int at_decode_heater_faults_cols(const uint8_t *eeprom, at_heater_fault_t *out, int *cols, int max);
+/* The 17 bytes of fault column 0-9. */
+const uint8_t *at_heater_fault_entry(const uint8_t *eeprom, int column);
 
 #ifdef __cplusplus
 }

@@ -838,8 +838,16 @@ writes them (`aN`):
 | time water pump only, s | a228..a231 |
 | last fault column | a49+1, then a fault history table |
 
-This could become a read-only heater "health" page in Hearth (starts,
-failed ignitions, hours per power level).
+**Checked on a real heater (Hearth 1.70, 2026-11-15).** The profile's `aN`
+is byte N of the EEPROM counted from 0 (the 256 bytes start `55 aa`), not
+byte N-1: read that way the cabin's Flow 5D gives 448 starts = 402 clean +
+37 with a fault + 9 power cuts, 692 h running (241 h high, 403 h middle),
+and the fault table (`a56`, 10 x 17 bytes from byte 56) has a sane supply
+voltage in every entry (a low voltage fault at 9.0 V). A fault's flame
+temperature is kelvin, like the extended frame (a cold start reads 296).
+Times are seconds. Up to 1.69 Hearth read every field one byte early.
+The heater keeps no dates in the fault table; Hearth dates each entry with
+when it first read it.
 
 ### Fault codes (profile section 9)
 
