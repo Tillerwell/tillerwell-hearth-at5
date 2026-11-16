@@ -847,7 +847,9 @@ voltage in every entry (a low voltage fault at 9.0 V). A fault's flame
 temperature is kelvin, like the extended frame (a cold start reads 296).
 Times are seconds. Up to 1.69 Hearth read every field one byte early.
 The heater keeps no dates in the fault table; Hearth dates each entry with
-when it first read it.
+when it first read it. From 1.73 Hearth also notes the moment a fault code
+appears in the status frame (byte 2), reads the report 10 s later and dates
+the new entry with that moment (`seen_exact`).
 
 ### Fault codes (profile section 9)
 

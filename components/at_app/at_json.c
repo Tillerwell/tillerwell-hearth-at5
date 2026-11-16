@@ -493,9 +493,11 @@ static void add_heater_info(cJSON *o, const at_view_t *v)
             cJSON_AddNumberToObject(e, "second_attempts", f[i].second_attempts);
             cJSON_AddNumberToObject(e, "flame_breaks", f[i].flame_breaks);
             /* the heater keeps no dates: when the box first saw this entry; seen_first_read means it was already
-             * there on the box's first read, so it happened on or before that date */
+             * there on the box's first read, so it happened on or before that date; seen_exact (1.73) means
+             * seen_at is when the fault appeared in the heater's status, to the second */
             add_num_or_null(e, "seen_at", r->seen[cols[i]] != 0, r->seen[cols[i]]);
             cJSON_AddBoolToObject(e, "seen_first_read", (r->first_read >> cols[i]) & 1);
+            cJSON_AddBoolToObject(e, "seen_exact", (r->exact >> cols[i]) & 1);
             cJSON_AddItemToArray(fa, e);
         }
     }

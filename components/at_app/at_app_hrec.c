@@ -24,6 +24,9 @@ static const char *TAG = "hrec";
  * this soon, up to this many times, so the record is never left stale after a Fetch */
 #define INCOMPLETE_RETRY_MS 3000u
 #define INCOMPLETE_MAX      3
+/* 1.73: a fault appearing in the heater's status gets a read this soon, so its entry in the report is dated with
+ * the moment it appeared even when the heater keeps running (a flame break that relights) */
+#define AFTER_FAULT_MS 10000u
 
 static at_hrec_t s_rec;
 static SemaphoreHandle_t s_lock;
@@ -35,6 +38,8 @@ static uint32_t s_taken_read, s_taken_set, s_taken_ver;
 static int s_incomplete;         /* retries made for the current read that came back short */
 static volatile bool s_retrying; /* a retry is waiting: the status keeps "reading" true meanwhile */
 static uint32_t s_retry_since;
+static at_hrec_lives_t s_lives;  /* faults seen appearing in the status since the last whole report */
+static int s_prev_fault = -1;    /* -1 until the first fresh status: a fault already showing at boot is not dated */
 #define RETRYING_MAX_MS 30000u   /* never show "reading" longer than this for a retry that cannot be sent */
 
 void at_app_hrec_init(void)
@@ -42,7 +47,7 @@ void at_app_hrec_init(void)
     s_lock = xSemaphoreCreateMutex();
     at_hrec_init(&s_rec);
     at_hrec_t *t = malloc(sizeof(*t));
-    if (t && at_settings_blob_load(KEY_HREC, t, sizeof(*t)) && t->version == AT_HREC_VERSION) {
+    if (t && at_settings_blob_load(KEY_HREC, t, sizeof(*t)) && at_hrec_upgrade(t)) {
         s_rec = *t;
         ESP_LOGI(TAG, "heater record loaded (have 0x%02x, read at %lu)", s_rec.have, (unsigned long)s_rec.read_at);
     }
@@ -78,6 +83,13 @@ static void schedule(uint32_t now, uint32_t after)
     s_tries = 0;
 }
 
+/* a read by then, unless one is already due sooner */
+static void schedule_by(uint32_t now, uint32_t after)
+{
+    if (s_due && (int32_t)(s_due_ms - (now + after)) <= 0) return;
+    schedule(now, after);
+}
+
 void at_app_hrec_tick(const at_snapshot_t *snap, uint32_t now, bool clock_ok, int64_t epoch, bool bypass)
 {
     if (!s_lock) return;
@@ -96,7 +108,9 @@ void at_app_hrec_tick(const at_snapshot_t *snap, uint32_t now, bool clock_ok, in
         s_taken_ver = hi->version_ms;
         at_hrec_t *copy = malloc(sizeof(*copy));
         xSemaphoreTake(s_lock, portMAX_DELAY);
-        bool changed = at_hrec_take(&s_rec, hi, clock_ok && epoch > 0 ? (uint32_t)epoch : 0);
+        bool changed = at_hrec_take_live(&s_rec, hi, clock_ok && epoch > 0 ? (uint32_t)epoch : 0, &s_lives);
+        /* a whole report holds every fault that came before it was asked for: those live times are spent */
+        if (new_read && hi->pages == (1u << AT_EEPROM_PAGES) - 1) at_hrec_live_drop_before(&s_lives, hi->read_ms);
         if (copy) *copy = s_rec;
         xSemaphoreGive(s_lock);
         if (changed && copy) save(copy);
@@ -125,6 +139,16 @@ void at_app_hrec_tick(const at_snapshot_t *snap, uint32_t now, bool clock_ok, in
 
     bool fresh = snap->have_status && !snap->stale;
     if (fresh) {
+        int f = snap->status.fault;
+        if (s_prev_fault >= 0 && f && f != s_prev_fault) {
+            if (clock_ok && epoch > 0) {
+                xSemaphoreTake(s_lock, portMAX_DELAY);
+                at_hrec_live_add(&s_lives, (uint8_t)f, (uint32_t)epoch, now);
+                xSemaphoreGive(s_lock);
+            }
+            schedule_by(now, AFTER_FAULT_MS);
+        }
+        s_prev_fault = f;
         int cls = snap->status.state_raw == 0x00 ? 0 : (snap->status.state_raw >= 0x02 && snap->status.state_raw <= 0x04) ? 1 : -1;
         if (cls >= 0) {
             if (s_prev == 0 && cls == 1) schedule(now, AFTER_START_MS);

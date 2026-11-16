@@ -162,6 +162,89 @@ static void record(void)
     at_hrec_restore(&diff, &back);
     CHECK(diff.seen[6] == 1763700000 && diff.seen[5] == 1763200100);
 
+    /* 1.73: a fault seen appearing in the heater's status dates its new entry to that moment, exactly */
+    {
+        uint8_t e2[AT_EEPROM_LEN];
+        unhex(REAL, e2, sizeof(e2));
+        at_hrec_t x;
+        at_hrec_init(&x);
+        info_from(&hi, e2, 7000);
+        at_hrec_take(&x, &hi, 1763800000);
+        CHECK(x.exact == 0 && x.first_read == 0x3FF);
+        at_hrec_lives_t lv = {0};
+        at_hrec_live_add(&lv, 78, 1763800500, 8000); /* a flame break, 11 s before the read */
+        at_hrec_live_add(&lv, 15, 1763800400, 7900); /* a different code: not this column's */
+        uint8_t *n6 = e2 + AT_FAULT_HISTORY_AT + AT_FAULT_ENTRY_LEN * 6;
+        memset(n6, 0, AT_FAULT_ENTRY_LEN);
+        n6[0] = 78; n6[1] = 1; n6[9] = 0x80;
+        e2[49] = 6;
+        info_from(&hi, e2, 8010);
+        CHECK(at_hrec_take_live(&x, &hi, 1763800511, &lv));
+        CHECK(x.seen[6] == 1763800500 && (x.exact & (1u << 6)) && !(x.first_read & (1u << 6)));
+        CHECK(lv.n == 1 && lv.f[0].code == 15); /* the used one is taken out, the other waits */
+        at_hrec_live_drop_before(&lv, 8010);
+        CHECK(lv.n == 0);
+        /* the same entry later, with no live time: it stays as it was */
+        CHECK(!at_hrec_take_live(&x, &hi, 1763800511, &lv) && x.seen[6] == 1763800500 && (x.exact & (1u << 6)));
+        /* it repeats while the box was not watching: dated by the read, no longer exact */
+        n6[1] = 2;
+        info_from(&hi, e2, 9000);
+        CHECK(at_hrec_take_live(&x, &hi, 1763900000, &lv) && x.seen[6] == 1763900000 && !(x.exact & (1u << 6)));
+        /* two new faults of one code in one read take the live times oldest column first */
+        uint8_t *n7 = e2 + AT_FAULT_HISTORY_AT + AT_FAULT_ENTRY_LEN * 7;
+        memset(n7, 0, AT_FAULT_ENTRY_LEN);
+        n7[0] = 13; n7[1] = 1; n7[9] = 0x7f;
+        uint8_t *n8 = e2 + AT_FAULT_HISTORY_AT + AT_FAULT_ENTRY_LEN * 8;
+        memset(n8, 0, AT_FAULT_ENTRY_LEN);
+        n8[0] = 13; n8[1] = 1; n8[9] = 0x7e;
+        e2[49] = 8;
+        at_hrec_live_add(&lv, 13, 1763950000, 9500);
+        at_hrec_live_add(&lv, 13, 1763950300, 9800);
+        info_from(&hi, e2, 9900);
+        CHECK(at_hrec_take_live(&x, &hi, 1763950400, &lv));
+        CHECK(x.seen[7] == 1763950000 && x.seen[8] == 1763950300 && (x.exact & (3u << 7)) == (3u << 7) && lv.n == 0);
+        /* a live time later than the read cannot be this entry's */
+        at_hrec_t y;
+        at_hrec_init(&y);
+        unhex(REAL, e2, sizeof(e2));
+        info_from(&hi, e2, 1);
+        at_hrec_take(&y, &hi, 1764000000);
+        memset(n6, 0, AT_FAULT_ENTRY_LEN);
+        n6[0] = 78; n6[1] = 1;
+        e2[49] = 6;
+        at_hrec_lives_t late = {0};
+        at_hrec_live_add(&late, 78, 1764000900, 2);
+        info_from(&hi, e2, 3);
+        at_hrec_take_live(&y, &hi, 1764000800, &late);
+        CHECK(y.seen[6] == 1764000800 && !(y.exact & (1u << 6)) && late.n == 1);
+        /* a full list drops its oldest */
+        at_hrec_lives_t full = {0};
+        for (int i = 0; i < AT_HREC_LIVE_N + 2; i++) at_hrec_live_add(&full, (uint8_t)(i + 1), 1764000000u + (uint32_t)i, (uint32_t)i);
+        CHECK(full.n == AT_HREC_LIVE_N && full.f[0].code == 3);
+        /* exact survives the backup round trip and a restore, and restoring twice changes nothing */
+        cJSON *jx = at_hrec_to_json(&x);
+        at_hrec_t bx;
+        CHECK(at_hrec_from_json(jx, &bx) && !memcmp(&bx, &x, sizeof(x)));
+        at_hrec_t rx;
+        at_hrec_init(&rx);
+        CHECK(at_hrec_restore(&rx, &bx) && rx.exact == x.exact && !at_hrec_restore(&rx, &bx));
+        /* a replacement box that read the heater later: the backup's earlier, exact date wins with its bit */
+        at_hrec_t ox;
+        at_hrec_init(&ox);
+        info_from(&hi, x.eeprom, 1);
+        memcpy(hi.eeprom, x.eeprom, AT_EEPROM_LEN);
+        at_hrec_take(&ox, &hi, 1764500000);
+        CHECK(at_hrec_restore(&ox, &bx) && ox.seen[7] == 1763950000 && (ox.exact & (1u << 7)) && !at_hrec_restore(&ox, &bx));
+        cJSON_Delete(jx);
+        /* a version 1 blob (exact was padding) comes up with exact cleared */
+        at_hrec_t v1 = x;
+        v1.version = 1;
+        v1.exact = 0xFFFF;
+        CHECK(at_hrec_upgrade(&v1) && v1.version == AT_HREC_VERSION && v1.exact == 0);
+        v1.version = 9;
+        CHECK(!at_hrec_upgrade(&v1));
+    }
+
     /* junk in a backup is refused, not half taken */
     cJSON *bad = cJSON_Parse("{\"report\":\"zz\",\"settings\":\"58\"}");
     at_hrec_t bj;

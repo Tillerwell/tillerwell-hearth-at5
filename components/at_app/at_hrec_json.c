@@ -56,6 +56,7 @@ cJSON *at_hrec_to_json(const at_hrec_t *r)
         cJSON *s = cJSON_AddArrayToObject(o, "seen");
         for (int k = 0; k < AT_FAULT_HISTORY_N; k++) cJSON_AddItemToArray(s, cJSON_CreateNumber(r->seen[k]));
         cJSON_AddNumberToObject(o, "first_read", r->first_read);
+        cJSON_AddNumberToObject(o, "exact", r->exact); /* 1.73 */
     }
     free(hx);
     return o;
@@ -90,11 +91,13 @@ bool at_hrec_from_json(const cJSON *o, at_hrec_t *r)
             r->seen[k] = cJSON_IsNumber(v) && v->valuedouble > 0 && v->valuedouble < 4294967296.0 ? (uint32_t)v->valuedouble : 0;
         }
         r->first_read = (uint16_t)(u32(o, "first_read") & ((1u << AT_FAULT_HISTORY_N) - 1));
+        r->exact = (uint16_t)(u32(o, "exact") & ((1u << AT_FAULT_HISTORY_N) - 1)) & (uint16_t)~r->first_read;
         /* a column that is empty in the report has no date */
         for (int k = 0; k < AT_FAULT_HISTORY_N; k++) {
             if (!at_heater_fault_entry(r->eeprom, k)[0]) {
                 r->seen[k] = 0;
                 r->first_read &= (uint16_t)~(1u << k);
+                r->exact &= (uint16_t)~(1u << k);
             }
         }
     }

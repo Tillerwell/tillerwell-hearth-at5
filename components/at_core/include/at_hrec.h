@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define AT_HREC_VERSION   1
+#define AT_HREC_VERSION   2   /* 2 (1.73): exact; a version 1 blob loads with exact cleared */
 #define AT_HREC_HAVE_VER  0x01
 #define AT_HREC_HAVE_SET  0x02
 #define AT_HREC_HAVE_REP  0x04
@@ -24,6 +24,8 @@ typedef struct {
     uint8_t settings_len;
     uint8_t pad;
     uint16_t first_read;                /* bit k: fault column k was already in the report on the box's first read */
+    uint16_t exact;                     /* bit k (1.73): seen[k] is when the box saw fault k appear in the heater's
+                                           status, not when it read the report (in what was padding before) */
     uint32_t read_at;                   /* epoch of the last complete report read, 0 if the clock was not set */
     uint32_t settings_at;               /* epoch the settings block was last read */
     uint32_t seen[AT_FAULT_HISTORY_N];  /* epoch the box first saw fault column k as it is now, 0 unknown or empty */
@@ -38,9 +40,36 @@ void at_hrec_init(at_hrec_t *r);
  * changed (save it). */
 bool at_hrec_take(at_hrec_t *r, const at_heater_info_t *hi, uint32_t epoch);
 
+/* Faults the box saw appear in the heater's live status since the last complete report read (1.73), oldest first.
+ * The heater keeps no dates, but its status shows a fault the moment it happens. */
+#define AT_HREC_LIVE_N 6
+typedef struct {
+    uint8_t code;
+    uint32_t at;                        /* epoch the fault appeared */
+    uint32_t ms;                        /* box uptime then, to line it up with a read's start */
+} at_hrec_live_t;
+typedef struct {
+    int n;
+    at_hrec_live_t f[AT_HREC_LIVE_N];
+} at_hrec_lives_t;
+
+/* Notes a fault that just appeared in the status. When the list is full the oldest goes. */
+void at_hrec_live_add(at_hrec_lives_t *l, uint8_t code, uint32_t at, uint32_t ms);
+
+/* Drops the faults that appeared before uptime ms (a whole report asked for at ms already holds them). */
+void at_hrec_live_drop_before(at_hrec_lives_t *l, uint32_t ms);
+
+/* at_hrec_take, but a fault column that is new or changed takes the time its fault appeared in the status, when
+ * lives holds one with the same code (oldest column first), and its exact bit; each one used is taken out of lives.
+ * Others get the read's epoch as before. lives may be NULL. */
+bool at_hrec_take_live(at_hrec_t *r, const at_heater_info_t *hi, uint32_t epoch, at_hrec_lives_t *lives);
+
+/* A saved blob of an older version brought up to this one; false if it cannot be. */
+bool at_hrec_upgrade(at_hrec_t *r);
+
 /* Puts back a record from a backup (PUT /api/backup). A box with no report of its own takes the whole record.
  * Otherwise, for every fault column whose bytes are the same in both, the earlier known date wins, with its
- * first_read bit; the box's own reads stand. Restoring the same record twice changes nothing. Returns true if
+ * first_read and exact bits; the box's own reads stand. Restoring the same record twice changes nothing. Returns true if
  * anything changed. */
 bool at_hrec_restore(at_hrec_t *r, const at_hrec_t *b);
 
