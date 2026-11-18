@@ -9,7 +9,9 @@
 #include <time.h>
 
 #include "at_app.h"
+#include "esp_attr.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_sntp.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -25,6 +27,7 @@ static const char *TAG = "timers";
 #define STORE_VERSION 2         /* 2 (1.56): warm_by, in what was padding in version 1 (same size) */
 #define MIN_EPOCH     1704067200LL   /* 2024-01-01: anything earlier is a clock that was never set */
 #define MAX_EPOCH     4102444800LL   /* 2100-01-01 */
+#define NET_TIME_MAGIC 0x4e544d31u   /* "NTM1": the clock running now came from the network (SNTP) */
 
 typedef struct {
     uint32_t version;
@@ -39,7 +42,11 @@ static uint32_t s_version;
 static at_runner_t s_runner;
 static char s_tz[AT_TZ_MAX];
 static volatile bool s_time_ok;      /* the system clock holds real time */
-static volatile bool s_sntp_synced;  /* ... from the network this boot */
+static volatile bool s_sntp_synced;  /* ... from the network, this boot or carried over a software restart */
+/* Set when SNTP sets the clock; a software restart leaves RTC memory and the system time alone, so after an update
+ * or a Reboot the clock is still network time and the cloud link need not wait for a new NTP answer (1.75). A power
+ * loss starts the clock again at 1970 and this word as garbage; the reset reason check below rules both out. */
+static RTC_NOINIT_ATTR uint32_t s_net_time_mark;
 static bool s_sntp_started;
 static bool s_started;
 static int64_t s_until;              /* 1.74: Auto goes off at this wall-clock time (0: no run time) */
@@ -188,6 +195,7 @@ static void sntp_synced_cb(struct timeval *tv)
 {
     s_time_ok = true;
     s_sntp_synced = true;
+    s_net_time_mark = NET_TIME_MAGIC;
     ESP_LOGI(TAG, "network time received");
 }
 
@@ -474,6 +482,12 @@ void at_timers_start(void)
     /* A software restart keeps the system time on this chip; a power loss does not (it starts in 1970 and
      * the clock stays "not ok" until the network or the app sets it). */
     s_time_ok = time_plausible();
-    ESP_LOGI(TAG, "%d timer(s), time zone '%s', clock %s", s_n, s_tz, s_time_ok ? "kept across the restart" : "not set");
+    /* Network time kept across a software restart (an update, Reboot, a crash) counts as network time. A clock the
+     * app set never does: it was not network time before the restart either, so the mark is not there. */
+    const esp_reset_reason_t rr = esp_reset_reason();
+    if (s_time_ok && s_net_time_mark == NET_TIME_MAGIC && (rr == ESP_RST_SW || rr == ESP_RST_PANIC)) s_sntp_synced = true;
+    else s_net_time_mark = 0;
+    ESP_LOGI(TAG, "%d timer(s), time zone '%s', clock %s", s_n, s_tz,
+             s_sntp_synced ? "network time kept across the restart" : s_time_ok ? "kept across the restart" : "not set");
     xTaskCreate(timers_task, "timers", 4096, NULL, 4, NULL);
 }

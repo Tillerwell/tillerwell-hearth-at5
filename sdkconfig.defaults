@@ -25,3 +25,9 @@ CONFIG_LWIP_DHCP_DOES_NOT_CHECK_OFFERED_IP=y
 # No ROM banner, and the bootloader only prints warnings
 CONFIG_BOOT_ROM_LOG_ALWAYS_OFF=y
 CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+
+# The first network time request goes out within a second of getting an address, not after a random wait of up to
+# 5 s (the IDF default). The cloud link dials only once the clock is network time. After a software restart the
+# network time is kept and nothing waits on this (1.75); after a power loss it does.
+CONFIG_LWIP_SNTP_STARTUP_DELAY=y
+CONFIG_LWIP_SNTP_MAXIMUM_STARTUP_DELAY=1000

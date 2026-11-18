@@ -15,6 +15,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_random.h"
+#include "esp_tls_errors.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -31,6 +32,7 @@ static const char *TAG = "cloud";
 #define BACKUP_CHECK_S 60        // how often the settings backup is rebuilt to see whether it changed
 #define STATE_OUTBOX_MAX 8192     // do not pile up more than this behind a stalled connection
 #define TICK_MS 1000
+#define FIRST_EP_KEY "cl_ep"          // NVS: the endpoint that last connected, dialled first after a restart (1.75)
 
 extern const char root_pem_start[] asm("_binary_hearth_root_ca_pem_start");
 
@@ -48,6 +50,9 @@ static size_t s_key_len, s_pem_len;
 static uint32_t s_gen;
 static uint32_t s_failures;
 static int s_endpoint;
+static int s_first;                 // the endpoint that last connected (FIRST_EP_KEY): every round starts there
+static volatile bool s_unresolved;  // the last attempt failed because the host name did not resolve
+static uint32_t s_unresolved_row;   // such failures in a row
 static int64_t s_started_s, s_up_s, s_next_try_s;
 static uint32_t s_connects, s_cmds_ok, s_cmds_refused, s_heap_min, s_heap_at_connect;
 static char s_base[48], s_uri[96], s_client_id[32], s_t_status[64], s_t_state[64], s_t_cmd[64], s_t_ack[64], s_t_event[64], s_t_backup[64];
@@ -280,6 +285,8 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         if (ev->error_handle) {
             ESP_LOGW(TAG, "error: type %d, tls 0x%x, connect refused %d", (int)ev->error_handle->error_type,
                      (unsigned)ev->error_handle->esp_tls_last_esp_err, (int)ev->error_handle->connect_return_code);
+            if (!s_up && ev->error_handle->esp_tls_last_esp_err == ESP_ERR_ESP_TLS_CANNOT_RESOLVE_HOSTNAME)
+                s_unresolved = true;
         }
         s_down = true;
         break;
@@ -370,6 +377,7 @@ static bool client_start(void)
     esp_mqtt_client_register_event(s_client, ESP_EVENT_ANY_ID, on_event, NULL);
     s_up = false;
     s_down = false;
+    s_unresolved = false;
     s_started_s = now_s();
     if (esp_mqtt_client_start(s_client) != ESP_OK) {
         client_stop(false);
@@ -382,12 +390,23 @@ static bool client_start(void)
 static void fail_and_wait(void)
 {
     bool stable = s_up_s && now_s() - s_up_s >= AT_CLOUDLINK_STABLE_S;
+    bool unresolved = s_unresolved;
     client_stop(false);
     s_up_s = 0;
-    s_failures = stable ? 1 : s_failures + 1;
-    s_endpoint = at_cloudlink_endpoint_for(s_failures, endpoint_count());
-    uint32_t d = at_cloudlink_retry_delay_s(s_failures);
-    d += esp_random() % (d / 4 + 1);   // a little spread so a fleet does not come back in step
+    uint32_t d;
+    if (unresolved) {
+        // No DNS record: no server was reached, so the next endpoint is dialled at once rather than this name
+        // three times with a backoff between (1.75: mqtt.tillerwell.com has no record and cost every restart ~20 s).
+        s_failures = at_cloudlink_failures_after_unresolved(stable ? 0 : s_failures);
+        s_unresolved_row++;
+        d = at_cloudlink_unresolved_delay_s(s_unresolved_row, s_failures, endpoint_count());
+    } else {
+        s_failures = stable ? 1 : s_failures + 1;
+        s_unresolved_row = 0;
+        d = at_cloudlink_retry_delay_s(s_failures);
+    }
+    s_endpoint = at_cloudlink_endpoint_from(s_first, s_failures, endpoint_count());
+    if (d > AT_CLOUDLINK_UNRESOLVED_S) d += esp_random() % (d / 4 + 1);   // a little spread so a fleet does not come back in step
     s_next_try_s = now_s() + d;
     s_state = "backoff";
     ESP_LOGW(TAG, "link down: retrying in %u s (failures %u, next endpoint %d)", (unsigned)d, (unsigned)s_failures, s_endpoint);
@@ -418,7 +437,8 @@ static void supervisor(void *arg)
         if (s_client && (!has_cert || gen != s_gen)) {
             client_stop(true);   // the owner removed the link, or replaced the certificate
             s_failures = 0;
-            s_endpoint = 0;
+            s_unresolved_row = 0;
+            s_endpoint = s_first;
             s_next_try_s = 0;
         }
         if (!has_cert) {
@@ -448,6 +468,11 @@ static void supervisor(void *arg)
         }
         if (s_up) {
             s_state = "online";
+            s_unresolved_row = 0;
+            if (s_endpoint != s_first) {   // remember the endpoint that works, so the next restart dials it first
+                uint8_t ep = (uint8_t)s_endpoint;
+                if (at_settings_blob_save(FIRST_EP_KEY, &ep, sizeof(ep)) == ESP_OK) s_first = s_endpoint;
+            }
             drain_commands();
             if (s_ota_go) {
                 s_ota_go = false;
@@ -480,6 +505,9 @@ esp_err_t at_cloudlink_start(at_cloudlink_exec_t exec)
     snprintf(s_t_ack, sizeof(s_t_ack), "%s/ack", s_base);
     snprintf(s_t_event, sizeof(s_t_event), "%s/event", s_base);
     snprintf(s_t_backup, sizeof(s_t_backup), "%s/backup", s_base);
+    uint8_t ep = 0;
+    if (at_settings_blob_load(FIRST_EP_KEY, &ep, sizeof(ep)) && ep < endpoint_count()) s_first = ep;
+    s_endpoint = s_first;
     s_cmds = xQueueCreate(CMD_QUEUE_DEPTH, sizeof(char *));
     if (!s_cmds) return ESP_ERR_NO_MEM;
     // Priority 2, below every heater task: when the cloud is slow or the radio is busy, only the cloud waits.
