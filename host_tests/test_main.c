@@ -1410,6 +1410,55 @@ static void test_timer_schedule(void)
 }
 
 /* The UK on 2026-03-29 (clocks forward at 01:00 UTC) and 2026-10-25 (clocks back at 01:00 UTC). */
+static void test_timer_run_end(void)
+{
+    printf("moving a running timer's end (run_end, 1.74)\n");
+    int32_t mon = at_days_from_civil(2026, 10, 26);
+    fake_t f = {0};
+    at_timer_ops_t ops = {f_preheat, f_begin, f_end, &f, NULL};
+    at_snapshot_t idle = mk_snap(15, 0, 0);
+    at_timer_t tl[1];
+    tl[0] = rep("th", 390, 60, WEEKDAYS);
+    tl[0].mode = AT_TMODE_THERMOSTAT;
+    tl[0].low_c = 20;
+    tl[0].high_c = 21;
+
+    for (int k = 0; k < 2; k++) {
+        /* k 0: extended from 60 to 100 min in all; k 1: cut to 15 min in all */
+        memset(&f, 0, sizeof(f));
+        at_runner_t r;
+        at_runner_init(&r);
+        uint32_t ms = 1000000;
+        CHECK(at_runner_left_ms(&r, ms) == 0);
+        at_runner_set_left(&r, ms, 60000);  /* nothing running: nothing happens */
+        CHECK(!r.active);
+        int m = 6 * 60 + 28;
+        for (; f.begins == 0 && m < 6 * 60 + 35; m++) {
+            at_localtime_t t = lt_at(mon, m);
+            at_runner_tick(&r, tl, 1, &t, ms += 60000, &idle, false, &ops);
+        }
+        CHECK(f.begins == 1 && r.active);
+        const uint32_t fired = ms;
+        CHECK(at_runner_left_ms(&r, fired) == 60u * 60000u);
+        /* ten minutes in, the user moves the end */
+        for (int i = 0; i < 10; i++, m++) {
+            at_localtime_t t = lt_at(mon, m);
+            at_runner_tick(&r, tl, 1, &t, ms += 60000, &idle, true, &ops);
+        }
+        at_runner_set_left(&r, ms, (k == 0 ? 90u : 5u) * 60000u);
+        CHECK(at_runner_left_ms(&r, ms) == (k == 0 ? 90u : 5u) * 60000u);
+        const uint32_t end_at = fired + (k == 0 ? 100u : 15u) * 60000u;
+        while (ms + 60000 < end_at) {
+            at_localtime_t t = lt_at(mon, m++);
+            at_runner_tick(&r, tl, 1, &t, ms += 60000, &idle, true, &ops);
+        }
+        CHECK(r.active && f.ends == 0);   /* the old end (k 0) passed without ending it */
+        at_localtime_t t = lt_at(mon, m++);
+        at_runner_tick(&r, tl, 1, &t, ms += 60000, &idle, true, &ops);
+        CHECK(!r.active && f.ends == 1 && f.last_disarm == 1);
+    }
+}
+
 static void test_timer_dst(void)
 {
     printf("timer firing across daylight saving\n");
@@ -1936,6 +1985,7 @@ int main(void)
     test_ctl();
     test_timer_rules();
     test_timer_schedule();
+    test_timer_run_end();
     test_timer_dst();
     test_timer_next();
     test_tz();

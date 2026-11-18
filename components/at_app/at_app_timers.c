@@ -21,6 +21,7 @@ static const char *TAG = "timers";
 #define NVS_NS        "autoterm"
 #define KEY_TIMERS    "timers"
 #define KEY_TZ        "tz"
+#define KEY_UNTIL     "auto_until"   /* 1.74: the thermostat's run time, epoch seconds (int64); absent: none */
 #define STORE_VERSION 2         /* 2 (1.56): warm_by, in what was padding in version 1 (same size) */
 #define MIN_EPOCH     1704067200LL   /* 2024-01-01: anything earlier is a clock that was never set */
 #define MAX_EPOCH     4102444800LL   /* 2100-01-01 */
@@ -41,6 +42,7 @@ static volatile bool s_time_ok;      /* the system clock holds real time */
 static volatile bool s_sntp_synced;  /* ... from the network this boot */
 static bool s_sntp_started;
 static bool s_started;
+static int64_t s_until;              /* 1.74: Auto goes off at this wall-clock time (0: no run time) */
 
 /* ---- storage ---------------------------------------------------------------------------------------- */
 
@@ -98,6 +100,27 @@ static void load_list(void)
         }
         free(buf);
     }
+    nvs_close(h);
+}
+
+static void save_until(int64_t v)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    esp_err_t err = v ? nvs_set_i64(h, KEY_UNTIL, v) : nvs_erase_key(h, KEY_UNTIL);
+    if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) ESP_LOGE(TAG, "saving the thermostat run time failed: %s", esp_err_to_name(err));
+}
+
+static void load_until(void)
+{
+    s_until = 0;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
+    int64_t v = 0;
+    if (nvs_get_i64(h, KEY_UNTIL, &v) == ESP_OK && v > 0) s_until = v;
     nvs_close(h);
 }
 
@@ -304,6 +327,11 @@ void at_app_timer_status(at_timer_status_t *o)
     }
     o->active = s_runner.active;
     if (s_runner.active) strlcpy(o->active_id, s_runner.id, sizeof(o->active_id));
+    if (s_runner.active && s_time_ok) {
+        o->run_ends_epoch = (int64_t)time(NULL) + (at_runner_left_ms(&s_runner, at_now_ms()) + 999u) / 1000u;
+    } else if (!s_runner.active && s_until && s_time_ok) {
+        o->run_ends_epoch = s_until;
+    }
     strlcpy(o->note, s_runner.note, sizeof(o->note));
     xSemaphoreGive(s_lock);
 }
@@ -333,7 +361,7 @@ static void timers_task(void *arg)
     char last_note[AT_TIMER_NOTE_LEN] = "";
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(1000));
-        if (s_n == 0 && !s_runner.active) continue;
+        if (s_n == 0 && !s_runner.active && !s_until) continue;
 
         at_view_t v;
         at_app_view(&v);   /* takes the thermostat and core locks: not while holding s_lock */
@@ -353,8 +381,85 @@ static void timers_task(void *arg)
             strlcpy(last_note, s_runner.note, sizeof(last_note));
             if (last_note[0]) ESP_LOGI(TAG, "%s", last_note);
         }
+        /* 1.74: the thermostat's run time. Auto switched off by anyone (or a timer's run, which has its own end)
+         * drops it; once the time is reached Auto goes off. Kept through a restart; one that ran out while the box
+         * was off ends Auto as soon as the clock is back. */
+        bool until_clear = false, until_due = false;
+        if (s_until) {
+            if (!v.auto_enabled || s_runner.active) {
+                until_clear = true;
+            } else if (s_time_ok && time(NULL) >= s_until) {
+                until_clear = until_due = true;
+            }
+            if (until_clear) s_until = 0;
+        }
         xSemaphoreGive(s_lock);
+        if (until_clear) save_until(0);
+        if (until_due) at_app_auto_until_end();
     }
+}
+
+/* ---- run end (1.74) --------------------------------------------------------------------------------- */
+
+void at_app_timers_preheat_left(uint32_t left_ms)
+{
+    if (!s_started) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_runner.active && s_runner.mode == AT_TMODE_PREHEAT) at_runner_set_left(&s_runner, at_now_ms(), left_ms);
+    xSemaphoreGive(s_lock);
+}
+
+bool at_app_auto_until_set(int minutes)
+{
+    if (!s_started || minutes < 0 || minutes > AT_RUN_END_MAX_MIN) return false;
+    at_view_t v;
+    at_app_view(&v);   /* takes the thermostat and core locks: not while holding s_lock */
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool ok = true;
+    if (s_runner.active) {
+        ok = false;                    /* a timer's run: its end is moved with run_end */
+    } else if (minutes == 0) {
+        s_until = 0;
+    } else if (!v.auto_enabled || !s_time_ok) {
+        ok = false;
+    } else {
+        s_until = (int64_t)time(NULL) + (int64_t)minutes * 60;
+    }
+    int64_t saved = s_until;
+    xSemaphoreGive(s_lock);
+    if (ok) {
+        save_until(saved);
+        if (saved) ESP_LOGI(TAG, "thermostat run time: Auto off in %d min", minutes);
+        else ESP_LOGI(TAG, "thermostat run time removed");
+    } else {
+        ESP_LOGW(TAG, "thermostat run time refused (%s)", s_runner.active ? "a timer is running"
+                                                         : !v.auto_enabled ? "Auto is off" : "clock not set");
+    }
+    return ok;
+}
+
+bool at_app_run_end(int minutes)
+{
+    if (!s_started || minutes < 0 || minutes > AT_RUN_END_MAX_MIN) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    const bool active = s_runner.active;
+    const uint8_t mode = s_runner.mode;
+    if (active && mode == AT_TMODE_THERMOSTAT && minutes > 0) {
+        if (minutes > AT_TIMER_MAX_DUR) minutes = AT_TIMER_MAX_DUR;
+        at_runner_set_left(&s_runner, at_now_ms(), (uint32_t)minutes * 60000u);
+        ESP_LOGI(TAG, "timer run now ends in %d min", minutes);
+    }
+    xSemaphoreGive(s_lock);
+    if (active) {
+        if (minutes == 0) return false;   /* a timer's run always has an end */
+        if (mode == AT_TMODE_PREHEAT) return at_app_preheat_left(minutes > AT_TIMER_MAX_DUR ? AT_TIMER_MAX_DUR : minutes);
+        return true;
+    }
+    at_view_t v;
+    at_app_view(&v);
+    if (v.auto_enabled) return at_app_auto_until_set(minutes);
+    if (v.snap.run_mode == AT_RUN_PREHEAT && v.snap.have_status && v.snap.status.state_raw != 0x00 && minutes > 0) return at_app_preheat_left(minutes);
+    return false;
 }
 
 void at_timers_start(void)
@@ -365,6 +470,7 @@ void at_timers_start(void)
     at_runner_init(&s_runner);
     load_tz();
     load_list();
+    load_until();
     /* A software restart keeps the system time on this chip; a power loss does not (it starts in 1970 and
      * the clock stays "not ok" until the network or the app sets it). */
     s_time_ok = time_plausible();

@@ -602,9 +602,17 @@ bool at_app_set_preheat_duration(int minutes)
     bool ok = at_cmd_set_preheat_duration(&s_core, minutes, at_now_ms());
     xSemaphoreGive(s_core_lock);
     if (ok) {
+        if (minutes < 1) minutes = 1;
+        if (minutes > 600) minutes = 600;
+        uint32_t now = at_now_ms();
         xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
         at_ctl_preheat_time(&s_ctl, minutes);
+        int so_far = s_ctl.run.running ? (int)((now - s_ctl.run.on_ms) / 60000u) : 0;
         xSemaphoreGive(s_ctl_lock);
+        /* 1.74: a preheat timer's run ends with the heater's new time, not the old one (no locks held: the timers
+         * task takes its own lock before these) */
+        int left = minutes - so_far;
+        at_app_timers_preheat_left((uint32_t)(left < 1 ? 1 : left) * 60000u);
     }
     return ok;
 }
@@ -807,6 +815,33 @@ static int run_time_for_locked(int minutes, uint32_t now)
 {
     uint32_t so_far = s_ctl.run.running ? (now - s_ctl.run.on_ms) / 60000u : 0;
     return (int)so_far + minutes;
+}
+
+bool at_app_preheat_left(int minutes)
+{
+    if (minutes < 1) minutes = 1;
+    uint32_t now = at_now_ms();
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    /* Heater Care: the heater never stops itself inside the minimum run */
+    int left_min = (int)((at_ctl_min_run_left_ms(&s_ctl, now) + 59999u) / 60000u);
+    if (minutes < left_min) minutes = left_min;
+    int total = run_time_for_locked(minutes, now);
+    xSemaphoreGive(s_ctl_lock);
+    if (total > 600) total = 600;
+    return at_app_set_preheat_duration(total);
+}
+
+void at_app_auto_until_end(void)
+{
+    at_snapshot_t snap;
+    snapshot_locked(&snap);
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    /* as a thermostat timer's end: inside the minimum run the stop waits for it (Heater Care) */
+    at_ctl_auto_off(&s_ctl, true, AT_HOLD_TIMER_ENDED, AT_SRC_TIMER, &snap, at_now_ms(), &s_ops);
+    xSemaphoreGive(s_ctl_lock);
+    bool off = false;
+    persist(m_auto, &off);
+    ESP_LOGI(TAG, "thermostat run time over: Auto off");
 }
 
 /* A run switched to thermostat holds a long run time, topped up before it runs out (0: none). */

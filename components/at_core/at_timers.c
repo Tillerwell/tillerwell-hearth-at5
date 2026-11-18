@@ -525,6 +525,19 @@ static void tick_warm(at_runner_t *r, const at_timer_t *list, int n, const at_lo
         snprintf(r->note, sizeof(r->note), "Warming for %s: started %02u:%02u (about %u min)", hm, nh, nm, about);
 }
 
+uint32_t at_runner_left_ms(const at_runner_t *r, uint32_t now_ms)
+{
+    if (!r->active) return 0;
+    uint32_t el = now_ms - r->start_ms;
+    return el >= r->length_ms ? 0 : r->length_ms - el;
+}
+
+void at_runner_set_left(at_runner_t *r, uint32_t now_ms, uint32_t left_ms)
+{
+    if (!r->active) return;
+    r->length_ms = (now_ms - r->start_ms) + left_ms;
+}
+
 void at_runner_tick(at_runner_t *r, const at_timer_t *list, int n, const at_localtime_t *now, uint32_t now_ms,
                     const at_snapshot_t *snap, bool auto_enabled, const at_timer_ops_t *ops)
 {

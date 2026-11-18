@@ -687,6 +687,9 @@ static cJSON *build_state_tree(void)
         cJSON_AddNullToObject(o, "next_timer");
     }
     add_str_or_null(o, "active_timer_id", ts.active ? ts.active_id : NULL);
+    /* 1.74: when the run going ends: a timer's run, or the thermostat's run time (null: no set end) */
+    if (ts.run_ends_epoch) cJSON_AddNumberToObject(o, "run_ends_at", (double)ts.run_ends_epoch);
+    else cJSON_AddNullToObject(o, "run_ends_at");
     cJSON_AddStringToObject(o, "timer_note", ts.note);
 
     if (s->have_ext && s->ext_active) {

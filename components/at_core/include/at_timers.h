@@ -217,6 +217,13 @@ void at_runner_init(at_runner_t *r);
 void at_runner_tick(at_runner_t *r, const at_timer_t *list, int n, const at_localtime_t *now, uint32_t now_ms,
                     const at_snapshot_t *snap, bool auto_enabled, const at_timer_ops_t *ops);
 
+/* The run in progress: its time left (0 with none), and moving its end to left_ms from now (1.74, the run_end
+ * command). Only the runner's own end moves; a preheat's run time on the heater is the caller's to change. The run
+ * then ends at the new time the same way it would have at the old one (a thermostat timer's stop still waits for
+ * Heater Care's minimum run). Nothing happens with no run going. */
+uint32_t at_runner_left_ms(const at_runner_t *r, uint32_t now_ms);
+void at_runner_set_left(at_runner_t *r, uint32_t now_ms, uint32_t left_ms);
+
 #ifdef __cplusplus
 }
 #endif

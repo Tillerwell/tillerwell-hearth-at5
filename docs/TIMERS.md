@@ -55,9 +55,12 @@ Finished one-offs are removed from the list a few seconds after their window end
 | `timezone` | POSIX TZ string in use, `""` if not set |
 | `next_timer` | `{"id","start_epoch","warm_by"}` of the next enabled start within a week, or `null`. For a warm-by timer also `expected_start_epoch` (inside the warming window the current prediction, recomputed each minute, or when it fired; before the window the start less the median lead of the last 5 warm-by runs, or less 60 min until there is one) and `estimate`: `"model"`, `"typical"` or `"fixed"` (docs/ADAPTIVE_THERMOSTAT.md §10.3). These change by the minute and are in the status only, never the backup |
 | `active_timer_id` | The timer whose run is in progress, else `null` |
+| `run_ends_at` | Firmware 1.74: epoch seconds when the run going ends: the running timer's end (moved by `run_end`), or a thermostat's run time. `null` with neither (a plain preheat's end is its start plus `preheat_total_min`) |
 | `timer_note` | The last firing and what came of it, e.g. `06:30 skipped: heater already running`, `Warming for 07:00: started 06:12 (room 14.2°C, about 48 min)`, `Warm by 07:00: waiting (heater already running)`, `Warm by 07:00: started 05:00, capped at 2 h, may be late` |
 
 `/api/info` also reports `timezone`.
+
+**Changing a running timer (firmware 1.74).** `{"cmd":"run_end","minutes":N}` (control) moves the running timer's end to N minutes from now, shorter or longer (1 to 480). A preheat timer's heater run time is changed with it (never below what is left of Heater Care's minimum run; at most 600 min from the run's start, the heater's limit). A thermostat timer then ends at the new time exactly as it would have at the old one: Auto off, the range put back, the stop waiting for the minimum run. `0` is refused for a timer: a timer's run always has an end. `preheat_duration` during a preheat timer's run also moves the timer's end now (before 1.74 the timer ended at its old time while the heater ran on). The saved timer is not changed: this is only today's run.
 
 ## Clock and time zone
 

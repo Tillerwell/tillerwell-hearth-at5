@@ -188,8 +188,27 @@ bool at_app_stop_care(at_src_t src, bool override, at_care_why_t *why);
 /* Auto on or off. override (Auto on only): the app's Start anyway inside the rest, so the first start need not wait. */
 void at_app_set_auto_care(bool enabled, bool finish_run, bool override, at_src_t src);
 bool at_app_start_preheat(int minutes);       /* minutes <= 0 uses the saved default */
-/* Change the total time of a preheat that is running (minutes from when it started). */
+/* Change the total time of a preheat that is running (minutes from when it started). A preheat timer's run
+ * follows it (1.74): its end moves to the preheat's new end. */
 bool at_app_set_preheat_duration(int minutes);
+/* The preheat going ends minutes from now (1.74, run_end): never sooner than what is left of Heater Care's
+ * minimum run, and at most 600 minutes from its start (the heater's own limit). */
+bool at_app_preheat_left(int minutes);
+/* A thermostat run time has run out (1.74): Auto off, the stop waiting for the minimum run like a timer's end. */
+void at_app_auto_until_end(void);
+
+/* ---- run end (1.74, docs/API_SPEC.md "run_end") ----------------------------------------------------------------
+ * When the run going ends, whatever started it. minutes from now, 1..AT_RUN_END_MAX_MIN; 0 removes a thermostat's
+ * run time (Auto then stays on until switched off). A running timer (either mode) has its end moved (a timer always
+ * has one, so 0 is refused); otherwise, with Auto on, the thermostat gets (or loses) a run time; otherwise a preheat
+ * going gets minutes more from now. False if there is nothing to change or the clock is not set (a thermostat run
+ * time is kept as a wall-clock time, so it lasts through a restart). */
+#define AT_RUN_END_MAX_MIN 1440
+bool at_app_run_end(int minutes);
+/* The thermostat run time alone: 0 removes it. False while a timer's run is going, with Auto off, or no clock. */
+bool at_app_auto_until_set(int minutes);
+/* timers glue: a preheat timer's run now has left_ms to go (called by at_app_set_preheat_duration). */
+void at_app_timers_preheat_left(uint32_t left_ms);
 bool at_app_start_thermostat(void);
 /* Switch the run that is going to thermostat or preheat, with no stop (1.68, docs/RUN_MODE.md). Preheat: Auto goes
  * off and the heater is given minutes more (<= 0: the saved preheat time; never less than what is left of the
@@ -418,6 +437,7 @@ typedef struct {
     bool active;
     char active_id[AT_TIMER_ID_LEN];
     char note[AT_TIMER_NOTE_LEN];
+    int64_t run_ends_epoch;     /* 1.74: when the timer's run going ends, or the thermostat's run time; 0: none */
 } at_timer_status_t;
 void at_app_timer_status(at_timer_status_t *out);
 

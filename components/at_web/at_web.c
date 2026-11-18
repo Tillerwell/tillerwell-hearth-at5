@@ -518,6 +518,11 @@ static bool run_cmd(const cJSON *j, at_src_t def_src, bool may_override, at_care
         ok = at_app_start_preheat_care((int)jnum(j, "minutes", 0), care_override(j, may_override), why);
     } else if (!strcmp(c, "preheat_duration")) {
         ok = at_app_set_preheat_duration((int)jnum(j, "minutes", 0));
+    } else if (!strcmp(c, "run_end")) {
+        /* 1.74: the run going ends minutes from now (a timer's run, a thermostat's run time, a preheat); 0 removes a
+         * thermostat's run time */
+        double m = jnum(j, "minutes", -1);
+        ok = m >= 0 && at_app_run_end((int)m);
     } else if (!strcmp(c, "run_mode")) {
         /* 1.68: switch the run that is going, with no stop; not a stop or a start, so no Heater Care lock */
         const char *m = jstr(j, "mode");
@@ -555,8 +560,12 @@ static bool run_cmd(const cJSON *j, at_src_t def_src, bool may_override, at_care
     } else if (!strcmp(c, "send_pubr0_variant")) {
         ok = at_app_send_pubr0_variant((int)jnum(j, "variant", 0));
     } else if (!strcmp(c, "auto")) {
-        at_app_set_auto_care(jbool(j, "enabled", false), finish_run(j, may_override), care_override(j, may_override),
-                             cmd_src(j, def_src));
+        bool on = jbool(j, "enabled", false);
+        at_app_set_auto_care(on, finish_run(j, may_override), care_override(j, may_override), cmd_src(j, def_src));
+        /* 1.74: "minutes" with Auto on is the thermostat's run time (Auto goes off then). Left out, any run time
+         * already set stays, so a sender that only re-sends "on" does not lose it. Auto is on whatever comes of it */
+        double m = jnum(j, "minutes", 0);
+        if (on && m >= 1 && !at_app_auto_until_set((int)m)) ESP_LOGW(TAG, "auto: run time not set");
     } else if (!strcmp(c, "auto_target")) {
         at_app_set_auto_target((float)jnum(j, "value", 20));
     } else if (!strcmp(c, "auto_range")) {
