@@ -31,6 +31,8 @@ extern "C" {
                                           * counts against the others in the gap rule */
 #define AT_TIMER_WARM_ABSENT 2           /* warm_by as parsed from a sender that did not send the key: keep the
                                           * stored value (at_timers_resolve_warm_by) */
+#define AT_TIMER_TENTH_ABSENT 127        /* high_d as parsed from a sender that did not send "high" (1.77): keep the
+                                          * stored tenths if high_c is unchanged (at_timers_resolve_tenths) */
 
 typedef enum { AT_TMODE_PREHEAT = 0, AT_TMODE_THERMOSTAT = 1 } at_timer_mode_t;
 
@@ -46,7 +48,22 @@ typedef struct {
     int8_t low_c, high_c;       /* thermostat only */
     uint8_t warm_by;            /* thermostat only: start early so the room is at high_c at the start time (1.56).
                                  * Sits in what was padding, so the struct is the same size as before */
+    int8_t high_d;              /* thermostat only (1.77): tenths on top of high_c, -5..4, so the set temperature is
+                                 * high_c + high_d / 10 and high_c stays its nearest whole degree for older senders.
+                                 * The last byte of what was padding: the struct is still 56 bytes */
 } at_timer_t;
+
+/* A thermostat timer's set temperature, to the tenth (1.77). */
+static inline float at_timer_high(const at_timer_t *t) { return (float)t->high_c + (float)t->high_d / 10.0f; }
+
+/* Split a set temperature into high_c (nearest whole degree, halves up) and high_d (tenths, -5..4). */
+static inline void at_timer_set_high(at_timer_t *t, float high)
+{
+    int tenths = (int)(high * 10.0f + (high >= 0 ? 0.5f : -0.5f));
+    int whole = tenths >= 0 ? (tenths + 5) / 10 : -((-tenths + 4) / 10);
+    t->high_c = (int8_t)whole;
+    t->high_d = (int8_t)(tenths - whole * 10);
+}
 
 /* The box's local time at one instant. ok is false until the clock and time zone can be trusted. */
 typedef struct {
@@ -110,6 +127,11 @@ at_timer_problem_t at_timers_validate(const at_timer_t *list, int n, const at_ti
  * each timer parsed with AT_TIMER_WARM_ABSENT takes the stored value for its id (false if new, or now a preheat). */
 void at_timers_resolve_warm_by(at_timer_t *list, int n, const at_timer_t *existing, int n_existing);
 
+/* A sender that does not know "high" (an older app, the website or Home Assistant before 1.77) sends only the whole
+ * high_c: each timer parsed with AT_TIMER_TENTH_ABSENT keeps the stored tenths for its id while high_c is unchanged
+ * (the sender re-saved the list without touching it), and is a whole degree otherwise. */
+void at_timers_resolve_tenths(at_timer_t *list, int n, const at_timer_t *existing, int n_existing);
+
 /* Remove finished one-offs (except `keep_id`, the run in progress) in place; returns the new count. */
 int at_timers_prune_expired(at_timer_t *list, int n, const at_localtime_t *now, const char *keep_id);
 
@@ -149,7 +171,7 @@ typedef struct {
 /* What the runner needs from the heater side. Each returns false if nothing was started. */
 typedef struct {
     bool (*start_preheat)(void *ctx, int minutes);
-    bool (*thermostat_begin)(void *ctx, int low_c, int high_c);
+    bool (*thermostat_begin)(void *ctx, int low_c, float high);   /* high: the set temperature, to the tenth */
     /* disarm=false when the user already switched Auto off by hand: only put things back. */
     void (*thermostat_end)(void *ctx, bool disarm);
     void *ctx;

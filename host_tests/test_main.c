@@ -1178,7 +1178,8 @@ static void test_timer_rules(void)
 }
 
 typedef struct {
-    int preheats, last_minutes, begins, ends, last_disarm, low, high;
+    int preheats, last_minutes, begins, ends, last_disarm, low;
+    float high;
     bool fail;
 } fake_t;
 
@@ -1190,7 +1191,7 @@ static bool f_preheat(void *c, int m)
     f->last_minutes = m;
     return true;
 }
-static bool f_begin(void *c, int lo, int hi)
+static bool f_begin(void *c, int lo, float hi)
 {
     fake_t *f = c;
     if (f->fail) return false;
@@ -1410,6 +1411,82 @@ static void test_timer_schedule(void)
 }
 
 /* The UK on 2026-03-29 (clocks forward at 01:00 UTC) and 2026-10-25 (clocks back at 01:00 UTC). */
+/* 1.77: a thermostat timer's set temperature to the tenth, in the spare byte high_d */
+static void test_timer_tenths(void)
+{
+    printf("timer set temperature in tenths\n");
+    at_timer_t t = rep("x", 600, 60, WEEKDAYS);
+    t.mode = AT_TMODE_THERMOSTAT;
+    t.low_c = 18;
+    /* high_c is the nearest whole degree (halves up), high_d the tenths on top */
+    at_timer_set_high(&t, 19.2f);
+    CHECK(t.high_c == 19 && t.high_d == 2 && fabsf(at_timer_high(&t) - 19.2f) < 1e-4f);
+    at_timer_set_high(&t, 19.5f);
+    CHECK(t.high_c == 20 && t.high_d == -5 && fabsf(at_timer_high(&t) - 19.5f) < 1e-4f);
+    at_timer_set_high(&t, 19.96f);
+    CHECK(t.high_c == 20 && t.high_d == 0);
+    at_timer_set_high(&t, 21.0f);
+    CHECK(t.high_c == 21 && t.high_d == 0);
+    CHECK(sizeof(at_timer_t) == 56);   /* the saved blob's item size is unchanged */
+
+    /* validation: 30 is the top, tenths in -5..4 */
+    at_localtime_t now = lt_at(at_days_from_civil(2026, 10, 26), 0);
+    now.ok = false;
+    at_timer_set_high(&t, 29.9f);
+    t.low_c = 29;
+    CHECK(is_ok(at_timers_validate(&t, 1, NULL, 0, &now, 1)));
+    t.high_c = 30;
+    t.high_d = 1;
+    CHECK(!is_ok(at_timers_validate(&t, 1, NULL, 0, &now, 1)));
+    t.high_c = 20;
+    t.high_d = 7;
+    t.low_c = 19;
+    CHECK(!is_ok(at_timers_validate(&t, 1, NULL, 0, &now, 1)));
+
+    /* an older sender re-saving the list (no "high") keeps the tenths; one that changed high_c gets a whole degree */
+    at_timer_t stored = rep("x", 600, 60, WEEKDAYS);
+    stored.mode = AT_TMODE_THERMOSTAT;
+    stored.low_c = 18;
+    at_timer_set_high(&stored, 19.2f);
+    at_timer_t in[3];
+    in[0] = stored;
+    in[0].high_d = AT_TIMER_TENTH_ABSENT;
+    in[1] = stored;
+    in[1].high_c = 21;
+    in[1].low_c = 20;
+    in[1].high_d = AT_TIMER_TENTH_ABSENT;
+    strcpy(in[1].id, "y");
+    in[2] = in[0];
+    in[2].high_c = 22;
+    in[2].low_c = 21;
+    at_timers_resolve_tenths(in, 1, &stored, 1);
+    CHECK(in[0].high_d == 2);
+    at_timers_resolve_tenths(in + 1, 2, &stored, 1);
+    CHECK(in[1].high_d == 0 && in[2].high_d == 0);
+    /* a new-style sender's value is never touched */
+    in[0] = stored;
+    in[0].high_d = -3;
+    at_timers_resolve_tenths(in, 1, &stored, 1);
+    CHECK(in[0].high_d == -3);
+
+    /* the runner arms the thermostat at 19.2, not 19 */
+    int32_t mon = at_days_from_civil(2026, 10, 26);
+    fake_t f = {0};
+    at_timer_ops_t ops = {f_preheat, f_begin, f_end, &f, NULL};
+    at_snapshot_t idle = mk_snap(15, 0, 0);
+    at_runner_t r;
+    at_timer_t tl = rep("th", 7 * 60 + 30, 60, WEEKDAYS);
+    tl.mode = AT_TMODE_THERMOSTAT;
+    tl.low_c = 18;
+    at_timer_set_high(&tl, 19.2f);
+    at_runner_init(&r);
+    at_localtime_t tt = lt_at(mon, 7 * 60 + 29);
+    at_runner_tick(&r, &tl, 1, &tt, 1000000, &idle, false, &ops);
+    tt = lt_at(mon, 7 * 60 + 30);
+    at_runner_tick(&r, &tl, 1, &tt, 1060000, &idle, false, &ops);
+    CHECK(f.begins == 1 && fabsf(f.high - 19.2f) < 1e-4f);
+}
+
 static void test_timer_run_end(void)
 {
     printf("moving a running timer's end (run_end, 1.74)\n");
@@ -1985,6 +2062,7 @@ int main(void)
     test_ctl();
     test_timer_rules();
     test_timer_schedule();
+    test_timer_tenths();
     test_timer_run_end();
     test_timer_dst();
     test_timer_next();

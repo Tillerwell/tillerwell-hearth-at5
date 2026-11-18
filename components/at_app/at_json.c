@@ -61,6 +61,8 @@ static cJSON *timer_to_json(const at_timer_t *t)
     }
     cJSON_AddNumberToObject(o, "low_c", t->low_c);
     cJSON_AddNumberToObject(o, "high_c", t->high_c);
+    /* 1.77: the set temperature to the tenth; high_c is its nearest whole degree, for older apps */
+    cJSON_AddNumberToObject(o, "high", round(at_timer_high(t) * 10.0) / 10.0);
     cJSON_AddBoolToObject(o, "warm_by", t->warm_by == 1);
     return o;
 }
@@ -134,6 +136,14 @@ static bool timer_from_json(const cJSON *o, at_timer_t *t, char *err, size_t err
     i = cJSON_GetObjectItemCaseSensitive(o, "high_c");
     if (i && (!jint(i, &v) || v < -128 || v > 127)) FAIL("high_c must be a whole number");
     if (i) t->high_c = (int8_t)v;
+    /* 1.77: "high", the set temperature to the tenth, wins over high_c. Left out (an older sender), the stored tenths
+     * are kept while high_c is unchanged (at_timers_resolve_tenths) */
+    t->high_d = AT_TIMER_TENTH_ABSENT;
+    i = cJSON_GetObjectItemCaseSensitive(o, "high");
+    if (i && !cJSON_IsNull(i)) {
+        if (!cJSON_IsNumber(i) || i->valuedouble < -100 || i->valuedouble > 100) FAIL("high must be a temperature");
+        at_timer_set_high(t, (float)i->valuedouble);
+    }
     /* warm by (1.56): a sender that does not know it leaves it out, and the stored value is kept for that id. Only
      * an explicit false clears it */
     i = cJSON_GetObjectItemCaseSensitive(o, "warm_by");

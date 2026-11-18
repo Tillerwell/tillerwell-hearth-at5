@@ -376,7 +376,7 @@ int at_app_log_copy(at_log_entry_t *out, int max);
  * to the user's own Auto settings). Begin remembers the band and arms Auto with low..high (widened to the
  * hysteresis minimum); end optionally disarms Auto (sending stop) and puts the band back unless the user
  * changed it meanwhile. */
-bool at_app_timer_thermostat_begin(int low_c, int high_c);
+bool at_app_timer_thermostat_begin(int low_c, float high);
 void at_app_timer_thermostat_end(bool disarm);
 /* True while the heater runs on only to finish a timer's minimum run: the next thermostat timer may take it over. */
 bool at_app_timer_can_take_over(void);

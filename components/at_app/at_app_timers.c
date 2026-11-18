@@ -24,7 +24,8 @@ static const char *TAG = "timers";
 #define KEY_TIMERS    "timers"
 #define KEY_TZ        "tz"
 #define KEY_UNTIL     "auto_until"   /* 1.74: the thermostat's run time, epoch seconds (int64); absent: none */
-#define STORE_VERSION 2         /* 2 (1.56): warm_by, in what was padding in version 1 (same size) */
+#define STORE_VERSION 3         /* 2 (1.56): warm_by, in what was padding in version 1 (same size); 3 (1.77): high_d,
+                                 * the last padding byte */
 #define MIN_EPOCH     1704067200LL   /* 2024-01-01: anything earlier is a clock that was never set */
 #define MAX_EPOCH     4102444800LL   /* 2100-01-01 */
 #define NET_TIME_MAGIC 0x4e544d31u   /* "NTM1": the clock running now came from the network (SNTP) */
@@ -85,13 +86,17 @@ static void load_list(void)
         if (buf && nvs_get_blob(h, KEY_TIMERS, buf, &size) == ESP_OK) {
             store_hdr_t hdr;
             memcpy(&hdr, buf, sizeof(hdr));
-            if ((hdr.version == STORE_VERSION || hdr.version == 1) && hdr.item_size == sizeof(at_timer_t) &&
+            if (hdr.version >= 1 && hdr.version <= STORE_VERSION && hdr.item_size == sizeof(at_timer_t) &&
                 hdr.count <= AT_TIMERS_MAX && size == sizeof(hdr) + hdr.count * sizeof(at_timer_t)) {
                 at_timer_t tmp[AT_TIMERS_MAX];
                 memcpy(tmp, buf + sizeof(hdr), hdr.count * sizeof(at_timer_t));
                 /* version 1 had padding where warm_by now is: never trust what was in it */
                 if (hdr.version == 1) {
                     for (uint32_t k = 0; k < hdr.count; k++) tmp[k].warm_by = 0;
+                }
+                /* versions 1 and 2 had padding where high_d now is: whole degrees, as they were */
+                if (hdr.version < 3) {
+                    for (uint32_t k = 0; k < hdr.count; k++) tmp[k].high_d = 0;
                 }
                 at_localtime_t noclock = {0};   /* nothing is "in the past" without a clock */
                 at_timer_problem_t p = at_timers_validate(tmp, (int)hdr.count, tmp, (int)hdr.count, &noclock, 0);
@@ -279,6 +284,8 @@ esp_err_t at_app_timers_set(const at_timer_t *list, int n, at_timer_problem_t *p
     /* a sender that did not send warm_by keeps the stored value for that id */
     memcpy(cand, list, (size_t)n * sizeof(at_timer_t));
     at_timers_resolve_warm_by(cand, n, s_list, s_n);
+    /* and one that did not send "high" (1.77) keeps the stored tenths while high_c is unchanged */
+    at_timers_resolve_tenths(cand, n, s_list, s_n);
     at_timer_problem_t p = at_timers_validate(cand, n, s_list, s_n, &now, gap);
     if (problem) *problem = p;
     if (p.err != AT_TERR_NONE) {
@@ -329,7 +336,7 @@ void at_app_timer_status(at_timer_status_t *o)
                 uint32_t lead;
                 if (!at_app_warm_typical_lead(&lead)) lead = AT_WARM_FIXED_LEAD_MIN;
                 o->next_expected_epoch = o->next_start_epoch - (int64_t)lead * 60;
-                o->next_estimate = at_app_warm_estimate((float)t->high_c);
+                o->next_estimate = at_app_warm_estimate(at_timer_high(t));
             }
         }
     }
@@ -347,7 +354,7 @@ void at_app_timer_status(at_timer_status_t *o)
 /* ---- the task --------------------------------------------------------------------------------------- */
 
 static bool op_preheat(void *ctx, int minutes) { return at_app_start_preheat(minutes); }
-static bool op_begin(void *ctx, int low, int high) { return at_app_timer_thermostat_begin(low, high); }
+static bool op_begin(void *ctx, int low, float high) { return at_app_timer_thermostat_begin(low, high); }
 static void op_end(void *ctx, bool disarm) { at_app_timer_thermostat_end(disarm); }
 static bool op_take_over(void *ctx) { return at_app_timer_can_take_over(); }
 static bool op_warm_plan(void *ctx, const at_timer_t *t, int64_t start_epoch, at_warm_plan_t *out)

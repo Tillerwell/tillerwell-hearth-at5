@@ -183,5 +183,32 @@ int main(void)
     cJSON_Delete(o);
     free(js);
     printf(fails ? "status size: FAILED\n" : "status size: ok\n");
+
+    /* 1.77: a timer's set temperature to the tenth goes out as "high" (and high_c, its whole degree, for older apps)
+     * and comes back from it. The same JSON carries timers in the cloud backup and its restore */
+    {
+        at_timer_t t = {0}, back;
+        char why[96];
+        strcpy(t.id, "a");
+        t.enabled = true;
+        t.mode = AT_TMODE_THERMOSTAT;
+        t.start_minute = 600;
+        t.duration_min = 60;
+        t.days = 0x1f;
+        t.low_c = 18;
+        at_timer_set_high(&t, 19.2f);
+        cJSON *tj = timer_to_json(&t);
+        const double hi = cJSON_GetObjectItem(tj, "high")->valuedouble;
+        const double hc = cJSON_GetObjectItem(tj, "high_c")->valuedouble;
+        bool ok = hi == 19.2 && hc == 19;
+        ok = ok && timer_from_json(tj, &back, why, sizeof why) && back.high_c == 19 && back.high_d == 2;
+        cJSON_DeleteItemFromObject(tj, "high");     /* an older sender */
+        ok = ok && timer_from_json(tj, &back, why, sizeof why) && back.high_c == 19 && back.high_d == AT_TIMER_TENTH_ABSENT;
+        cJSON_AddNumberToObject(tj, "high", 19.5);
+        ok = ok && timer_from_json(tj, &back, why, sizeof why) && back.high_c == 20 && back.high_d == -5;
+        cJSON_Delete(tj);
+        printf(ok ? "timer tenths JSON: ok\n" : "timer tenths JSON: FAILED\n");
+        if (!ok) fails++;
+    }
     return fails ? 1 : 0;
 }

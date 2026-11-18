@@ -1020,23 +1020,23 @@ static float s_tm_prev_low, s_tm_prev_high, s_tm_low, s_tm_high;
 static bool s_tm_have;
 
 /* Call with s_ctl_lock held: remember the user's range and set the timer's. */
-static void timer_range_locked(int high_c)
+static void timer_range_locked(float high)
 {
     s_tm_prev_low = s_ctl.autot.low;
     s_tm_prev_high = s_ctl.autot.high;
-    set_temp_locked((float)high_c);
+    set_temp_locked(high);
     s_tm_low = s_ctl.autot.low;
     s_tm_high = s_ctl.autot.high;
     s_tm_have = true;
 }
 
-bool at_app_timer_thermostat_begin(int low_c, int high_c)
+bool at_app_timer_thermostat_begin(int low_c, float high)
 {
     at_snapshot_t snap;
     snapshot_locked(&snap);
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
     (void)low_c;
-    timer_range_locked(high_c);
+    timer_range_locked(high);
     at_ctl_set_auto(&s_ctl, true, &snap, at_now_ms(), &s_ops);
     xSemaphoreGive(s_ctl_lock);
     return true;
@@ -1062,7 +1062,7 @@ bool at_app_warm_plan(const at_timer_t *t, int64_t start_epoch, at_warm_plan_t *
     (void)start_epoch;
     at_warm_pred_t p;
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
-    warm_predict_locked((float)t->high_c, at_now_ms(), &p);
+    warm_predict_locked(at_timer_high(t), at_now_ms(), &p);
     xSemaphoreGive(s_ctl_lock);
     out->lead_s = p.lead_s;
     out->capped = p.capped;
@@ -1079,7 +1079,7 @@ bool at_app_warm_begin(const at_timer_t *t, int64_t start_epoch, const at_warm_p
     bool clock = wall_clock(&epoch);
     uint32_t now = at_now_ms();
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
-    timer_range_locked(t->high_c);
+    timer_range_locked(at_timer_high(t));
     float lo, hi;
     at_ctl_working_range(&s_ctl, &lo, &hi);
     const bool have = s_ctl.room_ok;
@@ -1092,9 +1092,9 @@ bool at_app_warm_begin(const at_timer_t *t, int64_t start_epoch, const at_warm_p
     if (hint == AT_WARM_RES_PENDING && at_ctl_min_off_left_ms(&s_ctl, now) > 0) hint = AT_WARM_RES_DELAYED;
     if (hint == AT_WARM_RES_PENDING && inside) hint = AT_WARM_RES_IN_RANGE;
     at_warm_pred_t p;
-    warm_predict_locked((float)t->high_c, now, &p);
+    warm_predict_locked(at_timer_high(t), now, &p);
     const int64_t left = clock ? start_epoch - epoch : 0;
-    at_warm_fired(&s_ctl.warm, clock ? epoch : 0, start_epoch, &p, (float)t->high_c, have, temp, (at_warm_res_t)hint,
+    at_warm_fired(&s_ctl.warm, clock ? epoch : 0, start_epoch, &p, at_timer_high(t), have, temp, (at_warm_res_t)hint,
                   left > 0 ? (uint32_t)left : 0);
     at_ctl_allow_warm_start(&s_ctl, inside && plan->in_range_ok);
     at_ctl_set_auto(&s_ctl, true, &snap, now, &s_ops);

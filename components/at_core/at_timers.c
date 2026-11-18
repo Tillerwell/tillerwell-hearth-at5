@@ -168,7 +168,8 @@ static bool same_timer(const at_timer_t *a, const at_timer_t *b)
 {
     return !strcmp(a->id, b->id) && a->enabled == b->enabled && a->mode == b->mode && a->start_minute == b->start_minute &&
            a->duration_min == b->duration_min && a->days == b->days && a->one_off == b->one_off &&
-           a->date_day == b->date_day && a->low_c == b->low_c && a->high_c == b->high_c && a->warm_by == b->warm_by;
+           a->date_day == b->date_day && a->low_c == b->low_c && a->high_c == b->high_c && a->warm_by == b->warm_by &&
+           a->high_d == b->high_d;
 }
 
 /* The two clash only because of warm by's early start, and neither is new or edited: saved before, left alone (its
@@ -186,6 +187,23 @@ static bool clash_plain(const at_timer_t *a, const at_timer_t *b)
     at_timer_t x = *a, y = *b;
     x.warm_by = y.warm_by = 0;
     return clash(&x, &y);
+}
+
+void at_timers_resolve_tenths(at_timer_t *list, int n, const at_timer_t *existing, int n_existing)
+{
+    for (int i = 0; i < n; i++) {
+        at_timer_t *t = &list[i];
+        if (t->high_d != AT_TIMER_TENTH_ABSENT) continue;
+        t->high_d = 0;
+        if (t->mode != AT_TMODE_THERMOSTAT) continue;
+        for (int k = 0; k < n_existing; k++) {
+            if (!strcmp(existing[k].id, t->id)) {
+                if (existing[k].high_c == t->high_c && existing[k].high_d >= -5 && existing[k].high_d <= 4)
+                    t->high_d = existing[k].high_d;
+                break;
+            }
+        }
+    }
 }
 
 void at_timers_resolve_warm_by(at_timer_t *list, int n, const at_timer_t *existing, int n_existing)
@@ -254,7 +272,8 @@ at_timer_problem_t at_timers_validate(const at_timer_t *list, int n, const at_ti
         }
         if (t->start_minute > 1439) return problem(AT_TERR_BAD_START, i, -1);
         if (t->mode == AT_TMODE_THERMOSTAT &&
-            (t->low_c < 0 || t->high_c > 30 || t->low_c >= t->high_c || (float)(t->high_c - t->low_c) < min_gap_c)) {
+            (t->low_c < 0 || t->high_d < -5 || t->high_d > 4 || at_timer_high(t) > 30.001f || t->low_c >= t->high_c ||
+             (float)(t->high_c - t->low_c) < min_gap_c)) {
             return problem(AT_TERR_BAD_RANGE, i, -1);
         }
         if (at_timer_expired(t, now)) {
@@ -504,7 +523,7 @@ static void tick_warm(at_runner_t *r, const at_timer_t *list, int n, const at_lo
     uint8_t hint = r->warm_capped ? AT_WARM_RES_CAPPED : r->warm_waited ? AT_WARM_RES_DELAYED : AT_WARM_RES_PENDING;
     float room = NAN;
     bool ok = ops->warm_begin ? ops->warm_begin(ops->ctx, t, ws, &r->warm_plan, hint, &room)
-                              : ops->thermostat_begin(ops->ctx, t->low_c, t->high_c);
+                              : ops->thermostat_begin(ops->ctx, t->low_c, at_timer_high(t));
     if (!ok) {
         r->warm_waited = true;
         snprintf(r->note, sizeof(r->note), "Warm by %s: waiting (command not sent)", hm);
@@ -589,7 +608,7 @@ void at_runner_tick(at_runner_t *r, const at_timer_t *list, int n, const at_loca
         float room;
         ok = ops->warm_begin(ops->ctx, t, now->epoch_s, &p, AT_WARM_RES_AT_START, &room);
     } else {
-        ok = ops->thermostat_begin(ops->ctx, t->low_c, t->high_c);
+        ok = ops->thermostat_begin(ops->ctx, t->low_c, at_timer_high(t));
     }
     if (!ok) {
         note(r, t, "skipped: command not sent");
