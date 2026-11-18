@@ -4,6 +4,7 @@
 
 #include "at_matter.h"
 
+#include <cmath>
 #include <cstring>
 
 #include <esp_log.h>
@@ -247,9 +248,9 @@ static void sync_task(void *)
         push(s_ep_thermostat, Thermostat::Id, Thermostat::Attributes::SystemMode::Id,
              esp_matter_enum8(v.auto_enabled ? 1 /* Auto: shows the range */ : 0 /* Off */));
         push(s_ep_thermostat, Thermostat::Id, Thermostat::Attributes::OccupiedHeatingSetpoint::Id,
-             esp_matter_int16((int16_t)(v.auto_low * 100)));
+             esp_matter_int16((int16_t)lroundf(v.auto_low * 100)));
         push(s_ep_thermostat, Thermostat::Id, Thermostat::Attributes::OccupiedCoolingSetpoint::Id,
-             esp_matter_int16((int16_t)(v.auto_high * 100)));
+             esp_matter_int16((int16_t)lroundf(v.auto_high * 100)));
         push(s_ep_thermostat, Thermostat::Id, Thermostat::Attributes::MinSetpointDeadBand::Id,
              esp_matter_int8((int8_t)(at_app_band_min_gap() * 10 + 0.5f)));
         if (s.have_status) {
@@ -295,8 +296,8 @@ extern "C" esp_err_t at_matter_start(void)
     th.thermostat.feature_flags = cluster::thermostat::feature::heating::get_id() |
                                   cluster::thermostat::feature::cooling::get_id() |
                                   cluster::thermostat::feature::auto_mode::get_id();
-    th.thermostat.features.heating.occupied_heating_setpoint = (int16_t)(v0.auto_low * 100);
-    th.thermostat.features.cooling.occupied_cooling_setpoint = (int16_t)(v0.auto_high * 100);
+    th.thermostat.features.heating.occupied_heating_setpoint = (int16_t)lroundf(v0.auto_low * 100);
+    th.thermostat.features.cooling.occupied_cooling_setpoint = (int16_t)lroundf(v0.auto_high * 100);
     th.thermostat.features.auto_mode.min_setpoint_dead_band = (int8_t)(at_app_band_min_gap() * 10 + 0.5f);
     endpoint_t *ep = thermostat::create(node, &th, ENDPOINT_FLAG_NONE, nullptr);
     s_ep_thermostat = endpoint::get_id(ep);

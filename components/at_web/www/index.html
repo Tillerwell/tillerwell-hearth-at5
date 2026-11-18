@@ -93,9 +93,9 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:
     <h2>Thermostat</h2>
     <div class="sw"><span>Auto thermostat</span><input type="checkbox" id="auto" onchange="autoClick(this)"></div>
     <div class="row"><span class="k" style="width:44px">Set to</span>
-      <button class="b" onclick="setTemp(-.5)">−</button>
+      <button class="b" onclick="setTemp(-.1)">−</button>
       <span class="v" id="ahi">–</span>
-      <button class="b" onclick="setTemp(.5)">+</button></div>
+      <button class="b" onclick="setTemp(.1)">+</button></div>
     <div class="note" id="hc"></div>
     <div class="note" id="hcexp" style="color:var(--fg)"></div>
     <div class="row hide" id="hcokrow"><button class="b" onclick="earlySeen()">OK</button></div>
@@ -239,8 +239,8 @@ function autoClick(el){
   cmd({cmd:'auto',enabled:false,finish_run:finishAsk()});
 }
 function setTemp(d){
-  const hi=Math.min(30,Math.max(1,st.auto_high+d));
-  const c={cmd:'auto_range',low:hi-1,high:hi};
+  const hi=Math.round(Math.min(30,Math.max(1,st.auto_high+d))*10)/10;
+  const c={cmd:'auto_range',low:Math.round((hi-1)*10)/10,high:hi};
   if(st.auto_enabled&&st.effective_temp!=null&&st.effective_temp>=hi&&stopLeft())c.finish_run=finishAsk();
   cmd(c);
 }

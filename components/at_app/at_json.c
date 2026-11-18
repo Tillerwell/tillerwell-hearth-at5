@@ -607,9 +607,9 @@ static cJSON *build_state_tree(void)
     cJSON_AddBoolToObject(o, "heater_temp_external", s->room_to_heater);
 
     cJSON_AddBoolToObject(o, "auto_enabled", v.auto_enabled);
-    cJSON_AddNumberToObject(o, "auto_target", v.auto_target);
-    cJSON_AddNumberToObject(o, "auto_low", v.auto_low);
-    cJSON_AddNumberToObject(o, "auto_high", v.auto_high);
+    cJSON_AddNumberToObject(o, "auto_target", round3(v.auto_target));
+    cJSON_AddNumberToObject(o, "auto_low", round3(v.auto_low));
+    cJSON_AddNumberToObject(o, "auto_high", round3(v.auto_high));
     cJSON_AddNumberToObject(o, "hyst_min", v.hyst_min);
     cJSON_AddNumberToObject(o, "hyst_max", v.hyst_max);
     cJSON_AddNumberToObject(o, "auto_start_at", round(v.auto_start_at * 10.0) / 10.0);

@@ -258,8 +258,14 @@ void at_ctl_set_auto_target(at_ctl_t *t, float target)
     at_learn_check_limits(&t->learn, user_width(t));
 }
 
+/* The set temperature is kept to 0.1 C (1.76: apps set 19.2 as well as 19 or 19.5), so 19.23 from Matter or an
+ * older sender lands on 19.2 and the status, backup and Matter all agree on it. */
+static float tenth(float v) { return roundf(v * 10.0f) / 10.0f; }
+
 void at_ctl_set_auto_range(at_ctl_t *t, float low, float high)
 {
+    low = tenth(low);
+    high = tenth(high);
     if (high < low) {
         float x = low;
         low = high;

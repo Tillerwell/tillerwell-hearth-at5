@@ -2398,8 +2398,38 @@ static void test_ctl_coast(void)
     }
 }
 
+/* 1.76: a set temperature in tenths, 19.2, is kept to the tenth, and a run on the room sensor stops at it */
+static void test_ctl_tenths(void)
+{
+    printf("Heater Care: a set temperature in tenths\n");
+    {
+        at_ctl_t t;
+        at_ctl_init(&t, 20.5f, 5.0f);
+        at_ctl_set_auto_range(&t, 18.23f, 19.23f);
+        CHECK(fabsf(t.autot.high - 19.2f) < 1e-4f && fabsf(t.autot.low - 18.2f) < 1e-4f);
+        at_ctl_set_auto_range(&t, 18.16f, 19.16f);
+        CHECK(fabsf(t.autot.high - 19.2f) < 1e-4f);
+    }
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 17.5f);
+        at_ctl_set_auto_range(&t, 18.2f, 19.2f);
+        m.rate_on = 0.03f;      /* about 1.8 C an hour: the climb past 18.2 takes well over the 30 min */
+        hsim_arm(&m);
+        CHECK(HSIM_UNTIL(&m, m.l.starts == 1, 5 * MIN_MS));
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 1, 4 * 60 * MIN_MS));
+        /* stopped at 19.2, not at 19 or 20 (the room feed is in tenths, so within one step of it) */
+        CHECK(m.room >= 19.15f && m.room < 19.35f);
+        at_ctl_status_t st;
+        at_ctl_status(&t, m.now, &st);
+        CHECK(fabsf(st.work_high - 19.2f) < 1e-4f);
+    }
+}
+
 static void test_ctl(void)
 {
+    test_ctl_tenths();
     test_ctl_dip_relevant();
     test_ctl_coast();
     test_rise_rate_any_good_run();
