@@ -14,7 +14,7 @@
  * Locks:   Hearth's own stops (top of the range, a timer ending, the thermostat turned off with "let it finish",
  *          every reading lost) wait until the run has burned 30 minutes from flame established (20 for frost
  *          protection). A fault, the ceiling (top + 5 C) and a stop someone asked for always go at once. A
- *          thermostat start waits until the heater has been idle 20 minutes.
+ *          thermostat start waits until the heater has been idle 20 seconds (1.79; 20 minutes before).
  * A fault never disables either loop: start attempts back off 5, 15 and 20 minutes, then stop until the fault
  * clears.
  */
@@ -47,7 +47,7 @@ extern "C" {
 #define AT_CTL_MIN_RUN_MS        (30u * 60000u)       /* thermostat and manual warnings, from flame established */
 #define AT_CTL_PREHEAT_GRACE_MS  (5u * 60000u)        /* a switched preheat: the heater's own stop gets this long */
 #define AT_CTL_FROST_RUN_MS      (20u * 60000u)       /* frost protection */
-#define AT_CTL_MIN_OFF_MS        (20u * 60000u)       /* from idle to the next thermostat start */
+#define AT_CTL_MIN_OFF_MS        (20u * 1000u)        /* from idle (cooldown done) to the next start: 20 s since 1.79, was 20 min */
 #define AT_CTL_CEILING_OVER      5.0f
 #define AT_CTL_STUCK_MS          (15u * 60000u)       /* external reading unchanged at least this long while burning */
 #define AT_CTL_STUCK_CTL_RISE    2                    /* ...while the controller's reading rose this many whole degrees */
@@ -328,7 +328,7 @@ uint32_t at_ctl_min_run_left_ms(const at_ctl_t *t, uint32_t now_ms);
 uint32_t at_ctl_min_off_left_ms(const at_ctl_t *t, uint32_t now_ms);
 
 /* The Heater Care lock (1.61, docs/CARE_LOCK.md). Matter, Home Assistant, MQTT, the website and the box's own page may
- * not stop a run inside its minimum run, nor start the heater inside the 20 minute rest after a run; only the apps
+ * not stop a run inside its minimum run, nor start the heater inside the 20 second rest after a run (20 minutes before 1.79); only the apps
  * may, with an explicit override. These say whether a stop or a start someone asks for now would break that, and
  * how long until it would not. Faults never lock a stop, and neither does a heater already cooling down. */
 /* AT_CARE_NOT_RUNNING (1.68): run_mode asked for with no run going to switch; not a Heater Care rule, but refused

@@ -346,7 +346,6 @@ static bool wall_clock(int64_t *epoch)
 
 static volatile float s_preheat_temp = AT_PREHEAT_TEMP_DEFAULT;
 static volatile int s_pump_minutes = AT_PUMP_MINUTES_DEFAULT; /* water pump run time, minutes */
-static uint32_t s_last_preheat_stop_ms;
 
 static void ctl_task(void *arg)
 {
@@ -374,7 +373,6 @@ static void ctl_task(void *arg)
             }
         }
         at_ctl_tick(&s_ctl, &snap, now, &s_ops);
-        bool thermostat = s_ctl.autot.enabled;
         /* turn off once warm (1.78): Auto went off with the stop at the top; save Auto off like any other route */
         const bool once_fired = s_ctl.once_fired;
         s_ctl.once_fired = false;
@@ -397,17 +395,8 @@ static void ctl_task(void *arg)
 
         at_app_hrec_tick(&snap, now, clock_ok, epoch, cfg.bypass);
 
-        /* A timed preheat also ends when the coolant is hot enough: the heater's own wait temperature since 1.70
-         * (its "coolant target"), the box's saved preheat_temp until the heater has been read. The thermostat has
-         * its own limits. */
-        if (!thermostat && !cfg.bypass && snap.have_status && !snap.stale &&
-            (snap.status.state_raw == 0x02 || snap.status.state_raw == 0x03) &&
-            snap.status.coolant_temp >= at_app_preheat_stop_temp(s_preheat_temp) && now - s_last_preheat_stop_ms > 60000u) {
-            s_last_preheat_stop_ms = now;
-            ESP_LOGI(TAG, "coolant %.1f >= preheat temperature %.1f -> stop", snap.status.coolant_temp,
-                     (double)at_app_preheat_stop_temp(s_preheat_temp));
-            core_cmd(at_cmd_stop);
-        }
+        /* A timed preheat runs its whole time (1.79): the box no longer stops it when the coolant reaches the
+         * coolant target; the heater itself holds the coolant there and stops when its preheat time runs out. */
 
         if (cfg.debug_mode && !cfg.bypass &&
             now - s_last_debug_ms >= (uint32_t)(cfg.debug_interval_s < 5 ? 5 : cfg.debug_interval_s) * 1000u) {

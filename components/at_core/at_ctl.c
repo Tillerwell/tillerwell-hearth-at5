@@ -21,6 +21,7 @@ static void set_note(at_ctl_loop_t *l, const char *fmt, ...)
 }
 
 static unsigned mins_up(uint32_t ms) { return (unsigned)((ms + 59999u) / 60000u); }
+static unsigned secs_up(uint32_t ms) { return (unsigned)((ms + 999u) / 1000u); }
 
 /* a is at or after b, on a wrapping clock */
 static bool after_eq(uint32_t a, uint32_t b) { return (int32_t)(a - b) >= 0; }
@@ -539,8 +540,8 @@ void at_care_message(at_care_t c, uint32_t left_ms, char *out, size_t n)
         snprintf(out, n, "Heater Care: the run has %u more min of its minimum run to go before it can stop. "
                          "Only the Tillerwell app can stop it sooner.", m);
     } else if (c == AT_CARE_MIN_OFF) {
-        snprintf(out, n, "Heater Care: the heater is resting for %u more min after its last run. "
-                         "Only the Tillerwell app can start it sooner.", m);
+        snprintf(out, n, "Heater Care: the heater is resting for %u more s after its last run. "
+                         "Only the Tillerwell app can start it sooner.", secs_up(left_ms));
     } else if (c == AT_CARE_NOT_RUNNING) {
         snprintf(out, n, "The heater is not running, so there is no run to switch between preheat and thermostat.");
     } else if (n) {
@@ -616,7 +617,7 @@ void at_ctl_set_auto(at_ctl_t *t, bool enabled, const at_snapshot_t *s, uint32_t
     } else if (!auto_start_ok(t, t->room)) {
         set_note(l, "Auto thermostat enabled -> temperature %.1f above %.1f, waiting", t->room, start_at);
     } else if (off_left > 0) {
-        set_note(l, "Auto thermostat enabled -> at %.1f, waiting: minimum off %u min left", t->room, mins_up(off_left));
+        set_note(l, "Auto thermostat enabled -> at %.1f, waiting: minimum off %u s left", t->room, secs_up(off_left));
     } else if (t->room > start_at + EPS) {
         set_note(l, "Auto thermostat enabled for warm by -> at %.1f, inside the range, sending start thermostat", t->room);
         send_start(t, l, ops, now, AT_OWNER_AUTO);
@@ -787,7 +788,7 @@ static void boot_decide(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
         return;
     }
     if (t->saved.run_mark) {
-        /* a run ended without Hearth seeing it (power cut): rest 20 min from boot */
+        /* a run ended without Hearth seeing it (power cut): rest from boot */
         off_lock_from(t, t->boot_ms, now);
         t->save_stop = true;
         t->save_stop_epoch = 0;
@@ -798,7 +799,7 @@ static void boot_decide(at_ctl_t *t, const at_snapshot_t *s, uint32_t now)
     if (saved_rest(t, &since)) {
         apply_saved_rest(t, now);
     } else {
-        /* a stop was recorded but its time cannot be trusted: rest 20 min from boot (plan §3.1). A clock arriving
+        /* a stop was recorded but its time cannot be trusted: rest from boot (plan §3.1). A clock arriving
          * later can only shorten it when the stop time itself is known. */
         off_lock_from(t, t->boot_ms, now);
         t->clock_fix_pending = !t->clock_ok && t->saved.stop_epoch > 0;
@@ -1083,7 +1084,7 @@ static void tick_auto(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const a
     } else if (auto_start_ok(t, temp) && idle) {
         uint32_t off_left = at_ctl_min_off_left_ms(t, now);
         if (off_left > 0) {
-            set_note(l, "at %.1f, below %.1f, waiting: minimum off %u min left", temp, start_at, mins_up(off_left));
+            set_note(l, "at %.1f, below %.1f, waiting: minimum off %u s left", temp, start_at, secs_up(off_left));
             return;
         }
         if (fault && !retry_ready(l, s, now)) {

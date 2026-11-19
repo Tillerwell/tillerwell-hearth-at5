@@ -4,7 +4,8 @@ Heater Care's two rules protect the heater from short cycling:
 
 - **Minimum run.** A run is not stopped until it has burned 30 minutes from flame established (20 for a frost
   protection run). Lighting up does not count towards it.
-- **Rest.** After a run, the heater is not started again until it has been idle for 20 minutes.
+- **Rest.** After a run, the heater is not started again until it has been idle (cooldown finished) for 20 seconds
+  (firmware 1.79; 20 minutes before).
 
 Hearth's own thermostat has always kept to both. Before 1.61, anything else could break them: the iOS Home app or
 Google Home over Matter, Home Assistant, MQTT, the website or the box's own page could stop a run a few minutes in, or

@@ -161,13 +161,12 @@ static void test_ctl_locks(void)
         CHECK(HSIM_UNTIL(&m, m.state == 0, 10 * MIN_MS));
         uint32_t idle = m.now;
         at_ctl_status(&t, m.now, &st);
-        CHECK(st.min_off_left_s > 1190 && st.min_off_left_s <= 1200);
+        CHECK(st.min_off_left_s > 10 && st.min_off_left_s <= 20);   /* 20 s rest (1.79) */
         CHECK(t.last_end == AT_END_TOP);
-        /* cool fast below the bottom: no start inside 20 min of idle */
+        /* cool fast below the bottom: no start inside the 20 s rest after idle */
         m.rate_off = 0.5f;
         CHECK(HSIM_UNTIL(&m, m.l.starts == 2, 40 * MIN_MS));
         CHECK(m.last_start_ms - idle >= AT_CTL_MIN_OFF_MS);
-        CHECK(t.learn.dip > 0.5f || t.learn.last_dip > 0.5f);   /* stopped at the top, fell below the bottom in the rest */
     }
     /* 12 min light-up: held 42 min from switch-on, and a stop wanted during light-up is held too */
     {
@@ -225,7 +224,7 @@ static void test_ctl_dip_relevant(void)
         hsim_run(&m, 10 * MIN_MS);
         at_ctl_status_t st;
         at_ctl_status(&t, m.now, &st);
-        CHECK(st.min_off_left_s > 0 && t.autot.enabled && m.room < 15.0f);
+        CHECK(t.autot.enabled);
         CHECK(st.dip_below == 0 && t.learn.dip == 0);
     }
     {
@@ -247,7 +246,7 @@ static void test_ctl_dip_relevant(void)
         hsim_run(&m, 15 * MIN_MS);
         at_ctl_status_t st;
         at_ctl_status(&t, m.now, &st);
-        CHECK(st.min_off_left_s > 0 && m.room < 20.0f);
+        CHECK(m.room < 20.0f);
         CHECK(st.dip_below == 0);
     }
 }
@@ -288,15 +287,15 @@ static void test_ctl_care_lock(void)
     hsim_run(&m, 18 * MIN_MS);
     s = hsim_snap(&m);
     CHECK(at_ctl_care_stop(&t, &s, m.now, &left) == AT_CARE_OK);
-    /* the app stops it (override); once idle, a start 9 min later is refused with 11 min left */
+    /* the app stops it (override); once idle, a start 9 s later is refused with about 11 s left (20 s rest, 1.79) */
     at_ctl_user_stop(&t, AT_SRC_APP, m.now);
     m.ops.stop(m.ops.ctx);
     CHECK(HSIM_UNTIL(&m, m.state == 0, 10 * MIN_MS));
-    hsim_run(&m, 9 * MIN_MS);
+    hsim_run(&m, 9000);
     CHECK(at_ctl_care_start(&t, m.now, &left) == AT_CARE_MIN_OFF);
-    CHECK(left > 10 * MIN_MS && left <= 11 * MIN_MS + 3000);
+    CHECK(left > 5000 && left <= 17000);
     at_care_message(AT_CARE_MIN_OFF, left, msg, sizeof(msg));
-    CHECK(strstr(msg, "resting for 11 more min") != NULL);
+    CHECK(strstr(msg, "more s after its last run") != NULL);
     s = hsim_snap(&m);
     CHECK(at_ctl_care_stop(&t, &s, m.now, &left) == AT_CARE_OK);   /* nothing to stop */
     /* the app's Start anyway on a thermostat start clears the rest */
@@ -869,33 +868,33 @@ static void test_ctl_restart(void)
         at_ctl_status(&t, m.now, &st);
         CHECK(st.running && st.run_adopted);
     }
-    /* the clock is set: the rest carries on from the saved stop time (stopped 15 min ago: 5 min left) */
+    /* the clock is set: the rest carries on from the saved stop time (stopped 8 s ago: 12 s left) */
     {
         at_ctl_t t;
         hsim_t m;
         hsim_init(&m, &t, 18.0f);
-        at_ctl_saved_t sv = {false, true, now_e - 15 * 60};
+        at_ctl_saved_t sv = {false, true, now_e - 8};
         at_ctl_boot(&t, &sv, build, m.now);
         uint32_t boot = m.now;
         hsim_arm(&m);
         CHECK(HSIM_UNTIL(&m, m.l.starts == 1, 30 * MIN_MS));
-        CHECK(m.last_start_ms - boot >= 5 * MIN_MS - 3000 && m.last_start_ms - boot < 5 * MIN_MS + 100000);
+        CHECK(m.last_start_ms - boot >= 12000 - 3000 && m.last_start_ms - boot < 12000 + 100000);
     }
-    /* no clock at boot: 20 min from boot, until the clock arrives and the saved time ends it sooner */
+    /* no clock at boot: 20 s from boot, until the clock arrives and the saved time ends it sooner */
     {
         at_ctl_t t;
         hsim_t m;
         hsim_init(&m, &t, 18.0f);
         at_ctl_set_clock(&t, false, 0);
-        at_ctl_saved_t sv = {false, true, now_e - 18 * 60};
+        at_ctl_saved_t sv = {false, true, now_e - 10};
         at_ctl_boot(&t, &sv, build, m.now);
         uint32_t boot = m.now;
         hsim_arm(&m);
-        hsim_run(&m, MIN_MS);
-        CHECK(m.l.starts == 0 && at_ctl_min_off_left_ms(&t, m.now) > 18 * MIN_MS);
-        at_ctl_set_clock(&t, true, now_e + 60);
         hsim_step(&m);
-        CHECK(at_ctl_min_off_left_ms(&t, m.now) <= MIN_MS + 3000);
+        CHECK(m.l.starts == 0 && at_ctl_min_off_left_ms(&t, m.now) > 15000);
+        at_ctl_set_clock(&t, true, now_e + 3);
+        hsim_step(&m);
+        CHECK(at_ctl_min_off_left_ms(&t, m.now) <= 8000);
         CHECK(HSIM_UNTIL(&m, m.l.starts == 1, 10 * MIN_MS));
         CHECK(m.last_start_ms - boot < 5 * MIN_MS);
     }
@@ -2176,21 +2175,21 @@ static void test_gaps(void)
         at_ctl_status(&t, 1000, &st);
         CHECK(st.at_limit == AT_LIMIT_NONE);
     }
-    /* a rest restored from the saved stop time (stopped 15 min ago: 5 min left), then the wall clock jumps a day
+    /* a rest restored from the saved stop time (stopped 8 s ago: 12 s left), then the wall clock jumps a day
      * either way: the deadline does not move */
     for (int k = 0; k < 2; k++) {
         const int64_t build = 1790000000, now_e = 1800000000;
         at_ctl_t t;
         hsim_t m;
         hsim_init(&m, &t, 18.0f);
-        at_ctl_saved_t sv = {false, true, now_e - 15 * 60};
+        at_ctl_saved_t sv = {false, true, now_e - 8};
         at_ctl_boot(&t, &sv, build, m.now);
         uint32_t boot = m.now;
         hsim_arm(&m);
-        hsim_run(&m, MIN_MS);
+        hsim_step(&m);
         at_ctl_set_clock(&t, true, k == 0 ? now_e + 86400 : now_e - 86400);
         CHECK(HSIM_UNTIL(&m, m.l.starts == 1, 30 * MIN_MS));
-        CHECK(m.last_start_ms - boot >= 5 * MIN_MS - 3000 && m.last_start_ms - boot < 5 * MIN_MS + 100000);
+        CHECK(m.last_start_ms - boot >= 12000 - 3000 && m.last_start_ms - boot < 12000 + 100000);
     }
 }
 

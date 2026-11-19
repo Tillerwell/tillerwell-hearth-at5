@@ -1,5 +1,6 @@
 #include "at_cloudlink.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,7 +60,7 @@ static char s_base[48], s_uri[96], s_client_id[32], s_t_status[64], s_t_state[64
 static uint32_t s_last_fault;
 static bool s_fault_known;
 static int64_t s_state_s;
-static uint8_t s_state_key[4];
+static uint8_t s_state_key[6];
 static int64_t s_backup_s;
 static uint32_t s_backup_hash;   // of the last backup sent; 0 = send at the next check
 static uint32_t s_backup_timers; // at_app_timers_version() when the backup was last built
@@ -173,15 +174,20 @@ static void watch_backup(void)
     free(js);
 }
 
-// A fault appearing is an event; the state document itself goes out on a timer and whenever the run changes.
+// A fault appearing is an event; the state document itself goes out on a timer and whenever the run or the set
+// temperature changes.
 static void watch_state(void)
 {
     at_view_t v;
     at_app_view(&v);
     const at_snapshot_t *s = &v.snap;
     uint32_t fault = s->have_status ? s->status.fault : 0;
-    uint8_t key[4] = {s->have_status ? (uint8_t)s->status.state_raw : 0xff, (uint8_t)fault, (uint8_t)s->run_mode,
-                      (uint8_t)((s->have_status && s->status.burner_active) | (v.auto_enabled << 1))};
+    /* 1.79: the set temperature too (tenths), so a change made with the heater off reaches the website and the apps
+     * away from home at once, not on the next 15 s tick */
+    const uint16_t set10 = (uint16_t)lroundf(v.auto_high * 10.0f);
+    uint8_t key[6] = {s->have_status ? (uint8_t)s->status.state_raw : 0xff, (uint8_t)fault, (uint8_t)s->run_mode,
+                      (uint8_t)((s->have_status && s->status.burner_active) | (v.auto_enabled << 1)),
+                      (uint8_t)(set10 & 0xff), (uint8_t)(set10 >> 8)};
     bool changed = memcmp(key, s_state_key, sizeof(key)) != 0;
     if (s_fault_known && fault && fault != s_last_fault) {
         publish_event("fault", fault, s->fault_name ? s->fault_name : "unknown", NULL);
