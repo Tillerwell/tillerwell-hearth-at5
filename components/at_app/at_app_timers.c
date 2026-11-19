@@ -408,9 +408,12 @@ static void timers_task(void *arg)
             }
             if (until_clear) s_until = 0;
         }
+        /* 1.78: a timer's run has its own end, so it drops turn off once warm as it drops the run time */
+        const bool once_clear = v.auto_once && s_runner.active;
         xSemaphoreGive(s_lock);
         if (until_clear) save_until(0);
         if (until_due) at_app_auto_until_end();
+        if (once_clear) at_app_auto_once_set(false);
     }
 }
 

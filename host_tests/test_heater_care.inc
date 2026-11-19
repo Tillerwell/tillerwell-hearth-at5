@@ -2427,8 +2427,91 @@ static void test_ctl_tenths(void)
     }
 }
 
+/* Turn off once warm (1.78): Auto goes off with Hearth's stop at the top (or the ceiling), and nothing starts again
+ * when the room cools. */
+static void test_ctl_once(void)
+{
+    printf("Heater Care: turn off once warm\n");
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 19.9f);
+        m.rate_on = 0.1f;
+        CHECK(!at_ctl_set_auto_once(&t, true) && !t.auto_once);   /* Auto off: refused */
+        hsim_arm(&m);
+        CHECK(at_ctl_set_auto_once(&t, true) && t.auto_once);
+        CHECK(m.l.starts == 1);
+        /* the minimum run still holds the stop at the top, and Auto stays on until the stop is sent */
+        CHECK(HSIM_UNTIL(&m, t.held == AT_HOLD_TOP, 30 * MIN_MS));
+        CHECK(t.autot.enabled && t.auto_once && !t.once_fired);
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 1, 40 * MIN_MS));
+        CHECK(!t.autot.enabled && !t.auto_once && t.once_fired);
+        CHECK(strstr(t.autot.note, "turn off once warm") != NULL);
+        /* the stop goes through as a normal top stop (learned from), and the room cooling starts nothing */
+        CHECK(HSIM_UNTIL(&m, m.state == 0, 10 * MIN_MS));
+        CHECK(t.last_end == AT_END_TOP);
+        m.rate_off = 0.2f;
+        hsim_run(&m, 120 * MIN_MS);
+        CHECK(m.room < 19.0f && m.l.starts == 1 && m.l.stops == 1);
+    }
+    /* a lost stop is still sent again after Auto went off */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 19.9f);
+        m.rate_on = 0.1f;
+        hsim_arm(&m);
+        at_ctl_set_auto_once(&t, true);
+        m.drop_stops = 1;
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 1, 60 * MIN_MS));
+        CHECK(!t.autot.enabled);
+        CHECK(HSIM_UNTIL(&m, m.state == 4, 5 * MIN_MS));
+        CHECK(m.l.stops == 2);
+    }
+    /* the ceiling inside the minimum run counts as warm too */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 19.9f);
+        m.rate_on = 0.5f;
+        hsim_arm(&m);
+        at_ctl_set_auto_once(&t, true);
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 1, 40 * MIN_MS));
+        CHECK(t.run.end == AT_END_CEILING && !t.autot.enabled && t.once_fired);
+    }
+    /* Auto switched off by anyone drops it, so turning Auto on again later is a plain thermostat */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 22.0f);
+        hsim_arm(&m);
+        at_ctl_set_auto_once(&t, true);
+        at_snapshot_t s = hsim_snap(&m);
+        at_ctl_auto_off(&t, false, AT_HOLD_THERMO_OFF, AT_SRC_APP, &s, m.now, &m.ops);
+        hsim_step(&m);
+        CHECK(!t.auto_once && !t.once_fired);
+        hsim_arm(&m);
+        CHECK(t.autot.enabled && !t.auto_once);
+        /* and it can be taken back while Auto is on */
+        CHECK(at_ctl_set_auto_once(&t, true) && at_ctl_set_auto_once(&t, false) && !t.auto_once);
+    }
+    /* without it, the same run leaves Auto on and the next start comes */
+    {
+        at_ctl_t t;
+        hsim_t m;
+        hsim_init(&m, &t, 19.9f);
+        m.rate_on = 0.1f;
+        hsim_arm(&m);
+        CHECK(HSIM_UNTIL(&m, m.l.stops == 1, 60 * MIN_MS));
+        CHECK(t.autot.enabled && !t.once_fired);
+        m.rate_off = 0.2f;
+        CHECK(HSIM_UNTIL(&m, m.l.starts == 2, 120 * MIN_MS));
+    }
+}
+
 static void test_ctl(void)
 {
+    test_ctl_once();
     test_ctl_tenths();
     test_ctl_dip_relevant();
     test_ctl_coast();

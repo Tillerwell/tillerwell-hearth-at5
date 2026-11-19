@@ -566,6 +566,11 @@ static bool run_cmd(const cJSON *j, at_src_t def_src, bool may_override, at_care
          * already set stays, so a sender that only re-sends "on" does not lose it. Auto is on whatever comes of it */
         double m = jnum(j, "minutes", 0);
         if (on && m >= 1 && !at_app_auto_until_set((int)m)) ESP_LOGW(TAG, "auto: run time not set");
+        /* 1.78: "once" with Auto on sets turn off once warm (false clears it); left out, it stays as it was */
+        const cJSON *once = cJSON_GetObjectItemCaseSensitive(j, "once");
+        if (on && cJSON_IsBool(once) && !at_app_auto_once_set(cJSON_IsTrue(once))) ESP_LOGW(TAG, "auto: once not set");
+    } else if (!strcmp(c, "auto_once")) {
+        ok = at_app_auto_once_set(jbool(j, "enabled", false));
     } else if (!strcmp(c, "auto_target")) {
         at_app_set_auto_target((float)jnum(j, "value", 20));
     } else if (!strcmp(c, "auto_range")) {

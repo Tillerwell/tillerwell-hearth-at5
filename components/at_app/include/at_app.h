@@ -149,6 +149,7 @@ esp_err_t at_app_start(void);
 typedef struct {
     at_snapshot_t snap;
     bool auto_enabled;
+    bool auto_once;             /* 1.78: Auto turns off with the run's stop at the top */
     float auto_target;
     float auto_low, auto_high, hyst_min, hyst_max;  /* hyst_*: always 0.5 + 0.5, for older apps (1.47) */
     float auto_start_at;
@@ -207,6 +208,10 @@ void at_app_auto_until_end(void);
 bool at_app_run_end(int minutes);
 /* The thermostat run time alone: 0 removes it. False while a timer's run is going, with Auto off, or no clock. */
 bool at_app_auto_until_set(int minutes);
+/* Turn off once warm (1.78, docs/API_SPEC.md "auto_once"): with Auto on, the run's stop at the top of the range turns
+ * Auto off too, so the heater does not start again when the room cools. False when turning it on with Auto off or
+ * while a timer's run is going (a timer has its own end). Auto going off by any route drops it. */
+bool at_app_auto_once_set(bool on);
 /* timers glue: a preheat timer's run now has left_ms to go (called by at_app_set_preheat_duration). */
 void at_app_timers_preheat_left(uint32_t left_ms);
 bool at_app_start_thermostat(void);

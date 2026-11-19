@@ -210,6 +210,15 @@ static int run_time_for_locked(int minutes, uint32_t now);
 #define KEY_RUNS  "ctl_runs"
 #define KEY_WARM  "ctl_warm"
 #define KEY_EARLY "ctl_early"
+#define KEY_ONCE  "auto_once"   /* 1.78: turn off once warm, one byte (1: armed); kept with Auto through a restart */
+
+static bool s_once_saved;
+
+static void save_once(bool on)
+{
+    uint8_t b = on ? 1 : 0;
+    if (at_settings_blob_save(KEY_ONCE, &b, sizeof(b)) == ESP_OK) s_once_saved = on;
+}
 #define REST_VERSION 2
 
 typedef struct {
@@ -366,7 +375,21 @@ static void ctl_task(void *arg)
         }
         at_ctl_tick(&s_ctl, &snap, now, &s_ops);
         bool thermostat = s_ctl.autot.enabled;
+        /* turn off once warm (1.78): Auto went off with the stop at the top; save Auto off like any other route */
+        const bool once_fired = s_ctl.once_fired;
+        s_ctl.once_fired = false;
+        const bool once_now = s_ctl.auto_once;
         xSemaphoreGive(s_ctl_lock);
+        if (once_fired) {
+            at_settings_t once_cfg;
+            at_settings_get(&once_cfg);
+            if (once_cfg.auto_enabled) {
+                once_cfg.auto_enabled = false;
+                at_settings_set(&once_cfg);
+            }
+            ESP_LOGI(TAG, "warm: turn off once warm -> Auto off");
+        }
+        if (once_now != s_once_saved) save_once(once_now);
         thermo_topup(&snap, now);
         persist_ctl();
         at_app_fuel_tick(&snap, now);
@@ -487,6 +510,11 @@ esp_err_t at_app_start(void)
     }
     s_ctl.use_external = cfg.use_external_temp;
     s_ctl.autot.enabled = cfg.auto_enabled; /* no immediate action at boot, the loop decides */
+    uint8_t once = 0;
+    if (at_settings_blob_load(KEY_ONCE, &once, sizeof(once)) && once == 1) {
+        s_once_saved = true;
+        s_ctl.auto_once = cfg.auto_enabled;   /* the first tick saves it cleared if Auto is off */
+    }
     s_ctl.freeze.enabled = cfg.freeze_enabled;
 
     at_app_hrec_init();
@@ -519,6 +547,7 @@ void at_app_view(at_view_t *v)
 
     xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
     v->auto_enabled = s_ctl.autot.enabled;
+    v->auto_once = s_ctl.autot.enabled && s_ctl.auto_once;
     v->auto_target = s_ctl.autot.high;   /* the set temperature */
     v->auto_low = s_ctl.autot.low;
     v->auto_high = s_ctl.autot.high;
@@ -829,6 +858,29 @@ bool at_app_preheat_left(int minutes)
     xSemaphoreGive(s_ctl_lock);
     if (total > 600) total = 600;
     return at_app_set_preheat_duration(total);
+}
+
+bool at_app_auto_once_set(bool on)
+{
+    if (on) {
+        at_timer_status_t ts;
+        at_app_timer_status(&ts);
+        if (ts.active) {
+            ESP_LOGW(TAG, "turn off once warm refused: a timer is running");
+            return false;
+        }
+    }
+    xSemaphoreTake(s_ctl_lock, portMAX_DELAY);
+    const bool ok = at_ctl_set_auto_once(&s_ctl, on);
+    const bool now_on = s_ctl.auto_once;
+    xSemaphoreGive(s_ctl_lock);
+    if (!ok) {
+        ESP_LOGW(TAG, "turn off once warm refused: Auto is off");
+        return false;
+    }
+    if (now_on != s_once_saved) save_once(now_on);
+    ESP_LOGI(TAG, "turn off once warm %s", now_on ? "on" : "off");
+    return true;
 }
 
 void at_app_auto_until_end(void)

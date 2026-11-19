@@ -180,6 +180,7 @@ static void test_permissions(void)
     CHECK(at_auth_route_perm("GET", "/api/secret") == AT_PERM_ADMIN, "unknown route fails closed");
     CHECK(at_auth_cmd_perm("stop") == AT_PERM_CONTROL, "stop needs control");
     CHECK(at_auth_cmd_perm("auto_range") == AT_PERM_CONTROL, "control may set the thermostat range");
+    CHECK(at_auth_cmd_perm("auto_once") == AT_PERM_CONTROL, "control may set turn off once warm");
     CHECK(at_auth_cmd_perm("preheat_duration") == AT_PERM_CONTROL, "control may change a running preheat's length");
     CHECK(at_auth_cmd_perm("timer_set") == AT_PERM_CONTROL, "control may add and edit timers");
     CHECK(at_auth_cmd_perm("timer_delete") == AT_PERM_CONTROL, "control may delete timers");

@@ -209,6 +209,11 @@ typedef struct {
     at_warm_t warm;             /* warm by a set time: idle cooling, gross rates, arrival errors (1.56) */
     bool warm_in_range;         /* a warm-by timer may make one start inside the range (below the stop point) */
     at_early_t early_start;     /* where Auto's next start happens, and the busy widening (1.60, docs/EARLY_START.md) */
+    /* Turn off once warm (1.78): Auto goes off when Hearth stops a run at the top (or the ceiling), so the heater does
+     * not start again when the room cools. Set by at_app; dropped whenever Auto goes off. once_fired tells at_app it
+     * happened (it saves Auto off and clears the flag). */
+    bool auto_once;
+    bool once_fired;
 } at_ctl_t;
 
 /* Thermostat status for the apps (the "thermo" object). */
@@ -303,6 +308,9 @@ float at_ctl_stop_early(const at_ctl_t *t);
 float at_ctl_stop_at(const at_ctl_t *t);
 void at_ctl_set_auto_target(at_ctl_t *t, float target);
 void at_ctl_set_auto_range(at_ctl_t *t, float low, float high);
+/* Turn off once warm (1.78): with Auto on, the next stop Hearth makes at the top of the range (or the ceiling)
+ * turns Auto off too. False (nothing set) with Auto off when asked to turn it on. */
+bool at_ctl_set_auto_once(at_ctl_t *t, bool on);
 void at_ctl_set_freeze(at_ctl_t *t, bool enabled);
 void at_ctl_set_freeze_target(at_ctl_t *t, float target);
 

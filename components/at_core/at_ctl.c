@@ -410,6 +410,25 @@ static void hearth_stop(at_ctl_t *t, const at_ctl_ops_t *ops, const at_snapshot_
     arm_resend(t, s, now);
 }
 
+/* Turn off once warm (1.78): the run Hearth just stopped at the top was the last; Auto goes off with it. The stop
+ * already sent is kept (resent as usual), and the run is still Auto's, so the ceiling still covers it. */
+static void once_off(at_ctl_t *t, const char *why)
+{
+    at_ctl_loop_t *l = &t->autot;
+    t->auto_once = false;
+    t->once_fired = true;
+    l->enabled = false;
+    t->warm_in_range = false;
+    set_note(l, "%s -> turn off once warm: Auto off", why);
+}
+
+bool at_ctl_set_auto_once(at_ctl_t *t, bool on)
+{
+    if (on && !t->autot.enabled) return false;
+    t->auto_once = on;
+    return true;
+}
+
 static bool starting_or_burning(const at_snapshot_t *s)
 {
     return s->have_status && !s->stale && (s->status.state_raw == 0x02 || s->status.state_raw == 0x03);
@@ -950,6 +969,7 @@ static void check_ceiling(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, con
         who->last_action_ms = now;
         who->has_acted = true;
         who->stop_pending = true;
+        if (who == &t->autot && t->autot.enabled && t->auto_once) once_off(t, "reached the ceiling");
     }
 }
 
@@ -1056,6 +1076,7 @@ static void tick_auto(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const a
             l->last_action_ms = now;
             l->has_acted = true;
             l->stop_pending = true;
+            if (t->auto_once) once_off(t, "reached the top");
         }
     } else if (in_run && t->held == AT_HOLD_TOP && temp < stop_at - EPS) {
         t->held = AT_HOLD_NONE;
@@ -1150,6 +1171,7 @@ static void tick_freeze(at_ctl_t *t, const at_snapshot_t *s, uint32_t now, const
 
 void at_ctl_tick(at_ctl_t *t, const at_snapshot_t *s, uint32_t now_ms, const at_ctl_ops_t *ops)
 {
+    if (!t->autot.enabled) t->auto_once = false;   /* Auto off by any route drops turn off once warm (1.78) */
     update_room(t, s, now_ms);
     if (s->have_status && !s->stale) at_cd_tick(&t->cd, s->status.state_raw, now_ms);
     track_run(t, s, now_ms);

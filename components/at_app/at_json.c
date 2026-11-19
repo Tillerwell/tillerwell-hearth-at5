@@ -617,6 +617,7 @@ static cJSON *build_state_tree(void)
     cJSON_AddBoolToObject(o, "heater_temp_external", s->room_to_heater);
 
     cJSON_AddBoolToObject(o, "auto_enabled", v.auto_enabled);
+    cJSON_AddBoolToObject(o, "auto_once", v.auto_once);   /* 1.78: turn off once warm (the moment's state, not in the backup) */
     cJSON_AddNumberToObject(o, "auto_target", round3(v.auto_target));
     cJSON_AddNumberToObject(o, "auto_low", round3(v.auto_low));
     cJSON_AddNumberToObject(o, "auto_high", round3(v.auto_high));

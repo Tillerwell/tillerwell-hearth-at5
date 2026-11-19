@@ -368,6 +368,7 @@ typedef struct {
 static const cmd_perm_t CMD_PERMS[] = {
     { "start_preheat", AT_PERM_CONTROL }, { "stop", AT_PERM_CONTROL },
     { "auto", AT_PERM_CONTROL },          { "auto_target", AT_PERM_CONTROL },
+    { "auto_once", AT_PERM_CONTROL },
     { "set_time", AT_PERM_CONTROL },      { "tank_level", AT_PERM_CONTROL },
     { "tank_filled", AT_PERM_CONTROL },   { "auto_range", AT_PERM_CONTROL },
     { "preheat_duration", AT_PERM_CONTROL }, { "run_end", AT_PERM_CONTROL }, { "run_mode", AT_PERM_CONTROL }, { "heater_read", AT_PERM_CONTROL },
